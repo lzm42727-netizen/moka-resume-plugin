@@ -138,14 +138,17 @@ async function handleScoreCandidate({ profile, config }) {
   if (scoreCache.has(cacheKey)) return scoreCache.get(cacheKey);
 
   const systemPrompt =
-    '你是资深招聘专家，擅长客观评估候选人与岗位的匹配度。直接输出 JSON 结果，不要输出思考过程或多余文字。';
+    '你是资深招聘专家，擅长客观评估候选人与岗位的匹配度。'
+    + '严格只输出一个 JSON 对象，禁止输出任何思考过程、前言、分析说明或 markdown。'
+    + '每个维度的 reason 控制在 40 字以内，highlights/concerns 每条不超过 30 字。';
   const userPrompt = buildDimensionPrompt(profile, jobSpec, config.jobType, config.jobJD);
 
   // 推理型模型会先输出思考，需给足 token，避免 JSON 被截断
-  const content = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: 3000, temperature: 0 });
+  const content = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: 4000, temperature: 0 });
   const raw = parseDimensionResponse(content);
 
-  scoreCache.set(cacheKey, raw);
+  // 解析失败不写缓存，避免把错误结果固化，下一轮可重试
+  if (!raw.parseError) scoreCache.set(cacheKey, raw);
   return raw;
 }
 
@@ -478,6 +481,18 @@ function parseDimensionResponse(content) {
     const p = tryParseJson(c);
     if (p && p.dimensions) { best = p; break; }
   }
+  // 兜底 1：JSON 被截断（花括号未闭合）→ 尝试修复后再解析
+  if (!best) {
+    const repaired = tryParseJson(repairTruncatedJson(text));
+    if (repaired && repaired.dimensions) best = repaired;
+  }
+  // 兜底 2：仍失败 → 用正则宽松抽取各维度分数/理由（能救多少救多少）
+  if (!best) {
+    const loose = looseExtractDimensions(text);
+    if (loose) {
+      best = { dimensions: loose, mustHaveResults: [], highlights: [], concerns: looseExtractArray(text, 'concerns') };
+    }
+  }
   if (!best) {
     return {
       dimensions: neutralDimensions('模型返回解析失败'),
@@ -511,7 +526,99 @@ function parseDimensionResponse(content) {
 }
 
 function tryParseJson(str) {
+  if (!str) return null;
   try { return JSON.parse(str); } catch { return null; }
+}
+
+/**
+ * 修复被截断的 JSON：从首个 '{' 起，回退到「最后一个完整键值对」的位置，
+ * 再补齐未闭合的字符串与括号，尽量得到可解析的对象。
+ */
+function repairTruncatedJson(text) {
+  if (!text) return '';
+  const start = text.indexOf('{');
+  if (start === -1) return '';
+  const s = text.slice(start);
+
+  let inString = false;
+  let escape = false;
+  const stack = [];
+  let lastPairEnd = -1; // 顶层/各层「刚结束一个值」的安全切点（位于逗号或闭合括号处）
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escape) escape = false;
+      else if (ch === '\\') escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '{' || ch === '[') stack.push(ch === '{' ? '}' : ']');
+    else if (ch === '}' || ch === ']') { if (stack.length) stack.pop(); lastPairEnd = i; }
+    else if (ch === ',') lastPairEnd = i - 1; // 逗号前是一个完整值的结尾
+  }
+
+  // 情况 A：正好在字符串中被截断 —— 回退到最后一个完整键值对
+  let body;
+  if (inString) {
+    if (lastPairEnd >= 0) body = s.slice(0, lastPairEnd + 1);
+    else return '';
+  } else {
+    // 情况 B：结构中截断 —— 若末尾是不完整片段（如 "key": ），回退到安全切点
+    body = s;
+    const tail = body.replace(/\s+$/, '');
+    if (/[:,]\s*$/.test(tail) || /"[^"]*$/.test(tail)) {
+      if (lastPairEnd >= 0) body = s.slice(0, lastPairEnd + 1);
+    }
+  }
+
+  // 重新计算需要补齐的闭合括号
+  const stack2 = [];
+  let inStr2 = false;
+  let esc2 = false;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (inStr2) {
+      if (esc2) esc2 = false;
+      else if (ch === '\\') esc2 = true;
+      else if (ch === '"') inStr2 = false;
+      continue;
+    }
+    if (ch === '"') { inStr2 = true; continue; }
+    if (ch === '{' || ch === '[') stack2.push(ch === '{' ? '}' : ']');
+    else if (ch === '}' || ch === ']') { if (stack2.length) stack2.pop(); }
+  }
+  let repaired = body.replace(/[,\s]+$/, '');
+  while (stack2.length) repaired += stack2.pop();
+  return repaired;
+}
+
+/** 正则宽松抽取四个维度的 score/reason（容忍 JSON 截断/前置文字） */
+function looseExtractDimensions(text) {
+  if (!text) return null;
+  const out = {};
+  let hit = false;
+  ['experience', 'skill', 'education', 'potential'].forEach((k) => {
+    const re = new RegExp('"' + k + '"\\s*:\\s*\\{[\\s\\S]*?"score"\\s*:\\s*(\\d+)(?:[\\s\\S]*?"reason"\\s*:\\s*"([^"]*)")?', 'i');
+    const m = text.match(re);
+    if (m) {
+      out[k] = { score: clampScore(m[1]), reason: m[2] ? String(m[2]) : '' };
+      hit = true;
+    } else {
+      out[k] = { score: 50, reason: '' };
+    }
+  });
+  return hit ? out : null;
+}
+
+/** 宽松抽取字符串数组字段（如 concerns/highlights），失败返回空数组 */
+function looseExtractArray(text, key) {
+  if (!text) return [];
+  const m = text.match(new RegExp('"' + key + '"\\s*:\\s*\\[([\\s\\S]*?)\\]', 'i'));
+  if (!m) return [];
+  const items = m[1].match(/"([^"]*)"/g) || [];
+  return items.map((s) => s.replace(/^"|"$/g, '')).filter(Boolean).slice(0, 6);
 }
 
 /**
