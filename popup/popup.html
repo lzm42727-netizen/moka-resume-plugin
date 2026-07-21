@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Moka 智能筛选助手</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div class="container">
+        <!-- 标签页导航 -->
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="screening">🧑‍💼 筛选</button>
+            <button class="tab-btn" data-tab="settings">⚙️ 设置</button>
+            <button class="tab-btn" data-tab="about">ℹ️ 关于</button>
+        </div>
+
+        <!-- 筛选标签页 -->
+        <div class="tab-content active" id="screening-tab">
+            <h2>智能简历筛选</h2>
+            
+            <!-- 职位选择 -->
+            <div class="form-group">
+                <label>选择职位</label>
+                <select id="job-select">
+                    <option value="">加载中...</option>
+                </select>
+            </div>
+
+            <!-- 职位类型 -->
+            <div class="form-group">
+                <label>职位类型</label>
+                <div class="radio-group">
+                    <label><input type="radio" name="job-type" value="full-time" checked> 正式员工</label>
+                    <label><input type="radio" name="job-type" value="intern"> 实习生</label>
+                </div>
+            </div>
+
+            <!-- 权重配置 -->
+            <div class="form-group">
+                <label>评分权重配置</label>
+                <div class="weight-item">
+                    <label>学历要求权重</label>
+                    <input type="range" id="education-weight" min="0" max="100" value="30" class="weight-slider">
+                    <span id="education-weight-value">30%</span>
+                </div>
+                <div class="weight-item">
+                    <label>工作经验权重</label>
+                    <input type="range" id="experience-weight" min="0" max="100" value="30" class="weight-slider">
+                    <span id="experience-weight-value">30%</span>
+                </div>
+                <div class="weight-item">
+                    <label>技能匹配权重</label>
+                    <input type="range" id="skill-weight" min="0" max="100" value="40" class="weight-slider">
+                    <span id="skill-weight-value">40%</span>
+                </div>
+                <div class="weight-total">总计: <span id="weight-total">100</span>%</div>
+            </div>
+
+            <!-- 操作按钮 -->
+            <div class="button-group">
+                <button id="start-screening" class="btn btn-primary">🚀 开始筛选</button>
+                <button id="stop-screening" class="btn btn-secondary" disabled>⏹️ 停止</button>
+            </div>
+
+            <!-- 进度显示 -->
+            <div id="progress-container" class="progress-container hidden">
+                <div class="progress-info">
+                    <span id="progress-text">准备中...</span>
+                    <span id="progress-count">0/0</span>
+                </div>
+                <div class="progress-bar">
+                    <div id="progress-fill" class="progress-fill"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 设置标签页 -->
+        <div class="tab-content" id="settings-tab">
+            <h2>⚙️ 设置</h2>
+            
+            <!-- API 配置 -->
+            <div class="form-group">
+                <label>API 提供商</label>
+                <select id="api-provider">
+                    <option value="openai">OpenAI</option>
+                    <option value="claude">Claude</option>
+                    <option value="custom">自定义 API</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label>API Endpoint</label>
+                <input type="text" id="api-endpoint" placeholder="https://api.openai.com/v1/chat/completions" class="input-field">
+                <small>默认为 OpenAI 官方接口</small>
+            </div>
+
+            <div class="form-group">
+                <label>API Key</label>
+                <div class="api-key-container">
+                    <input type="password" id="api-key" placeholder="输入你的 API Key" class="input-field">
+                    <button id="toggle-api-key" class="btn-icon">👁️</button>
+                </div>
+                <small>你的 API Key 只保存在本地，不会上传到任何服务器</small>
+            </div>
+
+            <div class="form-group">
+                <label>模型名称</label>
+                <input type="text" id="model-name" placeholder="gpt-4o 或 claude-3-sonnet" class="input-field">
+                <small>输入你的 API 提供商支持的模型名称</small>
+            </div>
+
+            <!-- 高级配置 -->
+            <div class="form-group">
+                <label>⚡ 高级配置</label>
+                <div class="checkbox-group">
+                    <label><input type="checkbox" id="auto-save-scores"> 自动保存评分到备注</label>
+                </div>
+            </div>
+
+            <!-- 保存按钮 -->
+            <div class="button-group">
+                <button id="save-settings" class="btn btn-primary">💾 保存设置</button>
+                <button id="test-api" class="btn btn-secondary">🧪 测试 API</button>
+            </div>
+
+            <div id="test-result" class="test-result hidden"></div>
+        </div>
+
+        <!-- 关于标签页 -->
+        <div class="tab-content" id="about-tab">
+            <h2>ℹ️ 关于</h2>
+            <div class="about-content">
+                <p><strong>Moka 智能简历筛选助手</strong></p>
+                <p>版本：1.0.0</p>
+                <p>这是一个基于 AI 的 Moka 候选人智能筛选插件。</p>
+                
+                <h3>主要功能</h3>
+                <ul>
+                    <li>🔍 自动识别候选人信息</li>
+                    <li>📊 AI 智能匹配 JD 要求</li>
+                    <li>⭐ 实时显示匹配评分</li>
+                    <li>💡 提供个性化建议</li>
+                    <li>⚙️ 支持权重自定义</li>
+                </ul>
+
+                <h3>如何使用</h3>
+                <ol>
+                    <li>先在「设置」标签页配置 API Key</li>
+                    <li>打开 Moka 候选人管理页面</li>
+                    <li>选择要匹配的职位和权重</li>
+                    <li>点击「开始筛选」按钮</li>
+                    <li>等待 AI 评分完成</li>
+                </ol>
+
+                <h3>隐私保护</h3>
+                <p>✅ 所有数据只在本地处理和保存</p>
+                <p>✅ API Key 只保存在浏览器本地存储</p>
+                <p>✅ 不会上传个人信息到第三方服务器</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html>
