@@ -31,7 +31,9 @@ window.addEventListener('message', (event) => {
   if (data.type === 'search-request') {
     capturedRequest = data.payload;
   } else if (data.type === 'detail-request') {
+    const first = !capturedDetailRequest;
     capturedDetailRequest = data.payload;
+    if (first) { try { markDetailBannerReady(); } catch (e) {} } // 用户点开候选人后，横幅变为「已就绪」
   } else if (data.type === 'detail-data') {
     cacheDetailData(data.payload);
   }
@@ -799,8 +801,13 @@ async function performScreening(config) {
       await sleep(300);
     }
     if (!capturedDetailRequest) {
-      updatePanelStatus('提示：请先在 Moka 点开任意一位候选人详情一次，可显著提升实习经历识别（正在继续）...');
-      await sleep(1500);
+      // 常驻醒目横幅（点开候选人后自动消失），并给一段宽限时间等待用户操作
+      showDetailBanner();
+      for (let i = 0; i < 12 && !capturedDetailRequest; i++) {
+        if (!isScreening) break;
+        updatePanelStatus(`等待点开候选人以识别完整经历…（${12 - i}s，可直接等待或忽略）`);
+        await sleep(1000);
+      }
     }
 
     // 先解读 JD（缓存）：拿到统一的岗位画像，作为所有候选人的评分尺子
@@ -976,6 +983,13 @@ function ensurePanelStyles() {
     #moka-panel .mp-title { font-weight: 600; font-size: 14px; }
     #moka-panel .mp-close { cursor: pointer; border: none; background: none; font-size: 16px; color: #999; }
     #moka-panel .mp-status { padding: 8px 14px; font-size: 12px; color: #666; border-bottom: 1px solid #f0f0f0; }
+    #moka-panel .mp-banner { display: none; padding: 12px 14px; background: #fff7e6; border-bottom: 1px solid #ffe0a3;
+      color: #ad6800; font-size: 13px; line-height: 1.6; }
+    #moka-panel .mp-banner.show { display: block; }
+    #moka-panel .mp-banner .mp-banner-title { font-weight: 600; display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+    #moka-panel .mp-banner b { color: #d46b08; }
+    #moka-panel .mp-banner .mp-banner-ok { display: inline-flex; align-items: center; gap: 4px; margin-top: 8px;
+      color: #52c41a; font-weight: 600; }
     #moka-panel .mp-list { overflow-y: auto; padding: 6px; }
     #moka-panel .mp-row { display: flex; gap: 10px; padding: 10px; border-radius: 8px; cursor: pointer;
       border: 1px solid #f0f0f0; margin-bottom: 6px; align-items: flex-start; }
@@ -1011,6 +1025,7 @@ function renderPanelSkeleton() {
         <span class="mp-title">🧑‍💼 AI 筛选结果</span>
         <button class="mp-close" title="关闭">×</button>
       </div>
+      <div class="mp-banner"></div>
       <div class="mp-status"></div>
       <div class="mp-list"></div>
     `;
@@ -1019,6 +1034,8 @@ function renderPanelSkeleton() {
     makeDraggable(panel, panel.querySelector('.mp-header'));
   } else {
     panel.querySelector('.mp-list').innerHTML = '';
+    const banner = panel.querySelector('.mp-banner');
+    if (banner) { banner.classList.remove('show'); banner.innerHTML = ''; }
   }
 }
 
@@ -1172,6 +1189,29 @@ function sortRows() {
 function updatePanelStatus(text) {
   const panel = document.getElementById('moka-panel');
   if (panel) panel.querySelector('.mp-status').textContent = text;
+}
+
+/** 常驻横幅：提醒用户先点开一位候选人详情，以捕获详情接口（含 scene），显著提升经历识别 */
+function showDetailBanner() {
+  const panel = document.getElementById('moka-panel');
+  if (!panel) return;
+  const el = panel.querySelector('.mp-banner');
+  if (!el) return;
+  el.innerHTML = `
+    <div class="mp-banner-title">⚠️ 建议先点开一位候选人</div>
+    为准确识别<b>实习/项目经历</b>，请在 Moka 列表里<b>点击任意一位候选人的姓名</b>打开详情页一次
+    （无需操作，打开即可），然后回到这里。之后本轮所有候选人都会自动补全完整经历。
+  `;
+  el.classList.add('show');
+}
+
+function markDetailBannerReady() {
+  const panel = document.getElementById('moka-panel');
+  if (!panel) return;
+  const el = panel.querySelector('.mp-banner');
+  if (!el || !el.classList.contains('show')) return;
+  el.innerHTML = '<div class="mp-banner-ok">✓ 已捕获详情接口，正在自动补全完整经历…</div>';
+  setTimeout(() => { el.classList.remove('show'); el.innerHTML = ''; }, 2500);
 }
 
 function makeDraggable(el, handle) {
