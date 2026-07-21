@@ -14,12 +14,7 @@
   ],
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "Moka 智能筛选助手",
-    "default_icons": {
-      "16": "icons/icon-16.png",
-      "48": "icons/icon-48.png",
-      "128": "icons/icon-128.png"
-    }
+    "default_title": "Moka 智能筛选助手"
   },
   "background": {
     "service_worker": "background.js"
@@ -30,10 +25,5 @@
       "js": ["content.js"],
       "run_at": "document_end"
     }
-  ],
-  "icons": {
-    "16": "icons/icon-16.png",
-    "48": "icons/icon-48.png",
-    "128": "icons/icon-128.png"
-  }
+  ]
 }
