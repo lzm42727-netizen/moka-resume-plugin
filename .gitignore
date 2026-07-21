@@ -1,22 +1,9 @@
-# Dependencies
 node_modules/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-
-# Build
 dist/
-build/
-
-# Environment
+*.log
+.DS_Store
 .env
 .env.local
-
-# Chrome extension
+.idea/
+.vscode/
 *.zip
-*.crx
