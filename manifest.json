@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Moka 智能简历筛选助手",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "基于 AI 的 Moka 候选人筛选插件，自动匹配 JD 要求并给出评分建议",
   "permissions": [
     "storage",

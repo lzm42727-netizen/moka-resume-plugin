@@ -173,7 +173,6 @@ function readSettingsForm() {
     apiEndpoint: document.getElementById('api-endpoint').value.trim(),
     apiKey: document.getElementById('api-key').value,
     modelName: document.getElementById('model-name').value.trim(),
-    autoSaveScores: document.getElementById('auto-save-scores').checked,
     ...LOCAL_FORCED // 强制覆盖 provider/endpoint/model
   };
 }
@@ -280,7 +279,6 @@ async function loadSettings() {
       document.getElementById('api-endpoint').value = s.apiEndpoint || 'https://api.openai.com/v1/chat/completions';
       document.getElementById('api-key').value = s.apiKey || '';
       document.getElementById('model-name').value = s.modelName || 'gpt-4o';
-      document.getElementById('auto-save-scores').checked = s.autoSaveScores || false;
     }
   } catch (error) {
     console.error('加载设置失败:', error);

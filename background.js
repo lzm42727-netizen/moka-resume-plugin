@@ -18,8 +18,7 @@ const DEFAULT_SETTINGS = {
   apiProvider: 'openai',
   apiEndpoint: 'https://api.openai.com/v1/chat/completions',
   apiKey: '',
-  modelName: 'gpt-4o',
-  autoSaveScores: false
+  modelName: 'gpt-4o'
 };
 
 const MAX_RETRIES = 3;
