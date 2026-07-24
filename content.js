@@ -14,9 +14,10 @@ const DEFAULT_LIMIT = 30;
 const MAX_PAGES = 300; // 安全上限：300 页 × 30 ≈ 9000 人
 
 let isScreening = false;
-let results = []; // { app, profile, jobJD, score }
+let results = []; // { app, profile, jobJD, rawScore, waivedMustHaves, score, hard }
 let rowMap = new Map(); // app.id -> { row, scoreEl, infoEl }
 let sortTimer = null;
+let activeWeights = null; // 本轮归一化权重，供撤销必备项扣分后重算
 
 // 捕获到的 Moka 真实请求模板（来自 inject.js）
 let capturedRequest = null;        // 列表搜索请求
@@ -828,6 +829,7 @@ async function performScreening(config) {
     const total = apps.length;
     const hc = config.hardConditions || null;
     const weights = normalizeWeights(config.weights);
+    activeWeights = weights;
 
     // 若没捕获到详情接口模板，「主动投递/未授权」候选人的结构化经历可能补不全
     if (!capturedDetailRequest) {
@@ -879,7 +881,9 @@ async function performScreening(config) {
 
           setRowStage(item.app.id, 'score');
           const raw = await scoreViaBackground(item.profile, { jobType: config.jobType, jobSpec, jobJD });
-          item.score = composeFinalScore(raw, weights);
+          item.rawScore = raw;
+          item.waivedMustHaves = new Set();
+          item.score = composeFinalScore(raw, weights, item.waivedMustHaves);
         } finally {
           clearRowStage(item.app.id);
         }
@@ -941,6 +945,8 @@ function scoreViaBackground(profile, config) {
 const WEIGHT_KEYS = ['experience', 'skill', 'education', 'potential'];
 const DEFAULT_WEIGHTS = { experience: 40, skill: 30, education: 20, potential: 10 };
 const DIM_LABEL = { experience: '经验', skill: '技能', education: '教育', potential: '潜力' };
+const MUST_HAVE_PENALTY = 5;
+const MUST_HAVE_PENALTY_CAP = 20;
 
 function normalizeWeights(w) {
   let vals = WEIGHT_KEYS.map((k) => {
@@ -963,11 +969,15 @@ function levelFromScore(score) {
 
 /**
  * 本地按用户权重把分维度结果合成综合分。
- * 必备项未满足 → 柔性扣分（每项 -5，最多 -20），优先看权重高的维度已由加权体现。
+ * 必备项未满足 → 柔性扣分（每项 -5，最多 -20）；waived 集合内的项不扣。
  */
-function composeFinalScore(raw, weights) {
+function composeFinalScore(raw, weights, waivedMustHaves) {
   if (!raw || !raw.dimensions) {
-    return { score: 0, level: '错误', suggestions: ['⚠️ ' + (raw?.error || '评分失败')], dims: null, unmet: [] };
+    return {
+      score: 0, baseScore: 0, penalty: 0, level: '错误',
+      suggestions: ['⚠️ ' + (raw?.error || '评分失败')],
+      dims: null, unmet: [], waivedUnmet: []
+    };
   }
   const dims = raw.dimensions;
   let base = 0;
@@ -975,24 +985,42 @@ function composeFinalScore(raw, weights) {
     const s = dims[k] && typeof dims[k].score === 'number' ? dims[k].score : 50;
     base += s * (weights[k] || 0);
   }
+  const baseScore = Math.round(Math.max(0, Math.min(100, base)));
 
-  const unmet = (raw.mustHaveResults || []).filter((r) => !r.met);
-  const penalty = Math.min(unmet.length * 5, 20);
-  const score = Math.round(Math.max(0, Math.min(100, base - penalty)));
+  const waived = waivedMustHaves instanceof Set ? waivedMustHaves : new Set(waivedMustHaves || []);
+  const unmetAll = (raw.mustHaveResults || []).filter((r) => r && r.item && !r.met);
+  const unmet = unmetAll.filter((r) => !waived.has(r.item));
+  const waivedUnmet = unmetAll.filter((r) => waived.has(r.item));
+  const penalty = Math.min(unmet.length * MUST_HAVE_PENALTY, MUST_HAVE_PENALTY_CAP);
+  const score = Math.round(Math.max(0, Math.min(100, baseScore - penalty)));
 
-  // 建议：亮点 + 差距 + 未满足必备项
+  // 建议：亮点 + 差距（必备项扣分改由专用 UI 展示，避免重复）
   const suggestions = [];
   (raw.highlights || []).slice(0, 2).forEach((h) => suggestions.push('✓ ' + h));
   (raw.concerns || []).slice(0, 2).forEach((c) => suggestions.push('✕ ' + c));
-  if (unmet.length) suggestions.push('缺必备项: ' + unmet.map((u) => u.item).join('、'));
 
   return {
     score,
+    baseScore,
+    penalty,
     level: levelFromScore(score),
-    suggestions: suggestions.slice(0, 5),
+    suggestions: suggestions.slice(0, 4),
     dims,
-    unmet
+    unmet,
+    waivedUnmet
   };
+}
+
+/** 单人撤销 / 恢复某条必备项扣分后重算 */
+function setMustHaveWaived(item, mustHaveItem, waived) {
+  if (!item || !item.rawScore || !activeWeights) return;
+  if (!item.waivedMustHaves) item.waivedMustHaves = new Set();
+  if (waived) item.waivedMustHaves.add(mustHaveItem);
+  else item.waivedMustHaves.delete(mustHaveItem);
+  item.score = composeFinalScore(item.rawScore, activeWeights, item.waivedMustHaves);
+  updateRow(item);
+  scheduleSort();
+  updateHeaderCount();
 }
 
 function reportProgress(current, total, percentage, message) {
@@ -1009,10 +1037,7 @@ function colorFromScore(score) {
 }
 
 function ensurePanelStyles() {
-  if (document.getElementById('moka-panel-styles')) return;
-  const style = document.createElement('style');
-  style.id = 'moka-panel-styles';
-  style.textContent = `
+  const css = `
     #moka-panel { position: fixed; top: 70px; right: 20px; width: 380px; max-height: 80vh;
       background: #fff; border: 1px solid #e0e0e0; border-radius: 10px;
       box-shadow: 0 6px 24px rgba(0,0,0,0.18); z-index: 999999;
@@ -1052,6 +1077,22 @@ function ensurePanelStyles() {
     #moka-panel .mp-dim { background: #f0f5ff; color: #2f54eb; border: 1px solid #d6e4ff;
       border-radius: 4px; padding: 0 6px; font-size: 10px; line-height: 1.7; cursor: help; }
     #moka-panel .mp-sugg { color: #666; font-size: 11px; line-height: 1.5; margin-top: 2px; }
+    #moka-panel .mp-penalty { margin-top: 6px; padding: 6px 8px; background: #fff7e6;
+      border: 1px solid #ffe58f; border-radius: 6px; font-size: 11px; line-height: 1.5; }
+    #moka-panel .mp-penalty-sum { color: #ad6800; font-weight: 500; margin-bottom: 4px; }
+    #moka-panel .mp-penalty-sum b { color: #d46b08; }
+    #moka-panel .mp-penalty-list { display: flex; flex-direction: column; gap: 4px; }
+    #moka-panel .mp-penalty-row { display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 8px; color: #8c8c8c; }
+    #moka-panel .mp-penalty-row.active { color: #d46b08; }
+    #moka-panel .mp-penalty-row.waived { color: #8c8c8c; text-decoration: line-through; }
+    #moka-panel .mp-penalty-row .mp-penalty-text { flex: 1; min-width: 0; word-break: break-word; }
+    #moka-panel .mp-penalty-btn { flex: none; border: 1px solid #ffd591; background: #fff;
+      color: #d46b08; border-radius: 4px; padding: 0 6px; height: 20px; font-size: 11px;
+      cursor: pointer; line-height: 18px; }
+    #moka-panel .mp-penalty-btn:hover { background: #fff7e6; border-color: #ffa940; }
+    #moka-panel .mp-penalty-btn.restore { border-color: #d9d9d9; color: #595959; }
+    #moka-panel .mp-penalty-btn.restore:hover { border-color: #1890ff; color: #1890ff; background: #e6f7ff; }
     #moka-panel .mp-row.failed { background: #fff7f6; border-color: #ffd6d3; }
     #moka-panel .mp-row.failed:hover { background: #fff1ef; }
     #moka-panel .mp-row.failed.scoring { background: #fff7f6; border-color: #ffa39e; }
@@ -1059,7 +1100,13 @@ function ensurePanelStyles() {
     #moka-panel .mp-tag-fail { background: #fff1f0; color: #ff4d4f; border: 1px solid #ffccc7;
       border-radius: 4px; padding: 1px 6px; font-size: 10px; line-height: 1.6; }
   `;
-  document.head.appendChild(style);
+  let style = document.getElementById('moka-panel-styles');
+  if (!style) {
+    style = document.createElement('style');
+    style.id = 'moka-panel-styles';
+    document.head.appendChild(style);
+  }
+  style.textContent = css;
 }
 
 function renderPanelSkeleton() {
@@ -1222,8 +1269,8 @@ function updateRow(item) {
   refs.scoreEl.style.background = colorFromScore(s.score);
   refs.scoreEl.textContent = s.score;
 
-  // 移除旧的 level / dims / sugg，重建
-  refs.infoEl.querySelectorAll('.mp-level, .mp-dims, .mp-sugg').forEach((el) => el.remove());
+  // 移除旧的 level / dims / sugg / penalty，重建
+  refs.infoEl.querySelectorAll('.mp-level, .mp-dims, .mp-sugg, .mp-penalty').forEach((el) => el.remove());
 
   const level = document.createElement('div');
   level.className = 'mp-level';
@@ -1253,6 +1300,82 @@ function updateRow(item) {
     sugg.textContent = s.suggestions.slice(0, 3).map((x) => '• ' + x).join('  ');
     refs.infoEl.appendChild(sugg);
   }
+
+  // 必备项扣分摊开：公式 + 单条「不扣 / 恢复」
+  const unmet = s.unmet || [];
+  const waivedUnmet = s.waivedUnmet || [];
+  if (unmet.length || waivedUnmet.length || (s.penalty > 0)) {
+    const box = document.createElement('div');
+    box.className = 'mp-penalty';
+
+    const sum = document.createElement('div');
+    sum.className = 'mp-penalty-sum';
+    if (s.penalty > 0) {
+      sum.innerHTML = `四维加权 <b>${s.baseScore}</b> − 必备项扣 <b>${s.penalty}</b> = <b>${s.score}</b>`;
+    } else if (waivedUnmet.length) {
+      sum.innerHTML = `四维加权 <b>${s.baseScore}</b>＝综合分 <b>${s.score}</b>（已撤销必备项扣分）`;
+    } else {
+      sum.innerHTML = `四维加权 <b>${s.baseScore}</b>＝综合分 <b>${s.score}</b>`;
+    }
+    box.appendChild(sum);
+
+    const list = document.createElement('div');
+    list.className = 'mp-penalty-list';
+
+    unmet.forEach((r) => {
+      const row = document.createElement('div');
+      row.className = 'mp-penalty-row active';
+      const text = document.createElement('span');
+      text.className = 'mp-penalty-text';
+      const note = r.note ? `（${r.note}）` : '';
+      text.textContent = `缺「${r.item}」−${MUST_HAVE_PENALTY}${note}`;
+      if (r.note) text.title = r.note;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'mp-penalty-btn';
+      btn.textContent = '不扣';
+      btn.title = '撤销此项扣分（仅影响此人）';
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setMustHaveWaived(item, r.item, true);
+      });
+      row.appendChild(text);
+      row.appendChild(btn);
+      list.appendChild(row);
+    });
+
+    waivedUnmet.forEach((r) => {
+      const row = document.createElement('div');
+      row.className = 'mp-penalty-row waived';
+      const text = document.createElement('span');
+      text.className = 'mp-penalty-text';
+      text.textContent = `缺「${r.item}」（已不扣）`;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'mp-penalty-btn restore';
+      btn.textContent = '恢复';
+      btn.title = '恢复此项扣分';
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setMustHaveWaived(item, r.item, false);
+      });
+      row.appendChild(text);
+      row.appendChild(btn);
+      list.appendChild(row);
+    });
+
+    if (list.childNodes.length) box.appendChild(list);
+    if (unmet.length * MUST_HAVE_PENALTY > MUST_HAVE_PENALTY_CAP) {
+      const tip = document.createElement('div');
+      tip.style.cssText = 'margin-top:4px;color:#8c8c8c;font-size:10px;';
+      tip.textContent = `缺 ${unmet.length} 项，扣分封顶 −${MUST_HAVE_PENALTY_CAP}`;
+      box.appendChild(tip);
+    }
+    refs.infoEl.appendChild(box);
+  }
+
   updateHeaderCount();
 }
 
