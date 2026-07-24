@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Moka 智能简历筛选助手 · 使用说明</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --card: #ffffff;
+      --text: #1f2329;
+      --muted: #646a73;
+      --line: #e5e6eb;
+      --brand: #1677ff;
+      --brand-soft: #e8f3ff;
+      --ok: #00b42a;
+      --ok-soft: #e8ffea;
+      --warn: #ff7d00;
+      --warn-soft: #fff7e8;
+      --bad: #f53f3f;
+      --bad-soft: #ffece8;
+      --code: #0f172a;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(1200px 500px at 10% -10%, #dbeafe 0%, transparent 55%),
+        radial-gradient(900px 400px at 100% 0%, #e0f2fe 0%, transparent 50%),
+        var(--bg);
+      line-height: 1.7;
+    }
+
+    .wrap {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 40px 20px 80px;
+    }
+
+    header.hero {
+      background: linear-gradient(135deg, #0b1f3a 0%, #163a66 55%, #1d4f91 100%);
+      color: #fff;
+      border-radius: 18px;
+      padding: 36px 32px;
+      margin-bottom: 28px;
+      box-shadow: 0 16px 40px rgba(15, 40, 80, 0.18);
+    }
+    header.hero .badge {
+      display: inline-block;
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.14);
+      margin-bottom: 12px;
+    }
+    header.hero h1 {
+      margin: 0 0 10px;
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    header.hero p {
+      margin: 0;
+      color: rgba(255,255,255,0.82);
+      max-width: 640px;
+    }
+
+    nav.toc {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 18px 22px;
+      margin-bottom: 28px;
+    }
+    nav.toc h2 {
+      margin: 0 0 10px;
+      font-size: 15px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    nav.toc ol {
+      margin: 0;
+      padding-left: 20px;
+      columns: 2;
+      gap: 24px;
+    }
+    nav.toc a {
+      color: var(--brand);
+      text-decoration: none;
+    }
+    nav.toc a:hover { text-decoration: underline; }
+
+    section {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 26px 28px;
+      margin-bottom: 18px;
+    }
+    section h2 {
+      margin: 0 0 14px;
+      font-size: 20px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    section h3 {
+      margin: 22px 0 8px;
+      font-size: 16px;
+    }
+    section p, section li { color: var(--text); }
+    section ul, section ol { padding-left: 20px; }
+    section li { margin: 6px 0; }
+
+    .steps {
+      counter-reset: step;
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .steps > li {
+      position: relative;
+      padding: 14px 14px 14px 56px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      margin: 10px 0;
+      background: #fafbfc;
+    }
+    .steps > li::before {
+      counter-increment: step;
+      content: counter(step);
+      position: absolute;
+      left: 14px;
+      top: 14px;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--brand);
+      color: #fff;
+      font-weight: 700;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .steps strong { color: #0f172a; }
+
+    .callout {
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin: 12px 0;
+      border: 1px solid transparent;
+    }
+    .callout.info { background: var(--brand-soft); border-color: #b3d4ff; color: #0b4ea2; }
+    .callout.warn { background: var(--warn-soft); border-color: #ffd591; color: #ad4e00; }
+    .callout.ok { background: var(--ok-soft); border-color: #95de64; color: #237804; }
+    .callout.bad { background: var(--bad-soft); border-color: #ffccc7; color: #a8071a; }
+    .callout b { display: inline-block; margin-right: 4px; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 10px 0 4px;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #f2f3f5; font-weight: 600; }
+    code, .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+      background: #f1f5f9;
+      padding: 1px 6px;
+      border-radius: 4px;
+    }
+    .level {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #fff;
+    }
+    .l1 { background: #52c41a; }
+    .l2 { background: #1890ff; }
+    .l3 { background: #fa8c16; }
+    .l4 { background: #ff4d4f; }
+
+    details {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0 14px;
+      margin: 10px 0;
+      background: #fcfcfd;
+    }
+    details summary {
+      cursor: pointer;
+      padding: 12px 0;
+      font-weight: 600;
+      list-style: none;
+    }
+    details summary::-webkit-details-marker { display: none; }
+    details summary::before {
+      content: "▸ ";
+      color: var(--brand);
+    }
+    details[open] summary::before { content: "▾ "; }
+    details .body { padding: 0 0 14px; color: var(--muted); }
+    details .body p, details .body li { color: var(--muted); }
+
+    footer {
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 28px;
+    }
+
+    @media (max-width: 720px) {
+      header.hero { padding: 28px 20px; }
+      header.hero h1 { font-size: 22px; }
+      section { padding: 20px; }
+      nav.toc ol { columns: 1; }
+    }
+
+    @media print {
+      body { background: #fff; }
+      header.hero { box-shadow: none; }
+      nav.toc, .callout { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <div class="badge">Chrome 插件 · v1.3</div>
+      <h1>Moka 智能简历筛选助手</h1>
+      <p>在 Moka 候选人列表页自动拉取简历、按硬性条件标注、用 AI 做四维度评分，并给出推荐等级与理由。本页说明如何安装、日常使用，以及出错时如何排查。</p>
+    </header>
+
+    <nav class="toc">
+      <h2>目录</h2>
+      <ol>
+        <li><a href="#overview">插件能做什么</a></li>
+        <li><a href="#install">安装与加载</a></li>
+        <li><a href="#api">配置 API</a></li>
+        <li><a href="#usage">日常筛选流程</a></li>
+        <li><a href="#hard">硬性条件说明</a></li>
+        <li><a href="#score">评分与等级</a></li>
+        <li><a href="#panel">结果面板怎么看</a></li>
+        <li><a href="#tips">重要使用习惯</a></li>
+        <li><a href="#errors">出错后如何处理</a></li>
+        <li><a href="#privacy">隐私说明</a></li>
+      </ol>
+    </nav>
+
+    <section id="overview">
+      <h2>1. 插件能做什么</h2>
+      <ul>
+        <li><b>批量拉取候选人</b>：从当前 Moka 列表接口翻页拉取，可配置本轮人数（30 / 50 / 100 / 200 / 全部）。</li>
+        <li><b>详情补全经历</b>：列表里常缺实习/项目经历时，自动用详情接口补全（含 <code>practiceInfo</code> / <code>projectInfo</code>）。</li>
+        <li><b>硬性条件本地判定</b>：学历、院校、经验、性别、年龄、实习经验等不满足会标注并置底，但<strong>仍会 AI 打分</strong>。</li>
+        <li><b>JD 解读 + 四维度评分</b>：先解读 JD 给出建议权重，再按经验 / 技能 / 教育 / 潜力打分，本地加权得综合分。</li>
+        <li><b>结果浮层</b>：右侧面板按分数排序，展示等级、分维度分数与亮点/差距。</li>
+      </ul>
+      <div class="callout info">
+        <b>适用页面：</b>请在 <code>https://app.mokahr.com</code> 的<strong>候选人列表 / 初筛</strong>页面使用。其他页面可能无法拉取列表。
+      </div>
+    </section>
+
+    <section id="install">
+      <h2>2. 安装与加载</h2>
+      <ol class="steps">
+        <li>
+          <strong>拿到插件文件夹</strong><br />
+          本地路径一般为：<code class="mono">/Users/你的用户名/.../moka-resume-plugin</code>；或从 GitHub 克隆仓库后解压。
+        </li>
+        <li>
+          <strong>打开扩展管理页</strong><br />
+          地址栏输入 <code>chrome://extensions/</code>，打开右上角<strong>开发者模式</strong>。
+        </li>
+        <li>
+          <strong>加载已解压的扩展程序</strong><br />
+          选择整个 <code>moka-resume-plugin</code> 文件夹（需包含 <code>manifest.json</code>）。
+        </li>
+        <li>
+          <strong>更新后记得重新加载</strong><br />
+          代码有变更时，在扩展卡片上点「重新加载」，再<strong>刷新 Moka 页面</strong>（否则旧的 content script 仍在跑）。
+        </li>
+      </ol>
+      <div class="callout warn">
+        <b>注意：</b>更新权限后（如新增域名权限），Chrome 可能弹出授权提示，请点允许，否则自定义 API / OSS 简历抓取可能失败。
+      </div>
+    </section>
+
+    <section id="api">
+      <h2>3. 配置 API</h2>
+      <ol class="steps">
+        <li>打开 Moka 页面后，点击浏览器工具栏中的插件图标。</li>
+        <li>切换到 <b>⚙️ 设置</b> 标签页。</li>
+        <li>填写：
+          <ul>
+            <li><b>API 提供商</b>：OpenAI / Claude / 自定义（OpenAI 兼容接口选「自定义」）</li>
+            <li><b>API Endpoint</b>：如 <code>https://api.openai.com/v1</code> 或你们内网路由地址；插件会自动补全 <code>/chat/completions</code></li>
+            <li><b>API Key</b>：你的密钥</li>
+            <li><b>模型名称</b>：如 <code>gpt-4o</code>、或内网模型名</li>
+          </ul>
+        </li>
+        <li>先点 <b>🧪 测试 API</b>，成功后再点 <b>💾 保存设置</b>。</li>
+      </ol>
+      <div class="callout info">
+        <b>本地私有配置：</b>若你本地有 <code>config.local.js</code>（不入库），提供商 / Endpoint / 模型可能被锁定为内网值，只需填写 API Key 即可。
+      </div>
+    </section>
+
+    <section id="usage">
+      <h2>4. 日常筛选流程</h2>
+      <ol class="steps">
+        <li>
+          <strong>进入正确页面</strong><br />
+          登录 Moka → 打开目标职位的<strong>候选人列表</strong>（如「初筛」阶段），确认列表里已有候选人。
+        </li>
+        <li>
+          <strong>（强烈建议）先点开一位候选人</strong><br />
+          点击列表里<strong>任意一位候选人的姓名</strong>进入详情页一次，再回到列表。这样插件能捕获详情接口（含 <code>scene</code>），后续才能稳定补全实习/项目经历。
+        </li>
+        <li>
+          <strong>打开插件弹窗 →「🧑‍💼 筛选」</strong><br />
+          选择职位、职位类型（正式员工 / 实习生）、本轮筛选人数。
+        </li>
+        <li>
+          <strong>检查硬性条件与权重</strong><br />
+          硬性条件通常会按 JD 自动预填，可再改；权重可由 AI 按 JD 建议，也可手动拉滑块。
+        </li>
+        <li>
+          <strong>开始筛选</strong><br />
+          点「🚀 开始筛选」。页面右侧会出现结果浮层，显示进度、推荐人数与每位候选人的评分。
+        </li>
+        <li>
+          <strong>查看与决策</strong><br />
+          按综合分从高到低浏览；不满足硬性条件的人会靠后，但仍有 AI 评分可供参考。可随时点「⏹️ 停止」。
+        </li>
+      </ol>
+    </section>
+
+    <section id="hard">
+      <h2>5. 硬性条件说明</h2>
+      <table>
+        <thead>
+          <tr><th>条件</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>学历要求</td><td>本科 / 硕士 / 博士及以上；按最高学历比较。</td></tr>
+          <tr><td>院校要求</td><td>211 / 985 / 双一流 / 留学生 / QS 等，<b>多选时满足任一即可</b>。</td></tr>
+          <tr><td>经验要求</td><td>仅「正式员工」时显示；按工作年限区间判定。</td></tr>
+          <tr><td>实习经验</td><td>仅「实习生」时显示；要求有相关实习/项目等结构化经历。</td></tr>
+          <tr><td>性别要求</td><td>可选男 / 女 / 不限。</td></tr>
+          <tr><td>年龄要求</td><td>预设区间多选（如 20-25、25-30…），<b>满足任一即可</b>；不选则不限；仅当候选人有年龄字段时判定。</td></tr>
+        </tbody>
+      </table>
+      <div class="callout ok">
+        <b>设计原则：</b>硬性条件不通过 → 标注原因并排到后面，但<strong>不会跳过 AI 评分</strong>，方便你人工复核「边缘人选」。
+      </div>
+    </section>
+
+    <section id="score">
+      <h2>6. 评分与等级</h2>
+      <h3>四个评分维度</h3>
+      <ul>
+        <li><b>经验相关性</b>：工作/实习/项目与岗位职责的匹配度</li>
+        <li><b>技能匹配</b>：工具、能力、业务技能</li>
+        <li><b>专业与教育背景</b>：学历、院校、专业相关度</li>
+        <li><b>潜力 / 稳定性 / 加分项</b>：成长性、证书、亮点等</li>
+      </ul>
+      <p>综合分 = 各维度分数 × 你设定的权重（自动归一化）− 未满足必备项的柔性扣分（每项约 5 分，最多约 20 分）。</p>
+
+      <h3>推荐等级</h3>
+      <table>
+        <thead>
+          <tr><th>分数</th><th>等级</th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>≥ 75</td><td><span class="level l1">强烈推荐</span></td><td>高度符合，优先沟通</td></tr>
+          <tr><td>50 – 74</td><td><span class="level l2">值得推荐</span></td><td>基本符合，值得推进</td></tr>
+          <tr><td>35 – 49</td><td><span class="level l3">一般</span></td><td>部分符合，差距明显</td></tr>
+          <tr><td>&lt; 35</td><td><span class="level l4">不推荐</span></td><td>匹配度偏低</td></tr>
+        </tbody>
+      </table>
+      <p>面板标题里的「推荐 N」= 综合分 ≥ 50 的人数（值得推荐及以上）。</p>
+    </section>
+
+    <section id="panel">
+      <h2>7. 结果面板怎么看</h2>
+      <ul>
+        <li><b>标题</b>：评分进度 · 推荐人数，例如 <code>评分 30/30 · 推荐 8</code></li>
+        <li><b>状态行</b>：拉取中 / 解读 JD / 补全经历与评分 / 完成提示</li>
+        <li><b>橙黄横幅</b>（如出现）：提醒你先点开一位候选人详情，捕获详情接口后再继续</li>
+        <li><b>每位候选人卡片</b>：综合分、等级、四维度小分（悬停可看理由）、亮点 ✓ / 差距 ✕</li>
+        <li>列表按分数自动排序；不满足硬性条件者偏后</li>
+      </ul>
+    </section>
+
+    <section id="tips">
+      <h2>8. 重要使用习惯（减少误判）</h2>
+      <div class="callout warn">
+        <b>必做：</b>每轮筛选前，先在列表里<strong>点开任意一位候选人姓名</strong>进入详情一次。实习生、主动投递人选的实习经历往往只在详情里，不点开容易被判成「无相关经验」。
+      </div>
+      <ul>
+        <li>改完插件代码或设置后：扩展页「重新加载」→ 刷新 Moka 页 → 再筛选。</li>
+        <li>人数越多，耗时与 API 调用越多；首次建议用 30～50 位试跑。</li>
+        <li>同一人同一配置会走缓存，重复筛选可能不再重复扣费；若要强制重评，可微调权重或换模型后再跑。</li>
+        <li>正式员工与实习生的硬性条件栏会切换（经验 vs 实习经验），选错类型会影响判定。</li>
+      </ul>
+    </section>
+
+    <section id="errors">
+      <h2>9. 出错后如何处理</h2>
+      <p>遇到问题先看面板状态行 / 候选人卡片上的红色提示，再对照下面条目处理。</p>
+
+      <details open>
+        <summary>提示：请先点开一位候选人 / 橙黄横幅一直在</summary>
+        <div class="body">
+          <p><b>原因：</b>还没捕获到详情接口模板，经历补全不完整。</p>
+          <p><b>处理：</b></p>
+          <ol>
+            <li>在当前列表点击任意候选人姓名，进入详情页</li>
+            <li>等 1～2 秒后回到列表</li>
+            <li>横幅应变为「已捕获」并消失；若仍在，刷新页面后再点开一次并重跑筛选</li>
+          </ol>
+        </div>
+      </details>
+
+      <details>
+        <summary>未找到候选人 / 只筛到 30 人左右</summary>
+        <div class="body">
+          <p><b>原因：</b>不在列表页、列表未加载完，或本轮人数选得太小。</p>
+          <p><b>处理：</b>确认在候选人列表页并刷新；弹窗里把「本轮筛选人数」调大或选「全部」；先滚动/停留列表让 Moka 发出搜索请求后再开筛。</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>无法连接页面 / 请在 Moka 使用</summary>
+        <div class="body">
+          <p><b>处理：</b>确认标签页是 <code>app.mokahr.com</code>；刷新页面后重开插件；扩展管理页确认插件已启用并「重新加载」。</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>API 测试失败 / 401 / 未配置 API Key</summary>
+        <div class="body">
+          <p><b>处理：</b></p>
+          <ul>
+            <li>检查 Key 是否正确、是否过期</li>
+            <li>自定义地址是否可达；Endpoint 填到 <code>/v1</code> 即可（不必手写完整 chat 路径）</li>
+            <li>首次访问新域名时，在浏览器弹出的权限框里允许访问</li>
+            <li>公司内网模型需在 VPN / 办公网环境下测试</li>
+          </ul>
+        </div>
+      </details>
+
+      <details>
+        <summary>卡片显示「无法解析模型返回」</summary>
+        <div class="body">
+          <p><b>原因：</b>模型输出被截断，或先写了一大段分析文字再给 JSON。</p>
+          <p><b>处理：</b></p>
+          <ol>
+            <li>扩展重新加载后<strong>再筛一次</strong>（解析失败不会写入缓存，可重试）</li>
+            <li>换更稳的指令跟随模型，或提高服务端输出长度限制</li>
+            <li>若多人连续失败，在设置里换模型后重试</li>
+          </ol>
+          <p>当前版本已做截断修复与宽松抽取；个别模型仍可能偶发失败。</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>AI 说「缺乏实习经历」，但详情页明明有</summary>
+        <div class="body">
+          <p><b>原因：</b>列表数据里 <code>experienceInfo</code> 常为空，真实实习在 <code>practiceInfo</code>；若详情未补全，AI 只能看到自我评价。</p>
+          <p><b>处理：</b>筛选前先点开候选人详情；看状态是否出现「已补全经历 N 位」。若 N 长期为 0，按上面「橙黄横幅」步骤操作。</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>推荐人数和肉眼看到的不一致</summary>
+        <div class="body">
+          <p>「推荐」只统计综合分 ≥ 50 的人；面板可滚动，下方还有更低分人选。标题里的推荐数以分数为准，不是当前可视区域内的卡片数。</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>筛选很慢 / 中途卡住</summary>
+        <div class="body">
+          <ul>
+            <li>人数 × AI 调用量较大时属正常；可先减人数试跑</li>
+            <li>可点「停止」后缩小范围再筛</li>
+            <li>API 限流时插件会自动退避重试；持续失败请检查配额与网络</li>
+          </ul>
+        </div>
+      </details>
+
+      <details>
+        <summary>改了设置或代码不生效</summary>
+        <div class="body">
+          <ol>
+            <li><code>chrome://extensions</code> → 插件「重新加载」</li>
+            <li>硬刷新 Moka 页面（建议关闭旧标签再开）</li>
+            <li>重新打开插件弹窗确认设置已保存</li>
+          </ol>
+        </div>
+      </details>
+
+      <div class="callout bad" style="margin-top:16px">
+        <b>仍无法解决时：</b>记下报错原文、职位名称、是否点过详情、本轮人数、使用的模型名，连同复现步骤反馈给维护者；勿在反馈里粘贴完整 API Key 或带 Cookie 的 curl。
+      </div>
+    </section>
+
+    <section id="privacy">
+      <h2>10. 隐私说明</h2>
+      <ul>
+        <li>API Key 与设置保存在浏览器本地（<code>chrome.storage</code>）。</li>
+        <li>为完成评分，候选人画像会发送到<strong>你配置的 LLM 服务</strong>（OpenAI / Claude / 自建或内网路由）。</li>
+        <li>插件本身不另行收集使用分析；代码可本地审计。</li>
+        <li>对数据合规敏感时，请使用公司内网或本地部署模型，并遵守公司数据规范。</li>
+      </ul>
+    </section>
+
+    <footer>
+      Moka 智能简历筛选助手 · 使用说明 · 可直接用浏览器打开本 HTML 文件<br />
+      本地路径与仓库以你实际安装位置为准
+    </footer>
+  </div>
+</body>
+</html>

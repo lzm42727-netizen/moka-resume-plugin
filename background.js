@@ -8,6 +8,12 @@
 
 console.log('[Moka 筛选] Background service worker 已启动');
 
+// 本地私有配置（config.local.js，已 gitignore）：如存在则强制覆盖对应设置
+try { importScripts('config.local.js'); } catch (e) { /* 无本地配置时忽略 */ }
+function localForcedSettings() {
+  return (typeof self !== 'undefined' && self.MOKA_LOCAL_SETTINGS) ? self.MOKA_LOCAL_SETTINGS : {};
+}
+
 const DEFAULT_SETTINGS = {
   apiProvider: 'openai',
   apiEndpoint: 'https://api.openai.com/v1/chat/completions',
@@ -156,7 +162,7 @@ async function handleScoreCandidate({ profile, config }) {
  * 测试 API 连接
  */
 async function handleTestApi(inputSettings) {
-  const settings = { ...DEFAULT_SETTINGS, ...(inputSettings || {}) };
+  const settings = { ...DEFAULT_SETTINGS, ...(inputSettings || {}), ...localForcedSettings() };
   if (!settings.apiKey) {
     return { ok: false, error: '请输入 API Key' };
   }
@@ -690,7 +696,8 @@ async function safeText(response) {
 function getSettings() {
   return new Promise((resolve) => {
     chrome.storage.local.get('mokaSettings', (result) => {
-      resolve({ ...DEFAULT_SETTINGS, ...(result.mokaSettings || {}) });
+      // 本地私有配置优先级最高，强制覆盖 provider/endpoint/model
+      resolve({ ...DEFAULT_SETTINGS, ...(result.mokaSettings || {}), ...localForcedSettings() });
     });
   });
 }

@@ -7,3 +7,6 @@ dist/
 .idea/
 .vscode/
 *.zip
+
+# 本地私有配置（内网 endpoint/模型，不入库）
+config.local.js

@@ -405,14 +405,47 @@ function evaluateHardConditions(app, hc, jobType) {
     if (!hasExp) missing.push('缺相关实习经验');
   }
 
-  // 年龄（仅在候选人有年龄信息时判定）
+  // 年龄（多选区间 OR；仅在候选人有年龄信息时判定）
   const age = Number(app.age);
   if (Number.isFinite(age) && age > 0) {
-    if (hc.ageMin != null && age < hc.ageMin) missing.push(`年龄需≥${hc.ageMin}`);
-    if (hc.ageMax != null && age > hc.ageMax) missing.push(`年龄需≤${hc.ageMax}`);
+    const ranges = normalizeAgeRanges(hc);
+    if (ranges.length) {
+      const ok = ranges.some((r) => ageInRange(age, r));
+      if (!ok) missing.push(`年龄需 ${ranges.map((r) => r.label).join('/')}`);
+    }
   }
 
   return { passed: missing.length === 0, missing };
+}
+
+/** 兼容 ageRanges（多选）与旧版 ageMin/ageMax（单区间） */
+function normalizeAgeRanges(hc) {
+  if (!hc) return [];
+  if (Array.isArray(hc.ageRanges) && hc.ageRanges.length) {
+    return hc.ageRanges.filter((r) => r && (r.min != null || r.max != null)).map((r) => ({
+      min: r.min != null ? Number(r.min) : null,
+      max: r.max != null ? Number(r.max) : null,
+      label: r.label || formatAgeRangeLabel(r.min, r.max)
+    }));
+  }
+  if (hc.ageMin != null || hc.ageMax != null) {
+    return [{ min: hc.ageMin != null ? Number(hc.ageMin) : null, max: hc.ageMax != null ? Number(hc.ageMax) : null,
+      label: formatAgeRangeLabel(hc.ageMin, hc.ageMax) }];
+  }
+  return [];
+}
+
+function formatAgeRangeLabel(min, max) {
+  if (min != null && max == null) return `${min}+`;
+  if (min != null && max != null) return `${min}-${max}`;
+  if (min == null && max != null) return `≤${max}`;
+  return '不限';
+}
+
+function ageInRange(age, r) {
+  if (r.min != null && age < r.min) return false;
+  if (r.max != null && age > r.max) return false;
+  return true;
 }
 
 /** 生成给模型看的硬性条件文本 */
@@ -424,8 +457,9 @@ function buildHardText(hc, jobType) {
   if (hc.exp) parts.push(`经验：${hc.exp === 'fresh' ? '在校/应届' : hc.exp + '年'}`);
   if (hc.gender) parts.push(`性别：${hc.gender}`);
   if (hc.internship === 'required' && jobType === 'intern') parts.push('需具备相关实习经验');
-  if (hc.ageMin != null || hc.ageMax != null) {
-    parts.push(`年龄：${hc.ageMin != null ? hc.ageMin : '不限'}~${hc.ageMax != null ? hc.ageMax : '不限'}岁`);
+  const ageRanges = normalizeAgeRanges(hc);
+  if (ageRanges.length) {
+    parts.push(`年龄：${ageRanges.map((r) => r.label).join('/')}（任一）`);
   }
   return parts.join('；');
 }
@@ -834,15 +868,21 @@ async function performScreening(config) {
         if (index >= total) break;
         const item = results[index];
 
-        // 列表接口的经历字段可能缺失，按需调用详情接口补全，避免 AI「看不到经历」而误判
-        await enrichCandidate(item.app);
-        if (hasAnyExperience(item.app) || item.app.__resumeText) enrichedExp++;
-        item.profile = buildCandidateProfile(item.app);
-        item.hard = evaluateHardConditions(item.app, hc, config.jobType);
-        applyHardToRow(item);
+        try {
+          // 列表接口的经历字段可能缺失，按需调用详情接口补全，避免 AI「看不到经历」而误判
+          setRowStage(item.app.id, 'enrich');
+          await enrichCandidate(item.app);
+          if (hasAnyExperience(item.app) || item.app.__resumeText) enrichedExp++;
+          item.profile = buildCandidateProfile(item.app);
+          item.hard = evaluateHardConditions(item.app, hc, config.jobType);
+          applyHardToRow(item);
 
-        const raw = await scoreViaBackground(item.profile, { jobType: config.jobType, jobSpec, jobJD });
-        item.score = composeFinalScore(raw, weights);
+          setRowStage(item.app.id, 'score');
+          const raw = await scoreViaBackground(item.profile, { jobType: config.jobType, jobSpec, jobJD });
+          item.score = composeFinalScore(raw, weights);
+        } finally {
+          clearRowStage(item.app.id);
+        }
         completed++;
         updateRow(item);
         scheduleSort();
@@ -992,14 +1032,21 @@ function ensurePanelStyles() {
       color: #52c41a; font-weight: 600; }
     #moka-panel .mp-list { overflow-y: auto; padding: 6px; }
     #moka-panel .mp-row { display: flex; gap: 10px; padding: 10px; border-radius: 8px; cursor: pointer;
-      border: 1px solid #f0f0f0; margin-bottom: 6px; align-items: flex-start; }
+      border: 1px solid #f0f0f0; margin-bottom: 6px; align-items: flex-start; position: relative; }
     #moka-panel .mp-row:hover { background: #f6faff; border-color: #cfe6ff; }
+    #moka-panel .mp-row.scoring { border-color: #91d5ff; background: #f6fbff; padding-bottom: 14px; }
     #moka-panel .mp-score { flex: none; width: 46px; height: 46px; border-radius: 8px; color: #fff;
       display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 700; }
     #moka-panel .mp-score.pending { background: #d9d9d9; font-size: 12px; }
     #moka-panel .mp-info { flex: 1; min-width: 0; }
     #moka-panel .mp-name { font-weight: 600; }
     #moka-panel .mp-meta { color: #888; font-size: 11px; margin: 2px 0 4px; }
+    #moka-panel .mp-stage { font-size: 11px; font-weight: 500; color: #1890ff; margin: 2px 0 0; }
+    #moka-panel .mp-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+      background: #e8e8e8; border-radius: 0 0 7px 7px; overflow: hidden; }
+    #moka-panel .mp-bar-fill { display: block; height: 100%; width: 0;
+      background: linear-gradient(90deg, #1890ff, #69c0ff);
+      border-radius: 0 2px 2px 0; transition: width 0.35s ease; }
     #moka-panel .mp-level { font-size: 11px; font-weight: 600; }
     #moka-panel .mp-dims { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0; }
     #moka-panel .mp-dim { background: #f0f5ff; color: #2f54eb; border: 1px solid #d6e4ff;
@@ -1007,6 +1054,7 @@ function ensurePanelStyles() {
     #moka-panel .mp-sugg { color: #666; font-size: 11px; line-height: 1.5; margin-top: 2px; }
     #moka-panel .mp-row.failed { background: #fff7f6; border-color: #ffd6d3; }
     #moka-panel .mp-row.failed:hover { background: #fff1ef; }
+    #moka-panel .mp-row.failed.scoring { background: #fff7f6; border-color: #ffa39e; }
     #moka-panel .mp-tags { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
     #moka-panel .mp-tag-fail { background: #fff1f0; color: #ff4d4f; border: 1px solid #ffccc7;
       border-radius: 4px; padding: 1px 6px; font-size: 10px; line-height: 1.6; }
@@ -1037,6 +1085,57 @@ function renderPanelSkeleton() {
     const banner = panel.querySelector('.mp-banner');
     if (banner) { banner.classList.remove('show'); banner.innerHTML = ''; }
   }
+}
+
+/** 单人识别阶段：补全经历 → AI 评分（阶段跳变，非假精确百分比） */
+const ROW_STAGES = {
+  enrich: { text: '① 补全经历…', pct: 45 },
+  score: { text: '② AI 评分中…', pct: 80 }
+};
+
+function setRowStage(appId, stageKey) {
+  const refs = rowMap.get(appId);
+  const stage = ROW_STAGES[stageKey];
+  if (!refs || !stage) return;
+
+  refs.row.classList.add('scoring');
+
+  let stageEl = refs.infoEl.querySelector('.mp-stage');
+  if (!stageEl) {
+    stageEl = document.createElement('div');
+    stageEl.className = 'mp-stage';
+    const meta = refs.infoEl.querySelector('.mp-meta');
+    if (meta && meta.nextSibling) refs.infoEl.insertBefore(stageEl, meta.nextSibling);
+    else if (meta) meta.after(stageEl);
+    else refs.infoEl.appendChild(stageEl);
+  }
+  stageEl.textContent = stage.text;
+
+  let bar = refs.row.querySelector('.mp-bar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.className = 'mp-bar';
+    const fill = document.createElement('i');
+    fill.className = 'mp-bar-fill';
+    bar.appendChild(fill);
+    refs.row.appendChild(bar);
+  }
+  // 先置 0 再下一帧跳到目标，让 transition 可见
+  const fill = bar.querySelector('.mp-bar-fill');
+  if (fill.style.width === '0%' || !fill.style.width) {
+    fill.style.width = '0%';
+    requestAnimationFrame(() => { fill.style.width = stage.pct + '%'; });
+  } else {
+    fill.style.width = stage.pct + '%';
+  }
+}
+
+function clearRowStage(appId) {
+  const refs = rowMap.get(appId);
+  if (!refs) return;
+  refs.row.classList.remove('scoring');
+  refs.infoEl.querySelectorAll('.mp-stage').forEach((el) => el.remove());
+  refs.row.querySelectorAll('.mp-bar').forEach((el) => el.remove());
 }
 
 function buildRows() {
@@ -1116,6 +1215,8 @@ function updateRow(item) {
   if (!refs) return;
   const s = item.score;
   if (!s) return;
+
+  clearRowStage(item.app.id);
 
   refs.scoreEl.className = 'mp-score';
   refs.scoreEl.style.background = colorFromScore(s.score);

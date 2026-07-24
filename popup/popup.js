@@ -11,27 +11,36 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   });
 });
 
+/** 解析年龄区间字符串 → { min, max, label }；50+ → max 为 null */
+function parseAgeRange(val) {
+  if (!val) return null;
+  if (val.endsWith('+')) {
+    const min = parseInt(val, 10);
+    return Number.isFinite(min) ? { min, max: null, label: val } : null;
+  }
+  if (val.includes('-')) {
+    const [a, b] = val.split('-').map((n) => parseInt(n, 10));
+    const min = Number.isFinite(a) ? a : null;
+    const max = Number.isFinite(b) ? b : null;
+    if (min == null && max == null) return null;
+    return { min, max, label: val };
+  }
+  return null;
+}
+
 // 读取硬性条件表单
 function readHardConditions() {
   const schools = Array.from(document.querySelectorAll('#cond-school input[type="checkbox"]:checked')).map((c) => c.value);
-  const ageVal = document.querySelector('input[name="cond-age"]:checked')?.value || '';
-  let ageMin = null;
-  let ageMax = null;
-  if (ageVal.endsWith('+')) {
-    ageMin = parseInt(ageVal, 10);
-  } else if (ageVal.includes('-')) {
-    const [a, b] = ageVal.split('-').map((n) => parseInt(n, 10));
-    ageMin = Number.isFinite(a) ? a : null;
-    ageMax = Number.isFinite(b) ? b : null;
-  }
+  const ageRanges = Array.from(document.querySelectorAll('#cond-age input[type="checkbox"]:checked'))
+    .map((c) => parseAgeRange(c.value))
+    .filter(Boolean);
   return {
     degree: document.getElementById('cond-degree').value,
     schools,
     exp: document.getElementById('cond-exp').value,
     gender: document.getElementById('cond-gender').value,
     internship: document.getElementById('cond-internship').value,
-    ageMin,
-    ageMax
+    ageRanges
   };
 }
 
@@ -142,13 +151,30 @@ document.getElementById('toggle-api-key').addEventListener('click', function () 
   }
 });
 
+// 本地私有配置（config.local.js，已 gitignore）：如存在则强制/锁定这三项
+const LOCAL_FORCED = (typeof window !== 'undefined' && window.MOKA_LOCAL_SETTINGS) ? window.MOKA_LOCAL_SETTINGS : {};
+
+function applyLocalForced() {
+  if (!LOCAL_FORCED || !Object.keys(LOCAL_FORCED).length) return;
+  const map = { apiProvider: 'api-provider', apiEndpoint: 'api-endpoint', modelName: 'model-name' };
+  Object.entries(map).forEach(([k, id]) => {
+    if (LOCAL_FORCED[k] == null) return;
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.value = LOCAL_FORCED[k];
+    el.disabled = true;
+    el.title = '已由本地私有配置锁定';
+  });
+}
+
 function readSettingsForm() {
   return {
     apiProvider: document.getElementById('api-provider').value,
     apiEndpoint: document.getElementById('api-endpoint').value.trim(),
     apiKey: document.getElementById('api-key').value,
     modelName: document.getElementById('model-name').value.trim(),
-    autoSaveScores: document.getElementById('auto-save-scores').checked
+    autoSaveScores: document.getElementById('auto-save-scores').checked,
+    ...LOCAL_FORCED // 强制覆盖 provider/endpoint/model
   };
 }
 
@@ -259,6 +285,7 @@ async function loadSettings() {
   } catch (error) {
     console.error('加载设置失败:', error);
   }
+  applyLocalForced(); // 本地私有配置：覆盖并锁定 provider/endpoint/model
 }
 
 // 获取当前活动标签页
