@@ -12,6 +12,23 @@ const SEARCH_API_FALLBACK = '/api/outer/ats-candidate-search-left/candidate/sear
 const CONCURRENCY = 4;
 const DEFAULT_LIMIT = 30;
 const MAX_PAGES = 300; // 安全上限：300 页 × 30 ≈ 9000 人
+const MOKA_TIMEOUT_MS = 25000;
+
+/** fetch + 超时 */
+async function fetchWithTimeout(url, options = {}, timeoutMs = MOKA_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error && (error.name === 'AbortError' || controller.signal.aborted)) {
+      throw new Error(`请求超时（${Math.round(timeoutMs / 1000)}s）`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 let isScreening = false;
 let results = []; // { app, profile, jobJD, rawScore, waivedMustHaves, score, hard }
@@ -206,7 +223,7 @@ async function fetchAllApplications(onProgress, maxCount = 0) {
 
     const body = { ...baseBody, limit, offsetInfo };
 
-    const resp = await fetch(url, { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) });
+    const resp = await fetchWithTimeout(url, { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) });
     if (!resp.ok) throw new Error(`候选人接口错误: ${resp.status}`);
 
     const json = await resp.json();
@@ -268,7 +285,7 @@ async function fetchOneApplication() {
     baseBody = { ...baseBody, pipelineId: Number(ctx.pipelineId) || ctx.pipelineId, jobIds: ctx.jobIds };
   }
   const body = { ...baseBody, limit: 1, offsetInfo: { includeThis: false } };
-  const resp = await fetch(url, { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) });
+  const resp = await fetchWithTimeout(url, { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) });
   if (!resp.ok) return null;
   const json = await resp.json();
   return json.data?.applications?.[0] || null;
@@ -637,7 +654,7 @@ async function enrichCandidate(app) {
   // 2) 缓存没有、且列表未带任何经历时，用探测到的详情模板重放
   if (!json && !hasAnyExperience(app) && capturedDetailRequest) {
     try {
-      const resp = await fetch(buildDetailUrl(app), {
+      const resp = await fetchWithTimeout(buildDetailUrl(app), {
         method: (capturedDetailRequest.method || 'GET'),
         credentials: 'include',
         headers: detailHeaders()
@@ -884,6 +901,14 @@ async function performScreening(config) {
           item.rawScore = raw;
           item.waivedMustHaves = new Set();
           item.score = composeFinalScore(raw, weights, item.waivedMustHaves);
+        } catch (err) {
+          console.error('[Moka 筛选] 候选人处理失败:', item.app && item.app.name, err);
+          item.rawScore = {
+            dimensions: null,
+            error: (err && err.message) ? err.message : '处理失败'
+          };
+          item.waivedMustHaves = new Set();
+          item.score = composeFinalScore(item.rawScore, weights, item.waivedMustHaves);
         } finally {
           clearRowStage(item.app.id);
         }

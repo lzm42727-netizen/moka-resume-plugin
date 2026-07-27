@@ -23,11 +23,38 @@ const DEFAULT_SETTINGS = {
 
 const MAX_RETRIES = 3;
 const BASE_BACKOFF_MS = 1000;
+const LLM_TIMEOUT_MS = 90000;
+const RESUME_TIMEOUT_MS = 20000;
+const CACHE_LIMIT = 500;
 
 // 评分缓存：同一候选人 + JD画像 + 配置只调用一次 API，避免重复扣费
 const scoreCache = new Map();
 // JD 解读缓存：同一 JD 只解读一次
 const jdCache = new Map();
+
+function setBoundedCache(map, key, value, limit = CACHE_LIMIT) {
+  if (map.has(key)) map.delete(key);
+  map.set(key, value);
+  while (map.size > limit) {
+    map.delete(map.keys().next().value);
+  }
+}
+
+/** fetch + 超时；超时抛出带中文说明的 Error */
+async function fetchWithTimeout(url, options = {}, timeoutMs = LLM_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error && (error.name === 'AbortError' || controller.signal.aborted)) {
+      throw new Error(`请求超时（${Math.round(timeoutMs / 1000)}s）`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.log('[Moka 筛选] 后台收到消息:', request.action);
@@ -79,14 +106,13 @@ async function handleFetchResume(url) {
   if (!url) throw new Error('缺少简历链接');
   if (resumeTextCache.has(url)) return resumeTextCache.get(url);
 
-  const resp = await fetch(url, { method: 'GET', credentials: 'omit' });
+  const resp = await fetchWithTimeout(url, { method: 'GET', credentials: 'omit' }, RESUME_TIMEOUT_MS);
   if (!resp.ok) throw new Error(`简历抓取失败 HTTP ${resp.status}`);
   const raw = await resp.text();
   const text = htmlToText(raw);
   const clipped = text.length > 12000 ? text.slice(0, 12000) : text;
 
-  resumeTextCache.set(url, clipped);
-  if (resumeTextCache.size > 500) resumeTextCache.delete(resumeTextCache.keys().next().value);
+  setBoundedCache(resumeTextCache, url, clipped);
   return clipped;
 }
 
@@ -121,7 +147,7 @@ async function handleAnalyzeJob({ jobJD, jobType }) {
   const content = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: 2000, temperature: 0 });
   const spec = parseJDAnalysis(content);
 
-  jdCache.set(cacheKey, spec);
+  setBoundedCache(jdCache, cacheKey, spec);
   return spec;
 }
 
@@ -153,7 +179,7 @@ async function handleScoreCandidate({ profile, config }) {
   const raw = parseDimensionResponse(content);
 
   // 解析失败不写缓存，避免把错误结果固化，下一轮可重试
-  if (!raw.parseError) scoreCache.set(cacheKey, raw);
+  if (!raw.parseError) setBoundedCache(scoreCache, cacheKey, raw);
   return raw;
 }
 
@@ -184,11 +210,11 @@ async function callLLM(settings, systemPrompt, userPrompt, opts = {}) {
   let lastError;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const response = await fetch(url, {
+      const response = await fetchWithTimeout(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(body)
-      });
+      }, LLM_TIMEOUT_MS);
 
       if (response.ok) {
         const data = await response.json();
@@ -677,7 +703,12 @@ function levelFromScore(score) {
 }
 
 function isRetriableNetworkError(error) {
-  return error instanceof TypeError; // fetch 网络失败通常是 TypeError
+  if (!error) return false;
+  if (error instanceof TypeError) return true; // fetch 网络失败通常是 TypeError
+  const msg = String(error.message || '');
+  // 超时后允许有限次重试（瞬时卡顿）
+  if (error.name === 'AbortError' || /请求超时/.test(msg)) return true;
+  return false;
 }
 
 function sleep(ms) {
