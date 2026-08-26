@@ -10,21 +10,26 @@
     <div class="container">
         <!-- 标签页导航 -->
         <div class="tabs">
-            <button class="tab-btn active" data-tab="screening">🧑‍💼 筛选</button>
-            <button class="tab-btn" data-tab="settings">⚙️ 设置</button>
-            <button class="tab-btn" data-tab="about">ℹ️ 关于</button>
+            <button class="tab-btn active" data-tab="screening">配置</button>
+            <button class="tab-btn" data-tab="results">结果</button>
+            <button class="tab-btn" data-tab="settings">设置</button>
+            <button class="tab-btn" data-tab="about">关于</button>
         </div>
 
         <!-- 筛选标签页 -->
         <div class="tab-content active" id="screening-tab">
             <section class="panel">
-                <h3 class="panel-title"><span class="panel-icon">📋</span>职位信息</h3>
+                <h3 class="panel-title">
+                    <span class="panel-icon">📋</span>职位信息
+                    <span class="panel-title-paren">（<button type="button" id="reload-panel" class="btn-link" title="刷新侧栏，无需关闭再打开">点击刷新</button>）</span>
+                </h3>
 
                 <div class="form-group">
                     <label>选择职位</label>
                     <select id="job-select">
                         <option value="">加载中...</option>
                     </select>
+                    <div id="preset-note" class="cond-hint cond-hint-flush">同岗位的硬性要求和权重会自动保存，下次打开直接恢复</div>
                 </div>
 
                 <div class="form-group">
@@ -47,12 +52,13 @@
                 </div>
             </section>
 
-            <!-- 硬性条件（自动从 JD 预填，可修改；命中问题会标注置底，但仍会 AI 打分） -->
+            <!-- 硬性条件：点「按 JD 预填」才识别；未过按条扣综合分，自增项可忽略加回 -->
             <section class="panel">
                 <h3 class="panel-title">
                     <span class="panel-icon">🔒</span>硬性要求
-                    <span id="autofill-note" class="panel-tip">（将根据当前 JD 自动预填，可修改）</span>
+                    <span class="panel-title-paren">（<button type="button" id="autofill-hard" class="btn-link">点击按 JD 预填</button>）</span>
                 </h3>
+                <div id="autofill-note" class="cond-hint cond-hint-flush"></div>
 
                 <div class="cond-row">
                     <span class="cond-label">学历要求</span>
@@ -117,14 +123,33 @@
                     </div>
                 </div>
                 <div class="cond-hint">年龄多选：满足任一区间即算符合；不选则不限；仅在有年龄信息时判定</div>
+
+                <div class="cond-row cond-row-wrap">
+                    <span class="cond-label">其他必备</span>
+                    <div class="chip-editor">
+                        <div id="must-chips" class="chip-list"></div>
+                        <input id="must-input" class="chip-input" placeholder="最多 6 项，如 Java，回车添加">
+                    </div>
+                </div>
+                <div class="cond-hint">最多 6 项。可自增；AI 判定是否满足。未满足每条 −5（最多 −20）。点「忽略」加回该条分数。学历等结构化项不能忽略</div>
+
+                <div class="cond-row cond-row-wrap">
+                    <span class="cond-label">简历关键词</span>
+                    <div class="chip-editor">
+                        <div id="keyword-chips" class="chip-list"></div>
+                        <input id="keyword-input" class="chip-input" placeholder="最多 6 项，如 SEO、Excel，回车添加">
+                    </div>
+                </div>
+                <div class="cond-hint">最多 6 项。软性标注：未命中会在结果里标黄，不置底、不扣分</div>
             </section>
 
             <!-- 评分维度权重（AI 读 JD 给建议值，可自行拉动） -->
             <section class="panel panel-last">
                 <h3 class="panel-title">
                     <span class="panel-icon">⚖️</span>评分权重
-                    <span id="weight-note" class="panel-tip">（AI 将按 JD 给建议值，可自行调整）</span>
+                    <span class="panel-title-paren">（可手动调整，或点击<button type="button" id="suggest-weights" class="btn-link">按 JD 生成建议权重</button>）</span>
                 </h3>
+                <div id="weight-note" class="cond-hint cond-hint-flush"></div>
                 <div id="jd-understanding" class="jd-understanding hidden"></div>
 
                 <div class="weight-item">
@@ -145,23 +170,20 @@
                 </div>
                 <div class="cond-hint cond-hint-flush">按各维度占比加权得综合分；比例会自动归一化，无需凑满 100%</div>
             </section>
+        </div>
 
-            <!-- 操作按钮 -->
-            <div class="button-group">
-                <button id="start-screening" class="btn btn-primary">🚀 开始筛选</button>
-                <button id="stop-screening" class="btn btn-secondary" disabled>⏹️ 停止</button>
+        <!-- 结果标签页 -->
+        <div class="tab-content" id="results-tab">
+            <div id="result-banner" class="mp-banner"></div>
+            <div id="result-status" class="mp-status">尚未开始筛选。配好条件后点下方「开始筛选」，进度和名单会出现在这里。</div>
+            <div class="mp-filters">
+                <button type="button" class="mp-filter on" data-filter="all">全部</button>
+                <button type="button" class="mp-filter" data-filter="recommend">推荐</button>
+                <button type="button" class="mp-filter" data-filter="hardfail">硬筛未过</button>
+                <button type="button" class="mp-filter" data-filter="error">评分失败</button>
+                <input id="result-search" class="mp-search" type="search" placeholder="搜索姓名">
             </div>
-
-            <!-- 进度显示 -->
-            <div id="progress-container" class="progress-container hidden">
-                <div class="progress-info">
-                    <span id="progress-text">准备中...</span>
-                    <span id="progress-count">0/0</span>
-                </div>
-                <div class="progress-bar">
-                    <div id="progress-fill" class="progress-fill"></div>
-                </div>
-            </div>
+            <div id="result-list" class="mp-list"></div>
         </div>
 
         <!-- 设置标签页 -->
@@ -214,14 +236,14 @@
                 <h3 class="panel-title"><span class="panel-icon">ℹ️</span>关于</h3>
                 <div class="about-content">
                     <p class="about-name"><strong>Moka 智能简历筛选助手</strong></p>
-                    <p class="about-version">版本：1.4.1</p>
+                    <p class="about-version">版本：1.5.10</p>
                     <p>这是一个基于 AI 的 Moka 候选人智能筛选插件。</p>
 
                     <h4>主要功能</h4>
                     <ul class="feature-list">
                         <li>自动识别候选人信息</li>
                         <li>AI 智能匹配 JD 要求</li>
-                        <li>实时显示匹配评分</li>
+                        <li>侧栏实时显示匹配评分</li>
                         <li>提供个性化建议</li>
                         <li>支持权重自定义</li>
                     </ul>
@@ -230,9 +252,9 @@
                     <ol>
                         <li>先在「设置」标签页配置 API Key</li>
                         <li>打开 Moka 候选人管理页面</li>
-                        <li>选择要匹配的职位和权重</li>
-                        <li>点击「开始筛选」按钮</li>
-                        <li>等待 AI 评分完成</li>
+                        <li>点扩展图标打开右侧栏，选择职位和权重</li>
+                        <li>点击「开始筛选」</li>
+                        <li>在「结果」标签页查看评分，点卡片打开候选人</li>
                     </ol>
 
                     <h4>隐私保护</h4>
@@ -244,8 +266,29 @@
                 </div>
             </section>
         </div>
-    </div>
 
+    <div class="dock">
+        <div class="button-group">
+            <button id="start-screening" class="btn btn-primary">开始筛选</button>
+            <button id="stop-screening" class="btn btn-secondary" disabled>停止</button>
+        </div>
+        <div class="button-group button-group-tight">
+            <button id="show-last-results" class="btn btn-secondary" disabled>查看上次结果</button>
+            <button id="export-results" class="btn btn-secondary" disabled>导出 CSV</button>
+        </div>
+        <div id="progress-container" class="progress-container hidden">
+            <div class="progress-info">
+                <span id="progress-text">准备中...</span>
+                <span id="progress-count">0/0</span>
+            </div>
+            <div class="progress-bar">
+                <div id="progress-fill" class="progress-fill"></div>
+            </div>
+        </div>
+    </div>
+</div>
+    <script src="../lib/match.js"></script>
+    <script src="../lib/persist.js"></script>
     <script src="../config.local.js"></script>
     <script src="popup.js"></script>
 </body>

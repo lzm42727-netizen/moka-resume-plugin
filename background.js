@@ -8,8 +8,19 @@
 
 console.log('[Moka 筛选] Background service worker 已启动');
 
+function enableSidePanelOnActionClick() {
+  try {
+    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+  } catch (e) { /* Chrome < 116 无此 API */ }
+}
+enableSidePanelOnActionClick();
+chrome.runtime.onInstalled.addListener(enableSidePanelOnActionClick);
+chrome.runtime.onStartup.addListener(enableSidePanelOnActionClick);
+
 // 本地私有配置（config.local.js，已 gitignore）：如存在则强制覆盖对应设置
 try { importScripts('config.local.js'); } catch (e) { /* 无本地配置时忽略 */ }
+importScripts('lib/score.js');
+importScripts('lib/persist.js');
 function localForcedSettings() {
   return (typeof self !== 'undefined' && self.MOKA_LOCAL_SETTINGS) ? self.MOKA_LOCAL_SETTINGS : {};
 }
@@ -27,10 +38,64 @@ const LLM_TIMEOUT_MS = 90000;
 const RESUME_TIMEOUT_MS = 20000;
 const CACHE_LIMIT = 500;
 
-// 评分缓存：同一候选人 + JD画像 + 配置只调用一次 API，避免重复扣费
+// 评分 / JD 缓存：内存 Map + chrome.storage.local，避免 SW 重启后重复扣费
 const scoreCache = new Map();
-// JD 解读缓存：同一 JD 只解读一次
 const jdCache = new Map();
+let scoreRecord = {};
+let jdRecord = {};
+
+function hydrateCacheMap(record, map) {
+  map.clear();
+  Object.keys(record || {}).forEach((k) => {
+    const entry = record[k];
+    if (entry && Object.prototype.hasOwnProperty.call(entry, 'value')) map.set(k, entry.value);
+  });
+}
+
+const llmCacheReady = new Promise((resolve) => {
+  try {
+    chrome.storage.local.get(MokaPersist.LLM_CACHE_STORAGE_KEY, (res) => {
+      const bag = (res && res[MokaPersist.LLM_CACHE_STORAGE_KEY]) || {};
+      const now = Date.now();
+      scoreRecord = MokaPersist.pruneTimedMap(bag.scores || {}, now, MokaPersist.LLM_CACHE_TTL_MS, MokaPersist.LLM_CACHE_LIMIT);
+      jdRecord = MokaPersist.pruneTimedMap(bag.jds || {}, now, MokaPersist.LLM_CACHE_TTL_MS, MokaPersist.LLM_CACHE_LIMIT);
+      hydrateCacheMap(scoreRecord, scoreCache);
+      hydrateCacheMap(jdRecord, jdCache);
+      resolve();
+    });
+  } catch (e) { resolve(); }
+});
+
+let persistCacheTimer = null;
+function schedulePersistLlmCache() {
+  if (persistCacheTimer) return;
+  persistCacheTimer = setTimeout(() => {
+    persistCacheTimer = null;
+    try {
+      chrome.storage.local.set({
+        [MokaPersist.LLM_CACHE_STORAGE_KEY]: { scores: scoreRecord, jds: jdRecord }
+      });
+    } catch (e) { /* ignore */ }
+  }, 400);
+}
+
+function rememberScore(key, value) {
+  scoreRecord = MokaPersist.putCacheRecord(
+    scoreRecord, key, value, Date.now(),
+    MokaPersist.LLM_CACHE_TTL_MS, MokaPersist.LLM_CACHE_LIMIT
+  );
+  hydrateCacheMap(scoreRecord, scoreCache);
+  schedulePersistLlmCache();
+}
+
+function rememberJd(key, value) {
+  jdRecord = MokaPersist.putCacheRecord(
+    jdRecord, key, value, Date.now(),
+    MokaPersist.LLM_CACHE_TTL_MS, MokaPersist.LLM_CACHE_LIMIT
+  );
+  hydrateCacheMap(jdRecord, jdCache);
+  schedulePersistLlmCache();
+}
 
 function setBoundedCache(map, key, value, limit = CACHE_LIMIT) {
   if (map.has(key)) map.delete(key);
@@ -85,7 +150,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       return true;
 
     case 'updateProgress':
-      // 转发进度更新到 popup（popup 可能未打开，忽略错误）
+    case 'resultsUpdated':
+      // 转发到侧栏（侧栏未打开时忽略错误）
       chrome.runtime.sendMessage({ ...request }).catch(() => {});
       sendResponse({ received: true });
       return false;
@@ -137,8 +203,9 @@ function htmlToText(html) {
 async function handleAnalyzeJob({ jobJD, jobType }) {
   const settings = await getSettings();
   if (!settings.apiKey) throw new Error('未配置 API Key');
+  await llmCacheReady;
 
-  const cacheKey = JSON.stringify({ jobJD, jobType, model: settings.modelName });
+  const cacheKey = MokaPersist.stableHash({ jobJD, jobType, model: settings.modelName, promptRev: MokaScore.PROMPT_VERSION });
   if (jdCache.has(cacheKey)) return jdCache.get(cacheKey);
 
   const systemPrompt =
@@ -147,7 +214,7 @@ async function handleAnalyzeJob({ jobJD, jobType }) {
   const content = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: 2000, temperature: 0 });
   const spec = parseJDAnalysis(content);
 
-  setBoundedCache(jdCache, cacheKey, spec);
+  if (!spec.parseError) rememberJd(cacheKey, spec);
   return spec;
 }
 
@@ -159,27 +226,33 @@ async function handleAnalyzeJob({ jobJD, jobType }) {
  */
 async function handleScoreCandidate({ profile, config }) {
   const settings = await getSettings();
+  config = config || {};
 
   if (!settings.apiKey) {
-    return { dimensions: neutralDimensions('未配置 API Key'), mustHaveResults: [], highlights: [], concerns: ['❌ 未配置 API Key'], parseError: true };
+    return MokaScore.scoreErrorResult('未配置 API Key');
   }
 
   const jobSpec = config.jobSpec || {};
-  const cacheKey = JSON.stringify({ profile, spec: jobSpec, jobJD: config.jobJD || '', jobType: config.jobType, model: settings.modelName });
+  const hardText = (config && config.hardText) || '';
+  await llmCacheReady;
+  const cacheKey = MokaPersist.stableHash({
+    profile, spec: jobSpec, jobJD: config.jobJD || '', jobType: config.jobType, hardText, model: settings.modelName,
+    promptRev: MokaScore.PROMPT_VERSION
+  });
   if (scoreCache.has(cacheKey)) return scoreCache.get(cacheKey);
 
   const systemPrompt =
     '你是资深招聘专家，擅长客观评估候选人与岗位的匹配度。'
     + '严格只输出一个 JSON 对象，禁止输出任何思考过程、前言、分析说明或 markdown。'
     + '每个维度的 reason 控制在 40 字以内，highlights/concerns 每条不超过 30 字。';
-  const userPrompt = buildDimensionPrompt(profile, jobSpec, config.jobType, config.jobJD);
+  const userPrompt = buildDimensionPrompt(profile, jobSpec, config.jobType, config.jobJD, hardText);
 
   // 推理型模型会先输出思考，需给足 token，避免 JSON 被截断
   const content = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: 4000, temperature: 0 });
   const raw = parseDimensionResponse(content);
 
   // 解析失败不写缓存，避免把错误结果固化，下一轮可重试
-  if (!raw.parseError) setBoundedCache(scoreCache, cacheKey, raw);
+  if (!raw.parseError) rememberScore(cacheKey, raw);
   return raw;
 }
 
@@ -339,9 +412,9 @@ const JOB_TYPE_TEXT = {
 };
 
 const DIM_DESC = [
-  '- experience 经验相关性：候选人过往经历/项目与该岗位核心职责的匹配程度',
+  '- experience 经验相关性：过往主责/对口实习与该岗位核心职责是否同方向；相邻职能擦边不能打成对口',
   '- skill 技能匹配：候选人是否具备该岗位所需的关键技能/工具',
-  '- education 专业与教育背景：专业方向、学历与岗位的契合度',
+  '- education 专业与教育背景：学历是否达标为主；专业不完全对口时不要打到低分档',
   '- potential 潜力/稳定性/加分项：成长性、稳定性、JD 中的加分项'
 ].join('\n');
 
@@ -363,15 +436,18 @@ ${DIM_DESC}
 要求：
 1. summary：一句话概括该岗位主要在做什么。
 2. responsibilities：列出 3-6 条核心职责。
-3. mustHaves：列出该岗位的必备技能/经验/资质（硬门槛）。
+3. mustHaves：按重要性列出最多 6 条必备技能/经验/资质（硬门槛）。不要重复学历、院校、性别、年龄、工作年限这些已有筛选项。
+${MokaScore.mustHaveExtractionGuide()}
 4. niceToHaves：列出加分项。
-5. suggestedWeights：给出四个维度的建议权重（整数、合计恰好 100），要体现该岗位最看重什么（例如强执行/经验型岗位 experience 权重更高；校招/实习岗 potential 与 education 权重更高）。
+5. resumeKeywords：按重要性列出最多 6 个可在简历中检索的关键词（技能/工具/岗位缩写，如 HRBP、Excel）。
+6. suggestedWeights：给出四个维度的建议权重（整数、合计恰好 100），要体现该岗位最看重什么（例如强执行/经验型岗位 experience 权重更高；校招/实习岗 potential 与 education 权重更高）。
 只返回以下 JSON，不要输出多余文字：
 {
   "summary": "...",
   "responsibilities": ["..."],
   "mustHaves": ["..."],
   "niceToHaves": ["..."],
+  "resumeKeywords": ["..."],
   "suggestedWeights": {"experience": 40, "skill": 30, "education": 20, "potential": 10}
 }`;
 }
@@ -391,9 +467,11 @@ function renderSpec(spec) {
 /**
  * 候选人「分维度」评分提示词
  */
-function buildDimensionPrompt(profile, spec, jobType, jobJD) {
+function buildDimensionPrompt(profile, spec, jobType, jobJD, hardText) {
   const hasSpec = spec && (spec.summary || (spec.responsibilities && spec.responsibilities.length) || (spec.mustHaves && spec.mustHaves.length));
   const jobBlock = hasSpec ? renderSpec(spec) : (jobJD || '（无岗位信息）');
+  const hardBlock = MokaScore.hardConditionsPromptBlock(hardText);
+  const hardSection = hardBlock ? `\n${hardBlock}\n` : '';
 
   return `请基于岗位信息，对候选人做「分维度」评估。
 
@@ -402,18 +480,19 @@ ${profile || '（无候选人信息）'}
 
 【岗位信息】
 ${jobBlock}
-
+${hardSection}
 【职位类型】
 ${JOB_TYPE_TEXT[jobType] || JOB_TYPE_TEXT['full-time']}
 
 请对以下四个维度分别打分（0-100 整数），并给出简短理由，尽量引用候选人简历中的具体经历/项目作为证据：
 ${DIM_DESC}
 
-同时对每条「必备项」判断候选人是否满足（met: true/false）：只在简历中有明确证据时才判 true；也不要在已有相关经历时臆断为 false。
+同时对每条「必备项」判断候选人是否满足（met: true/false）：只在简历中有明确证据时才判 true；也不要在已有相关经历时臆断为 false。未满足的项会由系统扣综合分，不要因此把四个维度一律打成 0。
 
 评分注意：
-1. 仅依据上方候选人信息判断，逐条阅读每段经历（含实习、项目）的具体描述，据实认定其相关性，切勿在已列出经历时臆断"缺乏相关经验"。
-2. 经历与岗位职责高度相关但专业名称不完全对口时，不要仅因专业不符就一票否决。
+1. 仅依据上方候选人信息判断，逐条阅读每段经历（含实习、项目）的具体描述；列出的经历若职能不同，按相邻/擦边计，不要当成对口。
+2. 专业名称不完全对口时，不要把 education 打到 20 以下，更不要因此把四个维度一起压低。
+3. ${MokaScore.dimensionScoringNotes(jobType).replace(/\n/g, ' ')}
 只返回以下 JSON，不要输出多余文字：
 {
   "dimensions": {
@@ -490,13 +569,14 @@ function parseJDAnalysis(content) {
     }
   }
   if (!best) {
-    return { summary: '', responsibilities: [], mustHaves: [], niceToHaves: [], suggestedWeights: { ...DEFAULT_WEIGHTS }, parseError: true };
+    return { summary: '', responsibilities: [], mustHaves: [], niceToHaves: [], resumeKeywords: [], suggestedWeights: { ...DEFAULT_WEIGHTS }, parseError: true };
   }
   return {
     summary: best.summary ? String(best.summary) : '',
     responsibilities: arrOf(best.responsibilities, 8),
-    mustHaves: arrOf(best.mustHaves, 10),
+    mustHaves: arrOf(best.mustHaves, 6),
     niceToHaves: arrOf(best.niceToHaves, 10),
+    resumeKeywords: arrOf(best.resumeKeywords, 6),
     suggestedWeights: normalizeWeights(best.suggestedWeights)
   };
 }
@@ -525,13 +605,9 @@ function parseDimensionResponse(content) {
     }
   }
   if (!best) {
-    return {
-      dimensions: neutralDimensions('模型返回解析失败'),
-      mustHaveResults: [],
-      highlights: [],
-      concerns: ['无法解析模型返回，原文片段: ' + text.slice(0, 80)],
-      parseError: true
-    };
+    const fail = MokaScore.scoreErrorResult('模型返回解析失败');
+    fail.concerns = ['无法解析模型返回，原文片段: ' + text.slice(0, 80)];
+    return fail;
   }
   const dim = (k) => {
     const o = (best.dimensions && best.dimensions[k]) || {};

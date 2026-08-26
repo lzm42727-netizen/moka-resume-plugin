@@ -35,6 +35,31 @@
     try { window.postMessage({ source: 'moka-inject', type, payload }, '*'); } catch (e) { /* ignore */ }
   }
 
+  function harvestScene(url) {
+    if (!url || String(url).indexOf('scene=') === -1) return;
+    try {
+      const u = new URL(url, location.origin);
+      const s = u.searchParams.get('scene');
+      if (s) post('scene-token', { scene: s });
+    } catch (e) { /* ignore */ }
+  }
+
+  function findSceneOnPage() {
+    try {
+      const u = new URL(location.href);
+      const s = u.searchParams.get('scene');
+      if (s) return s;
+    } catch (e) { /* ignore */ }
+    try {
+      const h = String(location.hash || '');
+      const m = h.match(/[?&]scene=([^&]+)/);
+      if (m) {
+        try { return decodeURIComponent(m[1]); } catch (e) { return m[1]; }
+      }
+    } catch (e) { /* ignore */ }
+    return '';
+  }
+
   function isDetailUrl(url) {
     if (!url) return false;
     if (url.indexOf(MATCH_SEARCH) !== -1) return false; // 排除列表接口
@@ -43,6 +68,7 @@
 
   // 请求侧：按 URL 精确分类捕获
   function captureRequest(url, method, headers, body) {
+    harvestScene(url);
     if (!url) return;
     if (url.indexOf(MATCH_SEARCH) !== -1) {
       if (typeof body === 'string') {
@@ -135,8 +161,10 @@
     if (!data || data.source !== 'moka-content') return;
     if (data.type === 'get-search-request' && lastSearch) {
       post('search-request', lastSearch);
-    } else if (data.type === 'get-detail-request' && detailTemplate) {
-      post('detail-request', detailTemplate);
+    } else if (data.type === 'get-detail-request') {
+      if (detailTemplate) post('detail-request', detailTemplate);
+      const scene = findSceneOnPage();
+      if (scene) post('scene-token', { scene });
     }
   });
 })();

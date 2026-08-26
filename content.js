@@ -5,7 +5,7 @@
  *  1. inject.js（MAIN world）捕获 Moka 自己发出的 search-candidate 请求模板
  *  2. content.js 用该模板「原样重放」并做游标分页，拉取全部候选人（可上百/上千）
  *  3. 逐个交给 background 做 AI 评分（外部 API 调用在后台完成，规避 CSP）
- *  4. 注入浮层面板，按 AI 得分排序、增量渲染，可点开候选人
+ *  4. 把可展示的结果快照推到侧栏，按 AI 得分排序；点卡片由本脚本打开候选人
  */
 
 const SEARCH_API_FALLBACK = '/api/outer/ats-candidate-search-left/candidate/search-candidate/v2';
@@ -31,14 +31,18 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = MOKA_TIMEOUT_MS) 
 }
 
 let isScreening = false;
-let results = []; // { app, profile, jobJD, rawScore, waivedMustHaves, score, hard }
-let rowMap = new Map(); // app.id -> { row, scoreEl, infoEl }
+let results = []; // { app, profile, jobJD, rawScore, waivedMustHaves, score, hard, keywords, stage }
 let sortTimer = null;
-let activeWeights = null; // 本轮归一化权重，供撤销必备项扣分后重算
+let activeWeights = null; // 本轮归一化权重，供忽略自增硬性后重排
+let lastScreenConfig = null; // 供单人重评 / 回看后重评
+let lastUiStatus = '';
+let lastBanner = null; // { type: 'need-click' | 'ready' } | null
 
 // 捕获到的 Moka 真实请求模板（来自 inject.js）
 let capturedRequest = null;        // 列表搜索请求
 let capturedDetailRequest = null;  // 「返回含经历」的详情请求模板（含 scene 令牌）
+let harvestedScene = '';           // 从任意带 scene= 的页面请求里收割
+let lastProbeReason = '';
 const detailDataCache = new Map(); // id(string) -> 已含经历的详情响应 JSON（页面已加载过的候选人可直接复用）
 
 // 尽早监听，避免错过 inject.js 的早期推送
@@ -48,20 +52,58 @@ window.addEventListener('message', (event) => {
   if (!data || data.source !== 'moka-inject') return;
   if (data.type === 'search-request') {
     capturedRequest = data.payload;
+    persistCapture();
   } else if (data.type === 'detail-request') {
     const first = !capturedDetailRequest;
     capturedDetailRequest = data.payload;
+    persistCapture();
     if (first) { try { markDetailBannerReady(); } catch (e) {} } // 用户点开候选人后，横幅变为「已就绪」
   } else if (data.type === 'detail-data') {
     cacheDetailData(data.payload);
+  } else if (data.type === 'scene-token') {
+    const s = data.payload && data.payload.scene;
+    if (s) harvestedScene = String(s);
   }
 });
+
+function persistCapture() {
+  try {
+    const area = (chrome.storage && chrome.storage.session) ? chrome.storage.session : chrome.storage.local;
+    area.set({
+      [MokaCapture.CAPTURE_STORAGE_KEY]: { search: capturedRequest, detail: capturedDetailRequest }
+    });
+  } catch (e) { /* ignore */ }
+}
+
+function restoreCapture() {
+  return new Promise((resolve) => {
+    try {
+      const area = (chrome.storage && chrome.storage.session) ? chrome.storage.session : chrome.storage.local;
+      area.get(MokaCapture.CAPTURE_STORAGE_KEY, (result) => {
+        if (chrome.runtime.lastError) {
+          resolve();
+          return;
+        }
+        const stored = result && result[MokaCapture.CAPTURE_STORAGE_KEY];
+        const merged = MokaCapture.mergeCapture(
+          { search: capturedRequest, detail: capturedDetailRequest },
+          stored
+        );
+        capturedRequest = merged.search;
+        capturedDetailRequest = merged.detail;
+        resolve();
+      });
+    } catch (e) { resolve(); }
+  });
+}
+
+const captureReady = restoreCapture();
 
 /** 缓存单个候选人的详情响应，严格按 URL 里的 application id + 顶层 id/candidateId 建索引 */
 function cacheDetailData(payload) {
   if (!payload || !payload.text) return;
   try {
-    const json = JSON.parse(payload.text);
+    const json = MokaCapture.unwrapDetailJson(JSON.parse(payload.text));
     const keys = new Set();
     // URL 里的 application id 是最可靠主键：/api/applications/{id}
     const m = String(payload.url || '').match(/\/applications\/(\d+)/);
@@ -79,13 +121,38 @@ function cacheDetailData(payload) {
 
 /** 校验详情 JSON 确实属于该候选人，防止串号 */
 function detailBelongsTo(app, json) {
-  if (!json || typeof json !== 'object') return false;
-  const idOk = json.id != null && String(json.id) === String(app.id);
-  const candOk = json.candidateId != null && app.candidateId != null
-    && String(json.candidateId) === String(app.candidateId);
-  // 若 JSON 未携带可比对的标识，则无法校验 —— 从严处理，视为不匹配
-  if (json.id == null && json.candidateId == null) return false;
-  return idOk || candOk;
+  return MokaCapture.detailBelongsTo(app, json);
+}
+
+function currentScene() {
+  return harvestedScene
+    || MokaCapture.extractSceneToken(
+      location.href,
+      location.hash,
+      capturedDetailRequest && capturedDetailRequest.url,
+      capturedRequest && capturedRequest.url,
+      capturedRequest && capturedRequest.body
+    )
+    || sceneFromWebStorage();
+}
+
+function sceneFromWebStorage() {
+  try {
+    for (const store of [sessionStorage, localStorage]) {
+      const n = store.length;
+      for (let i = 0; i < n; i++) {
+        const k = store.key(i);
+        if (!k) continue;
+        let v = '';
+        try { v = store.getItem(k) || ''; } catch (e) { continue; }
+        if (!v || v.length > 40000) continue;
+        if (!/scene/i.test(k) && v.indexOf('scene') === -1) continue;
+        const s = MokaCapture.extractSceneToken(k, v);
+        if (s) return s;
+      }
+    }
+  } catch (e) { /* ignore */ }
+  return '';
 }
 // 主动索要一次（防止 content 晚于首个请求）
 try {
@@ -97,6 +164,8 @@ init();
 
 function init() {
   console.log('[Moka 筛选] Content script 已加载');
+  const leftover = document.getElementById('moka-panel');
+  if (leftover) leftover.remove();
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'ping') {
       sendResponse({ ok: true });
@@ -118,10 +187,39 @@ function init() {
         return true;
       }
       isScreening = true;
-      performScreening(request).finally(() => { isScreening = false; });
+      performScreening(request).finally(() => { isScreening = false; publishResults(undefined, undefined, { flush: true }); });
       sendResponse({ ok: true });
     } else if (request.action === 'stopScreening') {
       isScreening = false;
+      sendResponse({ ok: true });
+    } else if (request.action === 'hasLastResults') {
+      hasLastResults()
+        .then((meta) => sendResponse(meta))
+        .catch(() => sendResponse({ has: false }));
+      return true;
+    } else if (request.action === 'showLastResults') {
+      restoreLastResults()
+        .then((ok) => sendResponse({ ok }))
+        .catch(() => sendResponse({ ok: false }));
+      return true;
+    } else if (request.action === 'getResults') {
+      sendResponse(buildResultsSnapshot());
+    } else if (request.action === 'openCandidate') {
+      sendResponse({ ok: openCandidate(request.appId) });
+    } else if (request.action === 'exportCsv') {
+      exportResultsCsv();
+      sendResponse({ ok: true });
+    } else if (request.action === 'rescore') {
+      const item = findResult(request.appId);
+      if (!item) {
+        sendResponse({ ok: false, error: '未找到该候选人' });
+        return true;
+      }
+      rescoreItem(item);
+      sendResponse({ ok: true });
+    } else if (request.action === 'waiveMustHave') {
+      const item = findResult(request.appId);
+      setMustHaveWaived(item, request.item, !!request.waived);
       sendResponse({ ok: true });
     }
     return true;
@@ -187,6 +285,7 @@ function offsetInfoFromCursor(lastCursor) {
 }
 
 async function fetchAllApplications(onProgress, maxCount = 0) {
+  await captureReady;
   if (!capturedRequest) {
     // 再问一次，给 inject 一点时间
     try { window.postMessage({ source: 'moka-content', type: 'get-search-request' }, '*'); } catch (e) {}
@@ -271,6 +370,7 @@ async function getJobSpec(jobType) {
 
 /** 轻量拉取一条候选人（供 JD 解读 / 预填复用） */
 async function fetchOneApplication() {
+  await captureReady;
   if (!capturedRequest) {
     try { window.postMessage({ source: 'moka-content', type: 'get-search-request' }, '*'); } catch (e) {}
     await sleep(400);
@@ -293,50 +393,17 @@ async function fetchOneApplication() {
 
 /** 从 JD 的结构化要求 / 文本里解析可预填的硬条件 */
 function autofillFromJob(job) {
-  const result = { degree: '', majors: [], schools: [] };
-  const text = `${job.aiEvalRequirementInfo || ''}\n${stripHtml(job.description || '')}`;
-
-  // 学历：优先用结构化 schema，其次从正文抽取
+  let schemaLines = '';
   try {
     const schema = job.aiEvalRequirementSchema ? JSON.parse(job.aiEvalRequirementSchema) : [];
-    const deg = schema.find((s) => s && s.name === '学历');
-    if (deg && deg.value) {
-      if (/博士/.test(deg.value)) result.degree = '博士';
-      else if (/硕士|研究生/.test(deg.value)) result.degree = '硕士';
-      else if (/本科|学士/.test(deg.value)) result.degree = '本科';
-    }
+    schemaLines = (Array.isArray(schema) ? schema : [])
+      .map((s) => (s ? String(s.name || '') + '：' + String(s.value || '') : ''))
+      .join('\n');
   } catch (e) { /* ignore */ }
-  if (!result.degree) result.degree = extractDegreeFromText(text);
-
-  // 专业关键词：从正文里抽取
-  result.majors = extractMajorsFromText(text);
-  // 简历关键词：抽取 JD 中的技能/工具类关键词（英文词、缩写等）
-  result.resumeKeywords = extractResumeKeywordsFromText(text);
-
-  return result;
-}
-
-/** 从 JD 抽取简历关键词（技能/工具/缩写，如 SEO、Google、C4D、Excel） */
-function extractResumeKeywordsFromText(text) {
-  const kws = new Set();
-  const EN_STOP = new Set(['the', 'and', 'or', 'for', 'with', 'you', 'are', 'our', 'job', 'jd', 'kpi', 'app', 'web', 'ok', 'etc']);
-  const tokens = text.match(/[A-Za-z][A-Za-z0-9+#.]{1,11}/g) || [];
-  tokens.forEach((w) => {
-    const t = w.replace(/[.]+$/, '').trim();
-    if (t.length >= 2 && !EN_STOP.has(t.toLowerCase())) kws.add(t);
-  });
-  return [...kws].slice(0, 8);
-}
-
-/** 从 JD 正文抽取学历要求（如「本科及以上学历」） */
-function extractDegreeFromText(text) {
-  const m = text.match(/(博士|硕士|研究生|本科|学士|大专|专科)\s*(?:及以上|以上|学历|起|毕业)/);
-  if (!m) return '';
-  const d = m[1];
-  if (/博士/.test(d)) return '博士';
-  if (/硕士|研究生/.test(d)) return '硕士';
-  if (/本科|学士/.test(d)) return '本科';
-  return ''; // 大专/专科 低于最低可选项，不预填
+  const text = `${job.aiEvalRequirementInfo || ''}\n${stripHtml(job.description || '')}\n${schemaLines}`;
+  const parsed = MokaMatch.extractHardAutofillFromText(text);
+  parsed.majors = extractMajorsFromText(text);
+  return parsed;
 }
 
 /** 从 JD 正文抽取专业关键词，覆盖「xxx、yyy 相关/等/类 专业」「专业：xxx」等写法 */
@@ -366,7 +433,7 @@ function extractMajorsFromText(text) {
     if (qual || /[、/]/.test(list)) collect(list);
   }
 
-  return [...majors].slice(0, 8);
+  return [...majors].slice(0, 6);
 }
 
 /* ---------------- 硬性条件本地判定 ---------------- */
@@ -467,19 +534,43 @@ function ageInRange(age, r) {
 }
 
 /** 生成给模型看的硬性条件文本 */
-function buildHardText(hc, jobType) {
-  if (!hc) return '';
+function buildHardText(hc, jobType, extraMustHaves) {
+  if (!hc && !(extraMustHaves && extraMustHaves.length)) return '';
   const parts = [];
-  if (hc.degree) parts.push(`学历：${hc.degree}及以上`);
-  if (hc.schools && hc.schools.length) parts.push(`院校：${hc.schools.join('/')}（任一）`);
-  if (hc.exp) parts.push(`经验：${hc.exp === 'fresh' ? '在校/应届' : hc.exp + '年'}`);
-  if (hc.gender) parts.push(`性别：${hc.gender}`);
-  if (hc.internship === 'required' && jobType === 'intern') parts.push('需具备相关实习经验');
-  const ageRanges = normalizeAgeRanges(hc);
-  if (ageRanges.length) {
-    parts.push(`年龄：${ageRanges.map((r) => r.label).join('/')}（任一）`);
+  if (hc) {
+    if (hc.degree) parts.push(`学历：${hc.degree}及以上`);
+    if (hc.schools && hc.schools.length) parts.push(`院校：${hc.schools.join('/')}（任一）`);
+    if (hc.exp) parts.push(`经验：${hc.exp === 'fresh' ? '在校/应届' : hc.exp + '年'}`);
+    if (hc.gender) parts.push(`性别：${hc.gender}`);
+    if (hc.internship === 'required' && jobType === 'intern') parts.push('需具备相关实习经验');
+    const ageRanges = normalizeAgeRanges(hc);
+    if (ageRanges.length) {
+      parts.push(`年龄：${ageRanges.map((r) => r.label).join('/')}（任一）`);
+    }
+  }
+  if (Array.isArray(extraMustHaves) && extraMustHaves.length) {
+    parts.push('其他必备：' + extraMustHaves.join('、') + '（未满足将扣综合分）');
   }
   return parts.join('；');
+}
+
+function applyMergedHard(item) {
+  const local = item.hardLocal || { passed: true, missing: [] };
+  const unmet = (item.score && item.score.unmet) || [];
+  item.hard = MokaMatch.mergeHardWithMustHaves(local, unmet);
+}
+
+function applyScoreResult(item, raw, weights) {
+  item.rawScore = raw;
+  if (!item.waivedMustHaves) item.waivedMustHaves = new Set();
+  item.score = composeFinalScore(raw, weights, item.waivedMustHaves, (item.hardLocal && item.hardLocal.missing) || []);
+  applyMergedHard(item);
+}
+
+function ensureHardLocal(item) {
+  if (item.hardLocal && Array.isArray(item.hardLocal.missing)) return;
+  const missing = ((item.hard && item.hard.missing) || []).filter((m) => !MokaMatch.itemFromCustomHardLabel(m));
+  item.hardLocal = { passed: missing.length === 0, missing };
 }
 
 /* ---------------- 详情补全 ---------------- */
@@ -557,23 +648,14 @@ const FORBIDDEN_HEADERS = new Set([
 
 /** 用「已验证含经历」的详情模板拼出目标候选人的详情 URL（保留 scene 等查询参数） */
 function buildDetailUrl(app) {
-  const tmpl = capturedDetailRequest && capturedDetailRequest.url;
-  if (tmpl) {
-    try {
-      const u = new URL(tmpl, location.origin);
-      // 模板路径若走候选人维度就用 candidateId，否则用 applicationId
-      const useCandidate = /candidate/i.test(u.pathname) && app.candidateId != null;
-      const val = useCandidate ? app.candidateId : app.id;
-      u.pathname = u.pathname.replace(/(\d{5,})(?=\/|$)/, String(val)); // 替换路径里首个长数字 id
-      return u.toString();
-    } catch (e) { /* ignore */ }
-  }
-  return `${location.origin}/api/applications/${app.id}`;
+  return MokaCapture.buildDetailUrl(app, capturedDetailRequest, location.origin);
 }
 
 function detailHeaders() {
   const out = { Accept: 'application/json' };
-  const src = (capturedDetailRequest && capturedDetailRequest.headers) || {};
+  const src = (capturedDetailRequest && capturedDetailRequest.headers)
+    || (capturedRequest && capturedRequest.headers)
+    || {};
   for (const k of Object.keys(src)) {
     if (!FORBIDDEN_HEADERS.has(k.toLowerCase())) out[k] = src[k];
   }
@@ -644,26 +726,31 @@ function hasAnyExperience(app) {
 async function enrichCandidate(app) {
   if (!app || app.id == null) return app;
   if (app.__enriched) return app;
-  app.__enriched = true;
 
   let json = null;
-  // 1) 命中缓存（页面已加载过该候选人）：直接用，并校验归属，杜绝串号
+  // 1) 命中缓存（页面已打开过该候选人）：直接用，并校验归属，杜绝串号
   const cached = detailDataCache.get(String(app.id)) || (app.candidateId != null && detailDataCache.get(String(app.candidateId))) || null;
   if (cached && detailBelongsTo(app, cached)) json = cached;
 
-  // 2) 缓存没有、且列表未带任何经历时，用探测到的详情模板重放
-  if (!json && !hasAnyExperience(app) && capturedDetailRequest) {
-    try {
-      const resp = await fetchWithTimeout(buildDetailUrl(app), {
-        method: (capturedDetailRequest.method || 'GET'),
-        credentials: 'include',
-        headers: detailHeaders()
-      });
-      if (resp.ok) {
-        const fetched = await resp.json();
-        if (detailBelongsTo(app, fetched)) json = fetched; // 只接受确属该候选人的数据
-      }
-    } catch (e) { /* 忽略，退回列表数据 */ }
+  // 2) 列表未带经历时：按模板 / 默认路径 / candidateId 依次尝试，失败换下一条 URL
+  if (!json && !hasAnyExperience(app)) {
+    const method = (capturedDetailRequest && capturedDetailRequest.method) || 'GET';
+    const urls = MokaCapture.uniqueDetailUrls(app, capturedDetailRequest, location.origin, currentScene());
+    for (const url of urls) {
+      try {
+        const resp = await fetchWithTimeout(url, {
+          method,
+          credentials: 'include',
+          headers: detailHeaders()
+        });
+        if (!resp.ok) continue;
+        const fetched = MokaCapture.unwrapDetailJson(await resp.json());
+        if (detailBelongsTo(app, fetched)) {
+          json = fetched;
+          break;
+        }
+      } catch (e) { /* 尝试下一条 URL */ }
+    }
   }
 
   if (json) mergeDetailIntoApp(app, json);
@@ -679,7 +766,42 @@ async function enrichCandidate(app) {
       } catch (e) { /* 抓取失败则忽略 */ }
     }
   }
+
+  app.__enriched = true;
   return app;
+}
+
+/** 用第一位候选人探测详情接口（不依赖用户先点开），成功则当作本轮模板 */
+async function probeDetailRequest(app) {
+  if (!app || app.id == null) return null;
+  lastProbeReason = '';
+  const urls = MokaCapture.uniqueDetailUrls(app, capturedDetailRequest, location.origin, currentScene());
+  for (const url of urls) {
+    try {
+      const resp = await fetchWithTimeout(url, {
+        method: (capturedDetailRequest && capturedDetailRequest.method) || 'GET',
+        credentials: 'include',
+        headers: detailHeaders()
+      });
+      if (!resp.ok) {
+        lastProbeReason = `HTTP ${resp.status}`;
+        continue;
+      }
+      const json = MokaCapture.unwrapDetailJson(await resp.json());
+      if (!detailBelongsTo(app, json)) {
+        lastProbeReason = '返回无法匹配该候选人';
+        continue;
+      }
+      cacheDetailData({ url, text: JSON.stringify(json) });
+      capturedDetailRequest = { url, method: 'GET', headers: detailHeaders() };
+      persistCapture();
+      return capturedDetailRequest;
+    } catch (e) {
+      lastProbeReason = (e && e.message) || '请求失败';
+    }
+  }
+  if (!lastProbeReason) lastProbeReason = '未找到可用详情接口';
+  return null;
 }
 
 /** 深度扫描 JSON，找出候选人简历原件的 OSS 链接（带签名的 html/pdf/doc 文件） */
@@ -825,8 +947,8 @@ function buildJobJD(app) {
 
 async function performScreening(config) {
   results = [];
-  rowMap = new Map();
-  renderPanelSkeleton();
+  resetResultUi();
+  await captureReady;
 
   try {
     const maxCount = Number(config.maxCount) > 0 ? Number(config.maxCount) : 0;
@@ -847,19 +969,25 @@ async function performScreening(config) {
     const hc = config.hardConditions || null;
     const weights = normalizeWeights(config.weights);
     activeWeights = weights;
+    const keywords = Array.isArray(config.keywords) ? config.keywords : [];
 
-    // 若没捕获到详情接口模板，「主动投递/未授权」候选人的结构化经历可能补不全
+    // 优先自动探测详情接口；失败才提示用户点开一人
     if (!capturedDetailRequest) {
       try { window.postMessage({ source: 'moka-content', type: 'get-detail-request' }, '*'); } catch (e) {}
       await sleep(300);
     }
+    if (!capturedDetailRequest && apps[0]) {
+      updatePanelStatus('正在自动识别详情接口…');
+      await probeDetailRequest(apps[0]);
+    }
     if (!capturedDetailRequest) {
-      // 常驻醒目横幅（点开候选人后自动消失），并给一段宽限时间等待用户操作
       showDetailBanner();
+      const why = lastProbeReason ? `（${lastProbeReason}）` : '';
       for (let i = 0; i < 12 && !capturedDetailRequest; i++) {
         if (!isScreening) break;
-        updatePanelStatus(`等待点开候选人以识别完整经历…（${12 - i}s，可直接等待或忽略）`);
+        updatePanelStatus(`自动识别未成功${why}，等待点开候选人…（${12 - i}s，可忽略）`);
         await sleep(1000);
+        if (!capturedDetailRequest && apps[0]) await probeDetailRequest(apps[0]);
       }
     }
 
@@ -869,6 +997,19 @@ async function performScreening(config) {
     if (!jobSpec) {
       jobSpec = await analyzeJobViaBackground(jobJD, config.jobType);
     }
+    const extraMust = MokaMatch.dedupeMustHavesAgainstHard((config.jobSpec && config.jobSpec.mustHaves) || [], hc);
+    if (jobSpec) jobSpec = Object.assign({}, jobSpec, { mustHaves: extraMust });
+    else if (extraMust.length) jobSpec = { mustHaves: extraMust };
+    const hardText = buildHardText(hc, config.jobType, extraMust);
+    lastScreenConfig = {
+      jobType: config.jobType,
+      jobSpec,
+      jobJD,
+      hardText,
+      hc,
+      weights,
+      keywords
+    };
 
     // 先建占位行；画像/硬条件在补全详情后于 worker 内生成，保证经历数据完整
     results = apps.map((app) => ({ app, profile: null, jobJD, hard: null, score: null }));
@@ -893,28 +1034,29 @@ async function performScreening(config) {
           await enrichCandidate(item.app);
           if (hasAnyExperience(item.app) || item.app.__resumeText) enrichedExp++;
           item.profile = buildCandidateProfile(item.app);
-          item.hard = evaluateHardConditions(item.app, hc, config.jobType);
+          item.hardLocal = evaluateHardConditions(item.app, hc, config.jobType);
+          item.hard = item.hardLocal;
+          item.keywords = MokaMatch.matchKeywords(item.profile, keywords);
           applyHardToRow(item);
+          applyKeywordTags(item);
 
           setRowStage(item.app.id, 'score');
-          const raw = await scoreViaBackground(item.profile, { jobType: config.jobType, jobSpec, jobJD });
-          item.rawScore = raw;
-          item.waivedMustHaves = new Set();
-          item.score = composeFinalScore(raw, weights, item.waivedMustHaves);
+          const raw = await scoreViaBackground(item.profile, { jobType: config.jobType, jobSpec, jobJD, hardText });
+          applyScoreResult(item, raw, weights);
         } catch (err) {
           console.error('[Moka 筛选] 候选人处理失败:', item.app && item.app.name, err);
-          item.rawScore = {
+          applyScoreResult(item, {
             dimensions: null,
             error: (err && err.message) ? err.message : '处理失败'
-          };
-          item.waivedMustHaves = new Set();
-          item.score = composeFinalScore(item.rawScore, weights, item.waivedMustHaves);
+          }, weights);
         } finally {
           clearRowStage(item.app.id);
         }
         completed++;
         updateRow(item);
+        applyPanelFilter();
         scheduleSort();
+        schedulePersistLastScreening();
         updatePanelStatus(`评分 ${completed}/${total} · 已补全经历 ${enrichedExp} 位`);
         reportProgress(completed, total, Math.round((completed / total) * 100), `已评分 ${completed}/${total}`);
       }
@@ -922,6 +1064,7 @@ async function performScreening(config) {
 
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, worker));
     sortRows();
+    persistLastScreening();
 
     if (isScreening) {
       reportProgress(total, total, 100, '筛选完成！');
@@ -953,7 +1096,7 @@ function analyzeJobViaBackground(jobJD, jobType) {
 function scoreViaBackground(profile, config) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(
-      { action: 'scoreCandidate', profile, config: { jobType: config.jobType, jobSpec: config.jobSpec, jobJD: config.jobJD } },
+      { action: 'scoreCandidate', profile, config: { jobType: config.jobType, jobSpec: config.jobSpec, jobJD: config.jobJD, hardText: config.hardText || '' } },
       (response) => {
         if (chrome.runtime.lastError) {
           resolve({ dimensions: null, error: chrome.runtime.lastError.message });
@@ -967,11 +1110,8 @@ function scoreViaBackground(profile, config) {
   });
 }
 
-const WEIGHT_KEYS = ['experience', 'skill', 'education', 'potential'];
+const WEIGHT_KEYS = MokaScore.WEIGHT_KEYS;
 const DEFAULT_WEIGHTS = { experience: 40, skill: 30, education: 20, potential: 10 };
-const DIM_LABEL = { experience: '经验', skill: '技能', education: '教育', potential: '潜力' };
-const MUST_HAVE_PENALTY = 5;
-const MUST_HAVE_PENALTY_CAP = 20;
 
 function normalizeWeights(w) {
   let vals = WEIGHT_KEYS.map((k) => {
@@ -985,501 +1125,266 @@ function normalizeWeights(w) {
   return out;
 }
 
-function levelFromScore(score) {
-  if (score >= 75) return '强烈推荐';
-  if (score >= 50) return '值得推荐';
-  if (score >= 35) return '一般';
-  return '不推荐';
+const composeFinalScore = MokaScore.composeFinalScore;
+
+function lastScreeningKey() {
+  const ctx = parsePageContext();
+  return MokaPersist.lastScreeningStorageKey(ctx && ctx.pipelineId);
 }
 
-/**
- * 本地按用户权重把分维度结果合成综合分。
- * 必备项未满足 → 柔性扣分（每项 -5，最多 -20）；waived 集合内的项不扣。
- */
-function composeFinalScore(raw, weights, waivedMustHaves) {
-  if (!raw || !raw.dimensions) {
-    return {
-      score: 0, baseScore: 0, penalty: 0, level: '错误',
-      suggestions: ['⚠️ ' + (raw?.error || '评分失败')],
-      dims: null, unmet: [], waivedUnmet: []
-    };
-  }
-  const dims = raw.dimensions;
-  let base = 0;
-  for (const k of WEIGHT_KEYS) {
-    const s = dims[k] && typeof dims[k].score === 'number' ? dims[k].score : 50;
-    base += s * (weights[k] || 0);
-  }
-  const baseScore = Math.round(Math.max(0, Math.min(100, base)));
-
-  const waived = waivedMustHaves instanceof Set ? waivedMustHaves : new Set(waivedMustHaves || []);
-  const unmetAll = (raw.mustHaveResults || []).filter((r) => r && r.item && !r.met);
-  const unmet = unmetAll.filter((r) => !waived.has(r.item));
-  const waivedUnmet = unmetAll.filter((r) => waived.has(r.item));
-  const penalty = Math.min(unmet.length * MUST_HAVE_PENALTY, MUST_HAVE_PENALTY_CAP);
-  const score = Math.round(Math.max(0, Math.min(100, baseScore - penalty)));
-
-  // 建议：亮点 + 差距（必备项扣分改由专用 UI 展示，避免重复）
-  const suggestions = [];
-  (raw.highlights || []).slice(0, 2).forEach((h) => suggestions.push('✓ ' + h));
-  (raw.concerns || []).slice(0, 2).forEach((c) => suggestions.push('✕ ' + c));
-
-  return {
-    score,
-    baseScore,
-    penalty,
-    level: levelFromScore(score),
-    suggestions: suggestions.slice(0, 4),
-    dims,
-    unmet,
-    waivedUnmet
+function persistLastScreening() {
+  if (!results.length) return;
+  const ctx = parsePageContext();
+  const payload = {
+    pipelineId: ctx && ctx.pipelineId,
+    savedAt: Date.now(),
+    weights: activeWeights,
+    screenConfig: lastScreenConfig,
+    items: results.map(MokaPersist.slimScreeningItem)
   };
+  try {
+    chrome.storage.local.set({ [lastScreeningKey()]: payload });
+  } catch (e) { /* ignore */ }
 }
 
-/** 单人撤销 / 恢复某条必备项扣分后重算 */
+let saveScreeningTimer = null;
+function schedulePersistLastScreening() {
+  if (saveScreeningTimer) return;
+  saveScreeningTimer = setTimeout(() => {
+    saveScreeningTimer = null;
+    persistLastScreening();
+  }, 800);
+}
+
+function hasLastResults() {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get(lastScreeningKey(), (r) => {
+        const payload = r && r[lastScreeningKey()];
+        resolve({
+          has: !!(payload && Array.isArray(payload.items) && payload.items.length),
+          savedAt: payload && payload.savedAt
+        });
+      });
+    } catch (e) {
+      resolve({ has: false });
+    }
+  });
+}
+
+function restoreLastResults() {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get(lastScreeningKey(), (r) => {
+        const payload = r && r[lastScreeningKey()];
+        if (!payload || !Array.isArray(payload.items) || !payload.items.length) {
+          resolve(false);
+          return;
+        }
+        activeWeights = payload.weights || null;
+        lastScreenConfig = payload.screenConfig || null;
+        results = payload.items.map(MokaPersist.hydrateScreeningItem);
+        results.forEach((item) => {
+          ensureHardLocal(item);
+          applyMergedHard(item);
+        });
+        const when = payload.savedAt ? new Date(payload.savedAt).toLocaleString() : '';
+        publishResults(`上次结果${when ? '（' + when + '）' : ''}，共 ${results.length} 位`, null, { flush: true });
+        resolve(true);
+      });
+    } catch (e) {
+      resolve(false);
+    }
+  });
+}
+
+function exportResultsCsv() {
+  if (!results.length) {
+    updatePanelStatus('暂无结果可导出');
+    return;
+  }
+  const csv = MokaPersist.screeningToCsv(results, location.origin);
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `moka-筛选-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** 单人忽略 / 恢复某条自增硬性：加回或重新扣除该条 −5，再按新分排序 */
 function setMustHaveWaived(item, mustHaveItem, waived) {
   if (!item || !item.rawScore || !activeWeights) return;
   if (!item.waivedMustHaves) item.waivedMustHaves = new Set();
   if (waived) item.waivedMustHaves.add(mustHaveItem);
   else item.waivedMustHaves.delete(mustHaveItem);
-  item.score = composeFinalScore(item.rawScore, activeWeights, item.waivedMustHaves);
+  ensureHardLocal(item);
+  item.score = composeFinalScore(item.rawScore, activeWeights, item.waivedMustHaves, (item.hardLocal && item.hardLocal.missing) || []);
+  applyMergedHard(item);
   updateRow(item);
   scheduleSort();
   updateHeaderCount();
+  schedulePersistLastScreening();
+}
+
+async function rescoreItem(item) {
+  if (!item || !item.app || item.__rescoring) return;
+  if (!lastScreenConfig) {
+    updatePanelStatus('无法重评：请重新跑一轮筛选');
+    return;
+  }
+  item.__rescoring = true;
+  if (item.app) item.app.__enriched = false;
+  try {
+    setRowStage(item.app.id, 'enrich');
+    await enrichCandidate(item.app);
+    item.profile = buildCandidateProfile(item.app);
+    item.hardLocal = evaluateHardConditions(item.app, lastScreenConfig.hc, lastScreenConfig.jobType);
+    item.hard = item.hardLocal;
+    item.keywords = MokaMatch.matchKeywords(item.profile, lastScreenConfig.keywords || []);
+    applyHardToRow(item);
+    applyKeywordTags(item);
+    setRowStage(item.app.id, 'score');
+    const raw = await scoreViaBackground(item.profile, {
+      jobType: lastScreenConfig.jobType,
+      jobSpec: lastScreenConfig.jobSpec,
+      jobJD: lastScreenConfig.jobJD,
+      hardText: lastScreenConfig.hardText
+    });
+    applyScoreResult(item, raw, lastScreenConfig.weights);
+  } catch (err) {
+    applyScoreResult(item, { dimensions: null, error: (err && err.message) || '重评失败' }, lastScreenConfig.weights);
+  } finally {
+    item.__rescoring = false;
+    clearRowStage(item.app.id);
+  }
+  updateRow(item);
+  applyKeywordTags(item);
+  applyPanelFilter();
+  scheduleSort();
+  persistLastScreening();
 }
 
 function reportProgress(current, total, percentage, message) {
   chrome.runtime.sendMessage({ action: 'updateProgress', current, total, percentage, message }).catch(() => {});
 }
 
-/* ---------------- 浮层面板（增量渲染） ---------------- */
+/* ---------------- 侧栏快照（页面不再注入浮层） ---------------- */
 
-function colorFromScore(score) {
-  if (score >= 75) return '#52c41a';
-  if (score >= 50) return '#1890ff';
-  if (score >= 35) return '#fa8c16';
-  return '#ff4d4f';
+function findResult(appId) {
+  const id = String(appId);
+  return results.find((r) => r.app && String(r.app.id) === id);
 }
 
-function ensurePanelStyles() {
-  const css = `
-    #moka-panel { position: fixed; top: 70px; right: 20px; width: 380px; max-height: 80vh;
-      background: #fff; border: 1px solid #e0e0e0; border-radius: 10px;
-      box-shadow: 0 6px 24px rgba(0,0,0,0.18); z-index: 999999;
-      display: flex; flex-direction: column; font-size: 13px; color: #333;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-    #moka-panel .mp-header { display: flex; align-items: center; justify-content: space-between;
-      padding: 12px 14px; border-bottom: 1px solid #eee; cursor: move; }
-    #moka-panel .mp-title { font-weight: 600; font-size: 14px; }
-    #moka-panel .mp-close { cursor: pointer; border: none; background: none; font-size: 16px; color: #999; }
-    #moka-panel .mp-status { padding: 8px 14px; font-size: 12px; color: #666; border-bottom: 1px solid #f0f0f0; }
-    #moka-panel .mp-banner { display: none; padding: 12px 14px; background: #fff7e6; border-bottom: 1px solid #ffe0a3;
-      color: #ad6800; font-size: 13px; line-height: 1.6; }
-    #moka-panel .mp-banner.show { display: block; }
-    #moka-panel .mp-banner .mp-banner-title { font-weight: 600; display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-    #moka-panel .mp-banner b { color: #d46b08; }
-    #moka-panel .mp-banner .mp-banner-ok { display: inline-flex; align-items: center; gap: 4px; margin-top: 8px;
-      color: #52c41a; font-weight: 600; }
-    #moka-panel .mp-list { overflow-y: auto; padding: 6px; }
-    #moka-panel .mp-row { display: flex; gap: 10px; padding: 10px; border-radius: 8px; cursor: pointer;
-      border: 1px solid #f0f0f0; margin-bottom: 6px; align-items: flex-start; position: relative; }
-    #moka-panel .mp-row:hover { background: #f6faff; border-color: #cfe6ff; }
-    #moka-panel .mp-row.scoring { border-color: #91d5ff; background: #f6fbff; padding-bottom: 14px; }
-    #moka-panel .mp-score { flex: none; width: 46px; height: 46px; border-radius: 8px; color: #fff;
-      display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 700; }
-    #moka-panel .mp-score.pending { background: #d9d9d9; font-size: 12px; }
-    #moka-panel .mp-info { flex: 1; min-width: 0; }
-    #moka-panel .mp-name { font-weight: 600; }
-    #moka-panel .mp-meta { color: #888; font-size: 11px; margin: 2px 0 4px; }
-    #moka-panel .mp-stage { font-size: 11px; font-weight: 500; color: #1890ff; margin: 2px 0 0; }
-    #moka-panel .mp-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
-      background: #e8e8e8; border-radius: 0 0 7px 7px; overflow: hidden; }
-    #moka-panel .mp-bar-fill { display: block; height: 100%; width: 0;
-      background: linear-gradient(90deg, #1890ff, #69c0ff);
-      border-radius: 0 2px 2px 0; transition: width 0.35s ease; }
-    #moka-panel .mp-level { font-size: 11px; font-weight: 600; }
-    #moka-panel .mp-dims { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0; }
-    #moka-panel .mp-dim { background: #f0f5ff; color: #2f54eb; border: 1px solid #d6e4ff;
-      border-radius: 4px; padding: 0 6px; font-size: 10px; line-height: 1.7; cursor: help; }
-    #moka-panel .mp-sugg { color: #666; font-size: 11px; line-height: 1.5; margin-top: 2px; }
-    #moka-panel .mp-penalty { margin-top: 6px; padding: 6px 8px; background: #fff7e6;
-      border: 1px solid #ffe58f; border-radius: 6px; font-size: 11px; line-height: 1.5; }
-    #moka-panel .mp-penalty-sum { color: #ad6800; font-weight: 500; margin-bottom: 4px; }
-    #moka-panel .mp-penalty-sum b { color: #d46b08; }
-    #moka-panel .mp-penalty-list { display: flex; flex-direction: column; gap: 4px; }
-    #moka-panel .mp-penalty-row { display: flex; align-items: flex-start; justify-content: space-between;
-      gap: 8px; color: #8c8c8c; }
-    #moka-panel .mp-penalty-row.active { color: #d46b08; }
-    #moka-panel .mp-penalty-row.waived { color: #8c8c8c; text-decoration: line-through; }
-    #moka-panel .mp-penalty-row .mp-penalty-text { flex: 1; min-width: 0; word-break: break-word; }
-    #moka-panel .mp-penalty-btn { flex: none; border: 1px solid #ffd591; background: #fff;
-      color: #d46b08; border-radius: 4px; padding: 0 6px; height: 20px; font-size: 11px;
-      cursor: pointer; line-height: 18px; }
-    #moka-panel .mp-penalty-btn:hover { background: #fff7e6; border-color: #ffa940; }
-    #moka-panel .mp-penalty-btn.restore { border-color: #d9d9d9; color: #595959; }
-    #moka-panel .mp-penalty-btn.restore:hover { border-color: #1890ff; color: #1890ff; background: #e6f7ff; }
-    #moka-panel .mp-row.failed { background: #fff7f6; border-color: #ffd6d3; }
-    #moka-panel .mp-row.failed:hover { background: #fff1ef; }
-    #moka-panel .mp-row.failed.scoring { background: #fff7f6; border-color: #ffa39e; }
-    #moka-panel .mp-tags { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
-    #moka-panel .mp-tag-fail { background: #fff1f0; color: #ff4d4f; border: 1px solid #ffccc7;
-      border-radius: 4px; padding: 1px 6px; font-size: 10px; line-height: 1.6; }
-  `;
-  let style = document.getElementById('moka-panel-styles');
-  if (!style) {
-    style = document.createElement('style');
-    style.id = 'moka-panel-styles';
-    document.head.appendChild(style);
-  }
-  style.textContent = css;
+function buildResultsSnapshot() {
+  return {
+    action: 'resultsUpdated',
+    status: lastUiStatus,
+    banner: lastBanner,
+    screening: isScreening,
+    items: MokaMatch.sortResultViews(results.map((item) => MokaMatch.toResultView(item)))
+  };
 }
 
-function renderPanelSkeleton() {
-  ensurePanelStyles();
-  let panel = document.getElementById('moka-panel');
-  if (!panel) {
-    panel = document.createElement('div');
-    panel.id = 'moka-panel';
-    panel.innerHTML = `
-      <div class="mp-header">
-        <span class="mp-title">🧑‍💼 AI 筛选结果</span>
-        <button class="mp-close" title="关闭">×</button>
-      </div>
-      <div class="mp-banner"></div>
-      <div class="mp-status"></div>
-      <div class="mp-list"></div>
-    `;
-    document.body.appendChild(panel);
-    panel.querySelector('.mp-close').addEventListener('click', () => panel.remove());
-    makeDraggable(panel, panel.querySelector('.mp-header'));
-  } else {
-    panel.querySelector('.mp-list').innerHTML = '';
-    const banner = panel.querySelector('.mp-banner');
-    if (banner) { banner.classList.remove('show'); banner.innerHTML = ''; }
+let publishTimer = null;
+function publishResults(statusText, banner, opts) {
+  if (statusText !== undefined) lastUiStatus = statusText;
+  if (banner !== undefined) lastBanner = banner;
+  const send = () => {
+    publishTimer = null;
+    chrome.runtime.sendMessage(buildResultsSnapshot()).catch(() => {});
+  };
+  if (opts && opts.flush) {
+    if (publishTimer) {
+      clearTimeout(publishTimer);
+      publishTimer = null;
+    }
+    send();
+    return;
   }
+  if (publishTimer) return;
+  publishTimer = setTimeout(send, 120);
 }
 
-/** 单人识别阶段：补全经历 → AI 评分（阶段跳变，非假精确百分比） */
-const ROW_STAGES = {
-  enrich: { text: '① 补全经历…', pct: 45 },
-  score: { text: '② AI 评分中…', pct: 80 }
-};
-
-function setRowStage(appId, stageKey) {
-  const refs = rowMap.get(appId);
-  const stage = ROW_STAGES[stageKey];
-  if (!refs || !stage) return;
-
-  refs.row.classList.add('scoring');
-
-  let stageEl = refs.infoEl.querySelector('.mp-stage');
-  if (!stageEl) {
-    stageEl = document.createElement('div');
-    stageEl.className = 'mp-stage';
-    const meta = refs.infoEl.querySelector('.mp-meta');
-    if (meta && meta.nextSibling) refs.infoEl.insertBefore(stageEl, meta.nextSibling);
-    else if (meta) meta.after(stageEl);
-    else refs.infoEl.appendChild(stageEl);
-  }
-  stageEl.textContent = stage.text;
-
-  let bar = refs.row.querySelector('.mp-bar');
-  if (!bar) {
-    bar = document.createElement('div');
-    bar.className = 'mp-bar';
-    const fill = document.createElement('i');
-    fill.className = 'mp-bar-fill';
-    bar.appendChild(fill);
-    refs.row.appendChild(bar);
-  }
-  // 先置 0 再下一帧跳到目标，让 transition 可见
-  const fill = bar.querySelector('.mp-bar-fill');
-  if (fill.style.width === '0%' || !fill.style.width) {
-    fill.style.width = '0%';
-    requestAnimationFrame(() => { fill.style.width = stage.pct + '%'; });
-  } else {
-    fill.style.width = stage.pct + '%';
-  }
+function resetResultUi() {
+  lastBanner = null;
+  publishResults('准备中...', null, { flush: true });
 }
 
-function clearRowStage(appId) {
-  const refs = rowMap.get(appId);
-  if (!refs) return;
-  refs.row.classList.remove('scoring');
-  refs.infoEl.querySelectorAll('.mp-stage').forEach((el) => el.remove());
-  refs.row.querySelectorAll('.mp-bar').forEach((el) => el.remove());
+function updatePanelStatus(text) {
+  publishResults(text);
 }
 
 function buildRows() {
-  const panel = document.getElementById('moka-panel');
-  if (!panel) return;
-  const list = panel.querySelector('.mp-list');
-  list.innerHTML = '';
-  rowMap = new Map();
-
-  for (const item of results) {
-    const app = item.app;
-    const row = document.createElement('div');
-    row.className = 'mp-row' + (item.hard && !item.hard.passed ? ' failed' : '');
-
-    const scoreEl = document.createElement('div');
-    scoreEl.className = 'mp-score pending';
-    scoreEl.textContent = '…';
-
-    const info = document.createElement('div');
-    info.className = 'mp-info';
-    const meta = [app.highestDegree, app.highestDegreeSchool, app.specialities].filter(Boolean).join(' · ');
-    info.innerHTML = '<div class="mp-name"></div><div class="mp-meta"></div>';
-    info.querySelector('.mp-name').textContent = app.name || '(未知)';
-    info.querySelector('.mp-meta').textContent = meta;
-
-    if (item.hard && !item.hard.passed) {
-      const tags = document.createElement('div');
-      tags.className = 'mp-tags';
-      for (const miss of item.hard.missing) {
-        const tag = document.createElement('span');
-        tag.className = 'mp-tag-fail';
-        tag.textContent = miss;
-        tags.appendChild(tag);
-      }
-      info.appendChild(tags);
-    }
-
-    row.appendChild(scoreEl);
-    row.appendChild(info);
-    row.addEventListener('click', () => {
-      const url = `${location.origin}/candidates/application/${app.id}${location.search}`;
-      window.open(url, '_blank');
-    });
-    list.appendChild(row);
-    rowMap.set(app.id, { row, scoreEl, infoEl: info });
-  }
-  updateHeaderCount();
+  publishResults(undefined, undefined, { flush: true });
 }
 
-/** 硬条件判定完成后，给行加失败样式与缺项标签 */
-function applyHardToRow(item) {
-  const refs = rowMap.get(item.app.id);
-  if (!refs || !item.hard) return;
-
-  refs.row.classList.toggle('failed', !item.hard.passed);
-  refs.infoEl.querySelectorAll('.mp-tags').forEach((el) => el.remove());
-
-  if (!item.hard.passed && item.hard.missing.length) {
-    const tags = document.createElement('div');
-    tags.className = 'mp-tags';
-    for (const miss of item.hard.missing) {
-      const tag = document.createElement('span');
-      tag.className = 'mp-tag-fail';
-      tag.textContent = miss;
-      tags.appendChild(tag);
-    }
-    // 放在 meta 之后、level/sugg 之前
-    const meta = refs.infoEl.querySelector('.mp-meta');
-    if (meta && meta.nextSibling) refs.infoEl.insertBefore(tags, meta.nextSibling);
-    else refs.infoEl.appendChild(tags);
-  }
-  updateHeaderCount();
+function applyHardToRow() {
+  publishResults();
 }
 
-function updateRow(item) {
-  const refs = rowMap.get(item.app.id);
-  if (!refs) return;
-  const s = item.score;
-  if (!s) return;
+function applyKeywordTags() {
+  publishResults();
+}
 
-  clearRowStage(item.app.id);
+function applyPanelFilter() {
+  publishResults();
+}
 
-  refs.scoreEl.className = 'mp-score';
-  refs.scoreEl.style.background = colorFromScore(s.score);
-  refs.scoreEl.textContent = s.score;
-
-  // 移除旧的 level / dims / sugg / penalty，重建
-  refs.infoEl.querySelectorAll('.mp-level, .mp-dims, .mp-sugg, .mp-penalty').forEach((el) => el.remove());
-
-  const level = document.createElement('div');
-  level.className = 'mp-level';
-  level.style.color = colorFromScore(s.score);
-  level.textContent = s.level || '';
-  refs.infoEl.appendChild(level);
-
-  // 分维度得分一行，点开可看理由（title 悬浮）
-  if (s.dims) {
-    const dimsEl = document.createElement('div');
-    dimsEl.className = 'mp-dims';
-    WEIGHT_KEYS.forEach((k) => {
-      const d = s.dims[k];
-      if (!d) return;
-      const span = document.createElement('span');
-      span.className = 'mp-dim';
-      span.textContent = `${DIM_LABEL[k]}${d.score}`;
-      if (d.reason) span.title = `${DIM_LABEL[k]}：${d.reason}`;
-      dimsEl.appendChild(span);
-    });
-    refs.infoEl.appendChild(dimsEl);
-  }
-
-  if (s.suggestions && s.suggestions.length) {
-    const sugg = document.createElement('div');
-    sugg.className = 'mp-sugg';
-    sugg.textContent = s.suggestions.slice(0, 3).map((x) => '• ' + x).join('  ');
-    refs.infoEl.appendChild(sugg);
-  }
-
-  // 必备项扣分摊开：公式 + 单条「不扣 / 恢复」
-  const unmet = s.unmet || [];
-  const waivedUnmet = s.waivedUnmet || [];
-  if (unmet.length || waivedUnmet.length || (s.penalty > 0)) {
-    const box = document.createElement('div');
-    box.className = 'mp-penalty';
-
-    const sum = document.createElement('div');
-    sum.className = 'mp-penalty-sum';
-    if (s.penalty > 0) {
-      sum.innerHTML = `四维加权 <b>${s.baseScore}</b> − 必备项扣 <b>${s.penalty}</b> = <b>${s.score}</b>`;
-    } else if (waivedUnmet.length) {
-      sum.innerHTML = `四维加权 <b>${s.baseScore}</b>＝综合分 <b>${s.score}</b>（已撤销必备项扣分）`;
-    } else {
-      sum.innerHTML = `四维加权 <b>${s.baseScore}</b>＝综合分 <b>${s.score}</b>`;
-    }
-    box.appendChild(sum);
-
-    const list = document.createElement('div');
-    list.className = 'mp-penalty-list';
-
-    unmet.forEach((r) => {
-      const row = document.createElement('div');
-      row.className = 'mp-penalty-row active';
-      const text = document.createElement('span');
-      text.className = 'mp-penalty-text';
-      const note = r.note ? `（${r.note}）` : '';
-      text.textContent = `缺「${r.item}」−${MUST_HAVE_PENALTY}${note}`;
-      if (r.note) text.title = r.note;
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'mp-penalty-btn';
-      btn.textContent = '不扣';
-      btn.title = '撤销此项扣分（仅影响此人）';
-      btn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setMustHaveWaived(item, r.item, true);
-      });
-      row.appendChild(text);
-      row.appendChild(btn);
-      list.appendChild(row);
-    });
-
-    waivedUnmet.forEach((r) => {
-      const row = document.createElement('div');
-      row.className = 'mp-penalty-row waived';
-      const text = document.createElement('span');
-      text.className = 'mp-penalty-text';
-      text.textContent = `缺「${r.item}」（已不扣）`;
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'mp-penalty-btn restore';
-      btn.textContent = '恢复';
-      btn.title = '恢复此项扣分';
-      btn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setMustHaveWaived(item, r.item, false);
-      });
-      row.appendChild(text);
-      row.appendChild(btn);
-      list.appendChild(row);
-    });
-
-    if (list.childNodes.length) box.appendChild(list);
-    if (unmet.length * MUST_HAVE_PENALTY > MUST_HAVE_PENALTY_CAP) {
-      const tip = document.createElement('div');
-      tip.style.cssText = 'margin-top:4px;color:#8c8c8c;font-size:10px;';
-      tip.textContent = `缺 ${unmet.length} 项，扣分封顶 −${MUST_HAVE_PENALTY_CAP}`;
-      box.appendChild(tip);
-    }
-    refs.infoEl.appendChild(box);
-  }
-
-  updateHeaderCount();
+function updateRow() {
+  publishResults();
 }
 
 function updateHeaderCount() {
-  const panel = document.getElementById('moka-panel');
-  if (!panel) return;
-  const scored = results.filter((r) => r.score).length;
-  // 「符合」= 达到推荐线（综合分 ≥ 50，即「值得推荐」及以上）
-  const passed = results.filter((r) => r.score && r.score.score >= 50).length;
-  panel.querySelector('.mp-title').textContent = `🧑‍💼 AI 筛选 (评分${scored}/${results.length}·推荐${passed})`;
+  publishResults();
 }
 
 function scheduleSort() {
   if (sortTimer) return;
-  sortTimer = setTimeout(() => { sortTimer = null; sortRows(); }, 800);
+  sortTimer = setTimeout(() => {
+    sortTimer = null;
+    publishResults();
+  }, 800);
 }
 
 function sortRows() {
-  const panel = document.getElementById('moka-panel');
-  if (!panel) return;
-  const list = panel.querySelector('.mp-list');
-  // 满足硬性条件的排前面；同组内按 AI 得分降序；未满足的整体置底
-  const sorted = [...results].sort((a, b) => {
-    const pa = a.hard && a.hard.passed ? 1 : 0;
-    const pb = b.hard && b.hard.passed ? 1 : 0;
-    if (pa !== pb) return pb - pa;
-    return (b.score?.score ?? -1) - (a.score?.score ?? -1);
-  });
-  for (const item of sorted) {
-    const refs = rowMap.get(item.app.id);
-    if (refs) list.appendChild(refs.row); // appendChild 会把已存在节点移动到末尾，从而完成排序
-  }
+  publishResults(undefined, undefined, { flush: true });
 }
 
-function updatePanelStatus(text) {
-  const panel = document.getElementById('moka-panel');
-  if (panel) panel.querySelector('.mp-status').textContent = text;
+function setRowStage(appId, stageKey) {
+  const item = findResult(appId);
+  if (!item) return;
+  item.stage = stageKey;
+  publishResults();
 }
 
-/** 常驻横幅：提醒用户先点开一位候选人详情，以捕获详情接口（含 scene），显著提升经历识别 */
+function clearRowStage(appId) {
+  const item = findResult(appId);
+  if (!item) return;
+  item.stage = null;
+  publishResults();
+}
+
+function openCandidate(appId) {
+  if (appId == null || appId === '') return false;
+  const url = location.origin + MokaMatch.candidateOpenPath(appId, location.search);
+  window.open(url, '_blank');
+  return true;
+}
+
 function showDetailBanner() {
-  const panel = document.getElementById('moka-panel');
-  if (!panel) return;
-  const el = panel.querySelector('.mp-banner');
-  if (!el) return;
-  el.innerHTML = `
-    <div class="mp-banner-title">⚠️ 建议先点开一位候选人</div>
-    为准确识别<b>实习/项目经历</b>，请在 Moka 列表里<b>点击任意一位候选人的姓名</b>打开详情页一次
-    （无需操作，打开即可），然后回到这里。之后本轮所有候选人都会自动补全完整经历。
-  `;
-  el.classList.add('show');
+  publishResults(undefined, { type: 'need-click' }, { flush: true });
 }
 
 function markDetailBannerReady() {
-  const panel = document.getElementById('moka-panel');
-  if (!panel) return;
-  const el = panel.querySelector('.mp-banner');
-  if (!el || !el.classList.contains('show')) return;
-  el.innerHTML = '<div class="mp-banner-ok">✓ 已捕获详情接口，正在自动补全完整经历…</div>';
-  setTimeout(() => { el.classList.remove('show'); el.innerHTML = ''; }, 2500);
-}
-
-function makeDraggable(el, handle) {
-  let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
-  handle.addEventListener('mousedown', (e) => {
-    if (e.target.classList.contains('mp-close')) return;
-    dragging = true;
-    sx = e.clientX; sy = e.clientY;
-    const rect = el.getBoundingClientRect();
-    ox = rect.left; oy = rect.top;
-    e.preventDefault();
-  });
-  document.addEventListener('mousemove', (e) => {
-    if (!dragging) return;
-    el.style.left = ox + (e.clientX - sx) + 'px';
-    el.style.top = oy + (e.clientY - sy) + 'px';
-    el.style.right = 'auto';
-  });
-  document.addEventListener('mouseup', () => { dragging = false; });
+  if (!lastBanner || lastBanner.type !== 'need-click') return;
+  publishResults(undefined, { type: 'ready' }, { flush: true });
+  setTimeout(() => {
+    if (lastBanner && lastBanner.type === 'ready') publishResults(undefined, null, { flush: true });
+  }, 2500);
 }
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
