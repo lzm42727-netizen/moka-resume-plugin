@@ -204,6 +204,13 @@ describe('viewMatchesFilter', () => {
     const passed = { name: '王五', hardPassed: true, score: { score: 70, level: '值得推荐' } };
     assert.equal(viewMatchesFilter(passed, { tab: 'recommend' }), true);
   });
+
+  it('filters by feedback tab', () => {
+    const tagged = { name: '李四', feedback: 'positive', score: { score: 40, level: '一般' } };
+    const untagged = { name: '王五', feedback: null, score: { score: 80, level: '强烈推荐' } };
+    assert.equal(viewMatchesFilter(tagged, { tab: 'feedback' }), true);
+    assert.equal(viewMatchesFilter(untagged, { tab: 'feedback' }), false);
+  });
 });
 
 describe('candidateOpenPath', () => {

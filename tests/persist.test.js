@@ -83,6 +83,18 @@ describe('csv', () => {
     assert.match(csv, /学历需硕士及以上/);
     assert.match(csv, /https:\/\/app\.mokahr\.com\/candidates\/application\/11/);
   });
+
+  it('includes feedback column when map is provided', () => {
+    const item = {
+      app: { id: 22, name: '李四' },
+      score: { score: 60, level: '值得推荐', dims: {} },
+      hard: { passed: true },
+      rawScore: {}
+    };
+    const csv = screeningToCsv([item], 'https://app.mokahr.com', { 22: 'positive' });
+    assert.match(csv, /反馈/);
+    assert.match(csv, /要沟通/);
+  });
 });
 
 describe('slim screening', () => {

@@ -207,16 +207,13 @@ function init() {
     } else if (request.action === 'openCandidate') {
       sendResponse({ ok: openCandidate(request.appId) });
     } else if (request.action === 'exportCsv') {
-      exportResultsCsv();
+      exportResultsCsv(request.feedbackByAppId);
       sendResponse({ ok: true });
     } else if (request.action === 'rescore') {
-      const item = findResult(request.appId);
-      if (!item) {
-        sendResponse({ ok: false, error: '未找到该候选人' });
-        return true;
-      }
-      rescoreItem(item);
-      sendResponse({ ok: true });
+      handleRescore(request.appId)
+        .then((result) => sendResponse(result))
+        .catch((err) => sendResponse({ ok: false, error: (err && err.message) || '重评失败' }));
+      return true;
     } else if (request.action === 'waiveMustHave') {
       const item = findResult(request.appId);
       setMustHaveWaived(item, request.item, !!request.waived);
@@ -992,30 +989,46 @@ async function performScreening(config) {
     }
 
     // 先解读 JD（缓存）：拿到统一的岗位画像，作为所有候选人的评分尺子
-    updatePanelStatus('正在解读 JD...');
     let jobSpec = config.jobSpec || null;
     if (!jobSpec) {
+      updatePanelStatus('正在解读 JD...');
       jobSpec = await analyzeJobViaBackground(jobJD, config.jobType);
     }
     const extraMust = MokaMatch.dedupeMustHavesAgainstHard((config.jobSpec && config.jobSpec.mustHaves) || [], hc);
     if (jobSpec) jobSpec = Object.assign({}, jobSpec, { mustHaves: extraMust });
     else if (extraMust.length) jobSpec = { mustHaves: extraMust };
     const hardText = buildHardText(hc, config.jobType, extraMust);
+    const feedbackBundle = await loadFeedbackBundle(config.jobId);
     lastScreenConfig = {
+      jobId: config.jobId || '',
       jobType: config.jobType,
       jobSpec,
       jobJD,
       hardText,
       hc,
       weights,
-      keywords
+      keywords,
+      feedbackContext: feedbackBundle.context,
+      feedbackRev: feedbackBundle.rev
     };
 
     // 先建占位行；画像/硬条件在补全详情后于 worker 内生成，保证经历数据完整
     results = apps.map((app) => ({ app, profile: null, jobJD, hard: null, score: null }));
     buildRows();
 
-    updatePanelStatus(`共 ${total} 位候选人，正在补全简历并 AI 评分...`);
+    const scoreConfig = {
+      jobType: config.jobType,
+      jobSpec,
+      jobJD,
+      hardText,
+      feedbackContext: feedbackBundle.context,
+      feedbackRev: feedbackBundle.rev
+    };
+    const prefHint = feedbackBundle.total > 0
+      ? ` · 已对齐 ${feedbackBundle.total} 条历史偏好`
+      : '';
+
+    updatePanelStatus(`共 ${total} 位候选人，正在补全简历并 AI 评分${prefHint}...`);
     reportProgress(0, total, 0, `共 ${total} 位，开始评分...`);
 
     let completed = 0;
@@ -1041,7 +1054,7 @@ async function performScreening(config) {
           applyKeywordTags(item);
 
           setRowStage(item.app.id, 'score');
-          const raw = await scoreViaBackground(item.profile, { jobType: config.jobType, jobSpec, jobJD, hardText });
+          const raw = await scoreViaBackground(item.profile, scoreConfig);
           applyScoreResult(item, raw, weights);
         } catch (err) {
           console.error('[Moka 筛选] 候选人处理失败:', item.app && item.app.name, err);
@@ -1093,10 +1106,34 @@ function analyzeJobViaBackground(jobJD, jobType) {
   });
 }
 
+function loadFeedbackBundle(jobId) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get(MokaFeedback.FEEDBACK_STORAGE_KEY, (res) => {
+        const record = (res && res[MokaFeedback.FEEDBACK_STORAGE_KEY]) || {};
+        resolve(MokaFeedback.buildFeedbackBundle(record, jobId));
+      });
+    } catch (e) {
+      resolve(MokaFeedback.buildFeedbackBundle({}, jobId));
+    }
+  });
+}
+
 function scoreViaBackground(profile, config) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(
-      { action: 'scoreCandidate', profile, config: { jobType: config.jobType, jobSpec: config.jobSpec, jobJD: config.jobJD, hardText: config.hardText || '' } },
+      {
+        action: 'scoreCandidate',
+        profile,
+        config: {
+          jobType: config.jobType,
+          jobSpec: config.jobSpec,
+          jobJD: config.jobJD,
+          hardText: config.hardText || '',
+          feedbackContext: config.feedbackContext || '',
+          feedbackRev: config.feedbackRev || 'none'
+        }
+      },
       (response) => {
         if (chrome.runtime.lastError) {
           resolve({ dimensions: null, error: chrome.runtime.lastError.message });
@@ -1181,13 +1218,7 @@ function restoreLastResults() {
           resolve(false);
           return;
         }
-        activeWeights = payload.weights || null;
-        lastScreenConfig = payload.screenConfig || null;
-        results = payload.items.map(MokaPersist.hydrateScreeningItem);
-        results.forEach((item) => {
-          ensureHardLocal(item);
-          applyMergedHard(item);
-        });
+        restoreResultsFromPayload(payload);
         const when = payload.savedAt ? new Date(payload.savedAt).toLocaleString() : '';
         publishResults(`上次结果${when ? '（' + when + '）' : ''}，共 ${results.length} 位`, null, { flush: true });
         resolve(true);
@@ -1198,12 +1229,12 @@ function restoreLastResults() {
   });
 }
 
-function exportResultsCsv() {
+function exportResultsCsv(feedbackByAppId) {
   if (!results.length) {
     updatePanelStatus('暂无结果可导出');
     return;
   }
-  const csv = MokaPersist.screeningToCsv(results, location.origin);
+  const csv = MokaPersist.screeningToCsv(results, location.origin, feedbackByAppId);
   const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -1230,33 +1261,91 @@ function setMustHaveWaived(item, mustHaveItem, waived) {
   schedulePersistLastScreening();
 }
 
+function restoreResultsFromPayload(payload) {
+  if (!payload || !Array.isArray(payload.items) || !payload.items.length) return false;
+  activeWeights = payload.weights || activeWeights;
+  lastScreenConfig = payload.screenConfig || lastScreenConfig;
+  results = payload.items.map(MokaPersist.hydrateScreeningItem);
+  results.forEach((item) => {
+    ensureHardLocal(item);
+    applyMergedHard(item);
+  });
+  return true;
+}
+
+function ensureScreenConfig() {
+  return new Promise((resolve) => {
+    if (lastScreenConfig) {
+      resolve(lastScreenConfig);
+      return;
+    }
+    try {
+      chrome.storage.local.get(lastScreeningKey(), (r) => {
+        const payload = r && r[lastScreeningKey()];
+        if (payload) restoreResultsFromPayload(payload);
+        resolve(lastScreenConfig);
+      });
+    } catch (e) {
+      resolve(null);
+    }
+  });
+}
+
+function findResultOrRestore(appId) {
+  const direct = findResult(appId);
+  if (direct) return Promise.resolve(direct);
+  return ensureScreenConfig().then(() => findResult(appId));
+}
+
+async function handleRescore(appId) {
+  const item = await findResultOrRestore(appId);
+  if (!item) {
+    return { ok: false, error: '未找到该候选人，请刷新 Moka 页面或重新筛选' };
+  }
+  const cfg = await ensureScreenConfig();
+  if (!cfg) {
+    return { ok: false, error: '无法重评：请重新跑一轮筛选' };
+  }
+  await rescoreItem(item);
+  publishResults(undefined, undefined, { flush: true });
+  if (item.score && item.score.level === '错误') {
+    const msg = (item.rawScore && (item.rawScore.error || (item.rawScore.concerns && item.rawScore.concerns[0])))
+      || '评分仍失败';
+    return { ok: false, error: msg };
+  }
+  return { ok: true };
+}
+
 async function rescoreItem(item) {
   if (!item || !item.app || item.__rescoring) return;
-  if (!lastScreenConfig) {
-    updatePanelStatus('无法重评：请重新跑一轮筛选');
-    return;
-  }
+  const cfg = lastScreenConfig;
+  if (!cfg) return;
+  const weights = cfg.weights || activeWeights || normalizeWeights(null);
   item.__rescoring = true;
+  publishResults(undefined, undefined, { flush: true });
   if (item.app) item.app.__enriched = false;
   try {
     setRowStage(item.app.id, 'enrich');
     await enrichCandidate(item.app);
     item.profile = buildCandidateProfile(item.app);
-    item.hardLocal = evaluateHardConditions(item.app, lastScreenConfig.hc, lastScreenConfig.jobType);
+    item.hardLocal = evaluateHardConditions(item.app, cfg.hc, cfg.jobType);
     item.hard = item.hardLocal;
-    item.keywords = MokaMatch.matchKeywords(item.profile, lastScreenConfig.keywords || []);
+    item.keywords = MokaMatch.matchKeywords(item.profile, cfg.keywords || []);
     applyHardToRow(item);
     applyKeywordTags(item);
     setRowStage(item.app.id, 'score');
+    const fbBundle = await loadFeedbackBundle(cfg.jobId);
     const raw = await scoreViaBackground(item.profile, {
-      jobType: lastScreenConfig.jobType,
-      jobSpec: lastScreenConfig.jobSpec,
-      jobJD: lastScreenConfig.jobJD,
-      hardText: lastScreenConfig.hardText
+      jobType: cfg.jobType,
+      jobSpec: cfg.jobSpec,
+      jobJD: cfg.jobJD,
+      hardText: cfg.hardText,
+      feedbackContext: fbBundle.context,
+      feedbackRev: fbBundle.rev
     });
-    applyScoreResult(item, raw, lastScreenConfig.weights);
+    applyScoreResult(item, raw, weights);
   } catch (err) {
-    applyScoreResult(item, { dimensions: null, error: (err && err.message) || '重评失败' }, lastScreenConfig.weights);
+    applyScoreResult(item, { dimensions: null, error: (err && err.message) || '重评失败' }, weights);
   } finally {
     item.__rescoring = false;
     clearRowStage(item.app.id);

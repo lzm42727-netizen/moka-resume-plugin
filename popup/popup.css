@@ -261,6 +261,53 @@ body {
   font-weight: 600;
 }
 
+.mp-name-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mp-feedback {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.mp-fb-btn {
+  border: 1px solid #e8e8e8;
+  background: #fff;
+  border-radius: 6px;
+  width: auto;
+  min-width: 28px;
+  height: 26px;
+  padding: 0 6px;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 0.72;
+  transition: opacity 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.mp-fb-btn:hover {
+  opacity: 1;
+  border-color: #91d5ff;
+  background: #f6fbff;
+}
+
+.mp-fb-btn.on.positive {
+  opacity: 1;
+  border-color: #52c41a;
+  background: #f6ffed;
+}
+
+.mp-fb-btn.on.negative {
+  opacity: 1;
+  border-color: #ff4d4f;
+  background: #fff1f0;
+}
+
 .mp-meta {
   color: #888;
   font-size: 11px;

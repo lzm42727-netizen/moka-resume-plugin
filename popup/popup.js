@@ -546,6 +546,10 @@ async function loadJobs() {
         return restoreCurrentJobPreset();
       });
       refreshLastResultsButton();
+      if (resultState.items.length) {
+        resultState.items = mergeFeedbackIntoViews(resultState.items);
+        renderResults();
+      }
     });
   }
 }
@@ -810,8 +814,21 @@ document.querySelectorAll('#cond-school input, #cond-age input').forEach((el) =>
   el.addEventListener('change', scheduleSaveJobPreset);
 });
 
+function syncAboutVersion() {
+  const el = document.getElementById('about-version');
+  if (!el) return;
+  try {
+    const v = chrome.runtime.getManifest().version;
+    el.textContent = '版本：' + v;
+  } catch (e) {
+    el.textContent = '版本：未知';
+  }
+}
+
 window.addEventListener('load', async () => {
+  syncAboutVersion();
   await loadSettings();
+  await loadFeedbackFromStorage();
   loadJobs();
   applyJobTypeVisibility();
   updateWeightLabels();
@@ -824,6 +841,92 @@ const ROW_STAGE = { enrich: '① 补全经历…', score: '② AI 评分中…' 
 
 const resultState = { items: [], status: '', banner: null, screening: false };
 const resultFilter = { tab: 'all', query: '' };
+let feedbackRecord = {};
+let saveFeedbackTimer = null;
+
+function loadFeedbackFromStorage() {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get(MokaFeedback.FEEDBACK_STORAGE_KEY, (res) => {
+        feedbackRecord = (res && res[MokaFeedback.FEEDBACK_STORAGE_KEY]) || {};
+        resolve();
+      });
+    } catch (e) {
+      feedbackRecord = {};
+      resolve();
+    }
+  });
+}
+
+function scheduleSaveFeedback() {
+  if (saveFeedbackTimer) return;
+  saveFeedbackTimer = setTimeout(() => {
+    saveFeedbackTimer = null;
+    try {
+      chrome.storage.local.set({ [MokaFeedback.FEEDBACK_STORAGE_KEY]: feedbackRecord });
+    } catch (e) { /* ignore */ }
+  }, 300);
+}
+
+function mergeFeedbackIntoViews(items) {
+  const jobId = currentJobId();
+  return (items || []).map((v) => {
+    const base = Object.assign({}, v);
+    delete base.feedback;
+    base.feedback = jobId ? MokaFeedback.getFeedbackVerdict(feedbackRecord, jobId, String(v.id)) : null;
+    return base;
+  });
+}
+
+function buildFeedbackSnapshot(view) {
+  const s = (view && view.score) || {};
+  const dims = {};
+  const dimKeys = ['experience', 'skill', 'education', 'potential'];
+  if (s.dims && typeof s.dims === 'object') {
+    dimKeys.forEach((k) => {
+      const d = s.dims[k];
+      if (d && typeof d.score === 'number') dims[k] = d.score;
+    });
+  }
+  return {
+    score: s.score,
+    baseScore: s.baseScore,
+    penalty: s.penalty,
+    level: s.level,
+    dims,
+    hardMissing: (view && view.hardMissing) || [],
+    waivedMustHaves: (s.waivedUnmet || []).map((r) => r && r.item).filter(Boolean),
+    highlights: s.highlights || [],
+    concerns: s.concerns || [],
+    pluginRecommend: typeof s.score === 'number' && s.score >= 50
+  };
+}
+
+function feedbackMapForExport() {
+  const jobId = currentJobId();
+  if (!jobId) return {};
+  const bag = MokaFeedback.getFeedbackForJob(feedbackRecord, jobId);
+  const out = {};
+  Object.entries(bag).forEach(([appId, entry]) => {
+    out[appId] = entry.verdict;
+  });
+  return out;
+}
+
+function setCandidateFeedback(appId, verdict, view) {
+  const jobId = currentJobId();
+  if (!jobId) {
+    setPresetNote('请先选择职位后再标注反馈', '#fa8c16');
+    return;
+  }
+  const current = MokaFeedback.getFeedbackVerdict(feedbackRecord, jobId, appId);
+  const nextVerdict = current === verdict ? null : verdict;
+  const snapshot = nextVerdict ? buildFeedbackSnapshot(view) : null;
+  feedbackRecord = MokaFeedback.putFeedback(feedbackRecord, jobId, appId, nextVerdict, snapshot);
+  scheduleSaveFeedback();
+  resultState.items = mergeFeedbackIntoViews(resultState.items);
+  renderResults();
+}
 
 function pullResults() {
   sendToMoka({ action: 'getResults' }).then((snap) => {
@@ -833,7 +936,7 @@ function pullResults() {
 
 function applySnapshot(snap) {
   if (!snap) return;
-  resultState.items = Array.isArray(snap.items) ? snap.items : [];
+  resultState.items = mergeFeedbackIntoViews(Array.isArray(snap.items) ? snap.items : []);
   resultState.status = snap.status || '';
   resultState.banner = snap.banner || null;
   resultState.screening = !!snap.screening;
@@ -862,7 +965,7 @@ function bindResultFilters() {
     renderResults();
   });
   document.getElementById('export-results').addEventListener('click', () => {
-    sendToMoka({ action: 'exportCsv' });
+    sendToMoka({ action: 'exportCsv', feedbackByAppId: feedbackMapForExport() });
   });
 }
 
@@ -888,8 +991,11 @@ function renderResults() {
 
   const sum = MokaMatch.summarizeResultViews(resultState.items);
   const extra = resultState.status ? resultState.status : '尚未开始筛选。配好条件后点下方「开始筛选」。';
+  const jobId = currentJobId();
+  const fb = jobId ? MokaFeedback.summarizeFeedback(feedbackRecord, jobId) : { total: 0, positive: 0, negative: 0 };
+  const fbText = fb.total ? ` · 已标注 ${fb.total}（要沟通 ${fb.positive} · 不考虑 ${fb.negative}）` : '';
   status.textContent = sum.total
-    ? `评分 ${sum.scored}/${sum.total} · 推荐 ${sum.recommend} · ${extra}`
+    ? `评分 ${sum.scored}/${sum.total} · 推荐 ${sum.recommend}${fbText} · ${extra}`
     : extra;
 
   list.innerHTML = '';
@@ -978,7 +1084,7 @@ function createResultRow(view) {
   const row = document.createElement('div');
   row.className = 'mp-row'
     + (view.hardPassed === false ? ' failed' : '')
-    + (view.stage ? ' scoring' : '');
+    + (view.stage || view.rescoring ? ' scoring' : '');
 
   const scoreEl = document.createElement('div');
   if (view.score) {
@@ -993,20 +1099,25 @@ function createResultRow(view) {
   const info = document.createElement('div');
   info.className = 'mp-info';
 
+  const nameRow = document.createElement('div');
+  nameRow.className = 'mp-name-row';
+
   const name = document.createElement('div');
   name.className = 'mp-name';
   name.textContent = view.name;
-  info.appendChild(name);
+  nameRow.appendChild(name);
+  nameRow.appendChild(buildFeedbackButtons(view));
+  info.appendChild(nameRow);
 
   const meta = document.createElement('div');
   meta.className = 'mp-meta';
   meta.textContent = view.meta || '';
   info.appendChild(meta);
 
-  if (view.stage && ROW_STAGE[view.stage]) {
+  if ((view.stage && ROW_STAGE[view.stage]) || view.rescoring) {
     const stage = document.createElement('div');
     stage.className = 'mp-stage';
-    stage.textContent = ROW_STAGE[view.stage];
+    stage.textContent = (view.stage && ROW_STAGE[view.stage]) || '② AI 评分中…';
     info.appendChild(stage);
     const bar = document.createElement('div');
     bar.className = 'mp-bar';
@@ -1065,11 +1176,13 @@ function createResultRow(view) {
       const retry = document.createElement('button');
       retry.type = 'button';
       retry.className = 'mp-retry';
-      retry.textContent = '重评';
+      retry.textContent = view.rescoring ? '重评中…' : '重评';
+      retry.disabled = !!view.rescoring;
       retry.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        sendToMoka({ action: 'rescore', appId: view.id });
+        if (view.rescoring) return;
+        requestRescore(view.id);
       });
       level.appendChild(retry);
     }
@@ -1104,4 +1217,65 @@ function createResultRow(view) {
     sendToMoka({ action: 'openCandidate', appId: view.id });
   });
   return row;
+}
+
+function setViewRescoring(appId, rescoring) {
+  const id = String(appId);
+  resultState.items = resultState.items.map((v) => (
+    String(v.id) === id ? Object.assign({}, v, { rescoring: !!rescoring, stage: rescoring ? (v.stage || 'score') : v.stage }) : v
+  ));
+  renderResults();
+}
+
+function markRescoreError(message) {
+  const status = document.getElementById('result-status');
+  if (status) {
+    status.textContent = message;
+    status.style.color = '#fa8c16';
+    setTimeout(() => { status.style.color = ''; renderResults(); }, 4000);
+  }
+}
+
+async function requestRescore(appId) {
+  setViewRescoring(appId, true);
+  const resp = await sendToMoka({ action: 'rescore', appId });
+  const snap = await sendToMoka({ action: 'getResults' });
+  if (snap && Array.isArray(snap.items)) applySnapshot(snap);
+  else setViewRescoring(appId, false);
+  if (!resp || !resp.ok) {
+    markRescoreError((resp && resp.error) || '重评失败：请刷新 Moka 页面后重试');
+  }
+}
+
+function buildFeedbackButtons(view) {
+  const wrap = document.createElement('div');
+  wrap.className = 'mp-feedback';
+
+  if (!currentJobId()) return wrap;
+
+  [
+    {
+      verdict: 'positive',
+      label: '要沟通',
+      title: '我会沟通这位候选人 · 用于校准 AI 下次推荐（再点取消）'
+    },
+    {
+      verdict: 'negative',
+      label: '不考虑',
+      title: '不考虑这位候选人 · 用于校准 AI 下次推荐（再点取消）'
+    }
+  ].forEach(({ verdict, label, title }) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'mp-fb-btn' + (view.feedback === verdict ? ' on ' + verdict : '');
+    btn.textContent = label;
+    btn.title = title;
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setCandidateFeedback(view.id, verdict, view);
+    });
+    wrap.appendChild(btn);
+  });
+  return wrap;
 }

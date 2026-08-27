@@ -21,6 +21,7 @@ chrome.runtime.onStartup.addListener(enableSidePanelOnActionClick);
 try { importScripts('config.local.js'); } catch (e) { /* 无本地配置时忽略 */ }
 importScripts('lib/score.js');
 importScripts('lib/persist.js');
+importScripts('lib/feedback.js');
 function localForcedSettings() {
   return (typeof self !== 'undefined' && self.MOKA_LOCAL_SETTINGS) ? self.MOKA_LOCAL_SETTINGS : {};
 }
@@ -234,10 +235,12 @@ async function handleScoreCandidate({ profile, config }) {
 
   const jobSpec = config.jobSpec || {};
   const hardText = (config && config.hardText) || '';
+  const feedbackContext = (config && config.feedbackContext) || '';
+  const feedbackRev = (config && config.feedbackRev) || 'none';
   await llmCacheReady;
   const cacheKey = MokaPersist.stableHash({
     profile, spec: jobSpec, jobJD: config.jobJD || '', jobType: config.jobType, hardText, model: settings.modelName,
-    promptRev: MokaScore.PROMPT_VERSION
+    promptRev: MokaScore.PROMPT_VERSION, feedbackRev
   });
   if (scoreCache.has(cacheKey)) return scoreCache.get(cacheKey);
 
@@ -245,7 +248,7 @@ async function handleScoreCandidate({ profile, config }) {
     '你是资深招聘专家，擅长客观评估候选人与岗位的匹配度。'
     + '严格只输出一个 JSON 对象，禁止输出任何思考过程、前言、分析说明或 markdown。'
     + '每个维度的 reason 控制在 40 字以内，highlights/concerns 每条不超过 30 字。';
-  const userPrompt = buildDimensionPrompt(profile, jobSpec, config.jobType, config.jobJD, hardText);
+  const userPrompt = buildDimensionPrompt(profile, jobSpec, config.jobType, config.jobJD, hardText, feedbackContext);
 
   // 推理型模型会先输出思考，需给足 token，避免 JSON 被截断
   const content = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: 4000, temperature: 0 });
@@ -467,11 +470,13 @@ function renderSpec(spec) {
 /**
  * 候选人「分维度」评分提示词
  */
-function buildDimensionPrompt(profile, spec, jobType, jobJD, hardText) {
+function buildDimensionPrompt(profile, spec, jobType, jobJD, hardText, feedbackContext) {
   const hasSpec = spec && (spec.summary || (spec.responsibilities && spec.responsibilities.length) || (spec.mustHaves && spec.mustHaves.length));
   const jobBlock = hasSpec ? renderSpec(spec) : (jobJD || '（无岗位信息）');
   const hardBlock = MokaScore.hardConditionsPromptBlock(hardText);
   const hardSection = hardBlock ? `\n${hardBlock}\n` : '';
+  const feedbackBlock = MokaFeedback.feedbackPromptBlock(feedbackContext);
+  const feedbackSection = feedbackBlock ? `\n${feedbackBlock}\n` : '';
 
   return `请基于岗位信息，对候选人做「分维度」评估。
 
@@ -480,8 +485,7 @@ ${profile || '（无候选人信息）'}
 
 【岗位信息】
 ${jobBlock}
-${hardSection}
-【职位类型】
+${hardSection}${feedbackSection}【职位类型】
 ${JOB_TYPE_TEXT[jobType] || JOB_TYPE_TEXT['full-time']}
 
 请对以下四个维度分别打分（0-100 整数），并给出简短理由，尽量引用候选人简历中的具体经历/项目作为证据：

@@ -181,6 +181,7 @@
                 <button type="button" class="mp-filter" data-filter="recommend">推荐</button>
                 <button type="button" class="mp-filter" data-filter="hardfail">硬筛未过</button>
                 <button type="button" class="mp-filter" data-filter="error">评分失败</button>
+                <button type="button" class="mp-filter" data-filter="feedback">已标注</button>
                 <input id="result-search" class="mp-search" type="search" placeholder="搜索姓名">
             </div>
             <div id="result-list" class="mp-list"></div>
@@ -236,7 +237,7 @@
                 <h3 class="panel-title"><span class="panel-icon">ℹ️</span>关于</h3>
                 <div class="about-content">
                     <p class="about-name"><strong>Moka 智能简历筛选助手</strong></p>
-                    <p class="about-version">版本：1.5.10</p>
+                    <p class="about-version" id="about-version">版本：…</p>
                     <p>这是一个基于 AI 的 Moka 候选人智能筛选插件。</p>
 
                     <h4>主要功能</h4>
@@ -289,6 +290,7 @@
 </div>
     <script src="../lib/match.js"></script>
     <script src="../lib/persist.js"></script>
+    <script src="../lib/feedback.js"></script>
     <script src="../config.local.js"></script>
     <script src="popup.js"></script>
 </body>
