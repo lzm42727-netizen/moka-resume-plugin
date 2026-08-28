@@ -1063,12 +1063,7 @@ function buildEvidenceSplit(appId, cols) {
         btn.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
-          sendToMoka({
-            action: 'waiveMustHave',
-            appId,
-            item: r.item,
-            waived: r.action === 'ignore'
-          });
+          requestWaiveMustHave(appId, r.item, r.action === 'ignore');
         });
         line.appendChild(btn);
       }
@@ -1233,6 +1228,15 @@ function markRescoreError(message) {
     status.textContent = message;
     status.style.color = '#fa8c16';
     setTimeout(() => { status.style.color = ''; renderResults(); }, 4000);
+  }
+}
+
+async function requestWaiveMustHave(appId, item, waived) {
+  const resp = await sendToMoka({ action: 'waiveMustHave', appId, item, waived });
+  const snap = await sendToMoka({ action: 'getResults' });
+  if (snap && Array.isArray(snap.items)) applySnapshot(snap);
+  if (!resp || !resp.ok) {
+    markRescoreError((resp && resp.error) || '忽略失败：请刷新 Moka 页面后重试');
   }
 }
 

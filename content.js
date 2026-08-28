@@ -215,9 +215,10 @@ function init() {
         .catch((err) => sendResponse({ ok: false, error: (err && err.message) || '重评失败' }));
       return true;
     } else if (request.action === 'waiveMustHave') {
-      const item = findResult(request.appId);
-      setMustHaveWaived(item, request.item, !!request.waived);
-      sendResponse({ ok: true });
+      handleWaiveMustHave(request.appId, request.item, !!request.waived)
+        .then((result) => sendResponse(result))
+        .catch((err) => sendResponse({ ok: false, error: (err && err.message) || '操作失败' }));
+      return true;
     }
     return true;
   });
@@ -1247,18 +1248,43 @@ function exportResultsCsv(feedbackByAppId) {
 }
 
 /** 单人忽略 / 恢复某条自增硬性：加回或重新扣除该条 −5，再按新分排序 */
-function setMustHaveWaived(item, mustHaveItem, waived) {
-  if (!item || !item.rawScore || !activeWeights) return;
+function setMustHaveWaived(item, mustHaveItem, waived, weights) {
+  const w = weights || activeWeights;
+  if (!item || !item.rawScore || !w) return false;
+  const key = String(mustHaveItem || '').trim();
+  if (!key) return false;
   if (!item.waivedMustHaves) item.waivedMustHaves = new Set();
-  if (waived) item.waivedMustHaves.add(mustHaveItem);
-  else item.waivedMustHaves.delete(mustHaveItem);
+  if (waived) item.waivedMustHaves.add(key);
+  else item.waivedMustHaves.delete(key);
   ensureHardLocal(item);
-  item.score = composeFinalScore(item.rawScore, activeWeights, item.waivedMustHaves, (item.hardLocal && item.hardLocal.missing) || []);
+  item.score = composeFinalScore(item.rawScore, w, item.waivedMustHaves, (item.hardLocal && item.hardLocal.missing) || []);
   applyMergedHard(item);
+  activeWeights = w;
   updateRow(item);
   scheduleSort();
   updateHeaderCount();
   schedulePersistLastScreening();
+  return true;
+}
+
+async function handleWaiveMustHave(appId, mustHaveItem, waived) {
+  const item = await findResultOrRestore(appId);
+  if (!item) {
+    return { ok: false, error: '未找到该候选人，请刷新 Moka 页面或重新筛选' };
+  }
+  await ensureScreenConfig();
+  const weights = activeWeights
+    || (lastScreenConfig && lastScreenConfig.weights)
+    || normalizeWeights(null);
+  if (!item.rawScore) {
+    return { ok: false, error: '无法忽略：缺少评分数据，请重评该候选人' };
+  }
+  const ok = setMustHaveWaived(item, mustHaveItem, waived, weights);
+  if (!ok) {
+    return { ok: false, error: '无法忽略：缺少权重配置，请重新跑一轮筛选' };
+  }
+  publishResults(undefined, undefined, { flush: true });
+  return { ok: true };
 }
 
 function restoreResultsFromPayload(payload) {
