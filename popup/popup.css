@@ -110,6 +110,19 @@ body {
   overflow: hidden;
 }
 
+#results-tab.cal-open .mp-filters,
+#results-tab.cal-open .mp-list,
+#results-tab.cal-open .mp-result-head {
+  display: none;
+}
+
+#results-tab.cal-open .mp-cal-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 .dock {
   flex-shrink: 0;
   padding: 10px 16px 14px;
@@ -260,6 +273,202 @@ body {
   margin-top: 2px;
   font-size: 11px;
   color: #8c8c8c;
+}
+
+.mp-cal-panel {
+  margin: 0;
+  padding: 10px 14px 16px;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fafafa;
+}
+
+.mp-cal-panel.hidden {
+  display: none;
+}
+
+.mp-cal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+
+.mp-cal-item {
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.mp-cal-item-detail {
+  font-size: 11px;
+  color: #8c8c8c;
+  line-height: 1.45;
+  margin-bottom: 6px;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.mp-cal-item-field {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 52px;
+  height: auto;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #262626;
+  background: #fff;
+  margin-bottom: 6px;
+  resize: vertical;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+}
+
+.mp-cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.mp-cal-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #262626;
+}
+
+.mp-cal-head .btn-link {
+  margin-top: 0;
+}
+
+.mp-cal-section {
+  margin-bottom: 10px;
+}
+
+.mp-cal-section.hidden {
+  display: none;
+}
+
+.mp-cal-section:last-child {
+  margin-bottom: 0;
+}
+
+.mp-cal-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #8c8c8c;
+  letter-spacing: 0.02em;
+  margin-bottom: 6px;
+}
+
+.mp-cal-section-hint {
+  font-weight: 400;
+  color: #bfbfbf;
+  margin-left: 4px;
+}
+
+.mp-cal-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.mp-cal-metric {
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 6px;
+  padding: 8px 6px;
+  text-align: center;
+}
+
+.mp-cal-metric.warn {
+  border-color: #ffd591;
+  background: #fffaf0;
+}
+
+.mp-cal-metric.ok {
+  border-color: #b7eb8f;
+  background: #f6ffed;
+}
+
+.mp-cal-metric-num {
+  display: block;
+  font-size: 16px;
+  font-weight: 650;
+  color: #262626;
+  line-height: 1.2;
+}
+
+.mp-cal-metric.warn .mp-cal-metric-num {
+  color: #d46b08;
+}
+
+.mp-cal-metric.ok .mp-cal-metric-num {
+  color: #389e0d;
+}
+
+.mp-cal-metric-label {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: #8c8c8c;
+}
+
+.mp-cal-signals {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mp-cal-signal {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #595959;
+  background: #fff;
+  border: 1px solid #f0f0f0;
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.mp-cal-signal-count {
+  color: #8c8c8c;
+  margin-left: 4px;
+}
+
+.mp-cal-item.is-add {
+  border-style: dashed;
+}
+
+.mp-cal-item-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #262626;
+  margin-bottom: 2px;
+}
+
+.mp-cal-item-field:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.12);
+}
+
+.mp-cal-item-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.mp-cal-item-actions .btn-sm {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  flex: 0 0 auto;
 }
 
 .mp-filters {

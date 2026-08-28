@@ -744,7 +744,7 @@ function refreshMokaConnection() {
 async function refreshResultsAndJobContext() {
   await pullResults();
   await loadJobs();
-  await refreshLastResultsButton();
+  await refreshCalibrationButton();
 }
 
 if (chrome.tabs && chrome.tabs.onUpdated) {
@@ -804,7 +804,7 @@ async function loadJobs() {
   const { targetJobId, label, pageJobId } = resolveTargetJobFromResponse(response, jobs);
   if (pageJobId) lastKnownPageJobId = pageJobId;
   await switchJobPreset(prevJobId, targetJobId, label);
-  refreshLastResultsButton();
+  refreshCalibrationButton();
 
   if (!jobSelectBound) {
     jobSelectBound = true;
@@ -814,7 +814,8 @@ async function loadJobs() {
       const nextLabel = selected && selected.textContent ? selected.textContent : activePresetJobLabel;
       const prevId = activePresetJobId;
       switchJobPreset(prevId, nextId, nextLabel).then(() => {
-        refreshLastResultsButton();
+        refreshCalibrationButton();
+        hideCalibrationPanel();
       });
     });
   }
@@ -1142,7 +1143,7 @@ document.getElementById('resume-screening')?.addEventListener('click', async () 
 document.getElementById('discard-screening')?.addEventListener('click', async () => {
   hideResumeBanner();
   await sendToMoka({ action: 'discardScreeningJob' });
-  setResultHint('已放弃未完成的筛选任务（已评分结果仍保留，可查看上次结果）');
+  setResultHint('已放弃未完成的筛选任务（已评分结果仍保留，可在「已决策」查看）');
   await refreshResultsAndJobContext();
 });
 
@@ -1150,34 +1151,202 @@ document.getElementById('suggest-weights').addEventListener('click', () => {
   loadJobSpec();
 });
 
-async function refreshLastResultsButton() {
-  const btn = document.getElementById('show-last-results');
-  const tab = await getMokaTab();
-  if (!isMokaTab(tab)) {
-    btn.disabled = true;
-    return;
-  }
-  const response = await sendToMoka({ action: 'hasLastResults' }, { retries: 8, delayMs: 250 });
-  if (!response || !response.has) {
-    btn.disabled = true;
-    btn.title = '当前职位还没有保存过筛选结果';
-    return;
-  }
+function refreshCalibrationButton() {
+  const btn = document.getElementById('open-calibration');
+  if (!btn) return;
+  const jobId = effectiveJobId();
+  const fb = jobId ? MokaFeedback.summarizeFeedback(feedbackRecord, jobId) : { total: 0 };
   btn.disabled = false;
-  btn.title = response.savedAt ? `上次保存：${new Date(response.savedAt).toLocaleString()}` : '查看上次筛选结果';
+  btn.title = fb.total
+    ? `本岗已有 ${fb.total} 条决策，点击复盘并查看优化建议`
+    : '根据本岗历史决策复盘；暂无决策时也可打开查看说明';
 }
 
-document.getElementById('show-last-results').addEventListener('click', async () => {
-  const tab = await getMokaTab();
-  if (!isMokaTab(tab)) return;
-  chrome.tabs.sendMessage(tab.id, { action: 'showLastResults' }, (response) => {
-    if (chrome.runtime.lastError || !response || !response.ok) {
-      alert('❌ 没有可回看的上次结果，请先完成一轮筛选');
+function hideCalibrationPanel() {
+  const panel = document.getElementById('calibration-panel');
+  if (panel) panel.classList.add('hidden');
+  const tab = document.getElementById('results-tab');
+  if (tab) tab.classList.remove('cal-open');
+}
+
+function appendCalMetric(parent, num, label, cls) {
+  const el = document.createElement('div');
+  el.className = 'mp-cal-metric' + (cls ? ' ' + cls : '');
+  const n = document.createElement('span');
+  n.className = 'mp-cal-metric-num';
+  n.textContent = String(num);
+  const l = document.createElement('span');
+  l.className = 'mp-cal-metric-label';
+  l.textContent = label;
+  el.appendChild(n);
+  el.appendChild(l);
+  parent.appendChild(el);
+}
+
+function buildSuggestionCard(sug, opts) {
+  const options = opts || {};
+  const item = document.createElement('div');
+  item.className = 'mp-cal-item' + (options.isAdd ? ' is-add' : '');
+
+  const title = document.createElement('div');
+  title.className = 'mp-cal-item-title';
+  title.textContent = sug.title || '建议';
+  item.appendChild(title);
+
+  if (sug.detail) {
+    const detail = document.createElement('div');
+    detail.className = 'mp-cal-item-detail';
+    detail.textContent = sug.detail;
+    item.appendChild(detail);
+  }
+
+  let field = null;
+  if (sug.type === 'mustHave' || options.isAdd) {
+    field = document.createElement('textarea');
+    field.className = 'mp-cal-item-field';
+    field.rows = 2;
+    field.placeholder = '必备项文案，可修改后再保存';
+    field.value = sug.editableValue || '';
+    item.appendChild(field);
+  }
+
+  if (sug.type === 'weight' || sug.type === 'mustHave' || options.isAdd) {
+    const actions = document.createElement('div');
+    actions.className = 'mp-cal-item-actions';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-primary btn-sm';
+    btn.textContent = '采纳并保存';
+    btn.addEventListener('click', () => {
+      if (sug.type === 'mustHave' || options.isAdd) {
+        const value = field ? field.value.trim() : '';
+        if (!value) {
+          showDockToast('请先填写必备项文案', 'warn');
+          if (field) field.focus();
+          return;
+        }
+        applyCalibrationSuggestion({
+          type: 'mustHave',
+          apply: { mustHave: value }
+        });
+        return;
+      }
+      applyCalibrationSuggestion(sug);
+    });
+    actions.appendChild(btn);
+    item.appendChild(actions);
+  }
+
+  return item;
+}
+
+function renderCalibrationPanel() {
+  const panel = document.getElementById('calibration-panel');
+  const metricsEl = document.getElementById('calibration-metrics');
+  const signalsWrap = document.getElementById('calibration-signals-wrap');
+  const signalsEl = document.getElementById('calibration-signals');
+  const listEl = document.getElementById('calibration-suggestions');
+  if (!panel || !metricsEl || !signalsEl || !listEl || !window.MokaCalibrate) return;
+
+  const jobId = effectiveJobId();
+  metricsEl.textContent = '';
+  signalsEl.textContent = '';
+  listEl.textContent = '';
+
+  if (!jobId) {
+    if (signalsWrap) signalsWrap.classList.add('hidden');
+    listEl.appendChild(buildSuggestionCard({
+      type: 'info',
+      title: '请先选择职位',
+      detail: '选择职位后再查看本岗校准。'
+    }));
+    panel.classList.remove('hidden');
+    const tab = document.getElementById('results-tab');
+    if (tab) tab.classList.add('cal-open');
+    switchTab('results');
+    return;
+  }
+
+  const report = MokaCalibrate.buildCalibrationReport(feedbackRecord, jobId, {
+    weights: readWeights()
+  });
+
+  appendCalMetric(metricsEl, report.total, '已决策');
+  appendCalMetric(metricsEl, report.recommend, '已推荐');
+  appendCalMetric(metricsEl, report.eliminate, '已淘汰');
+  appendCalMetric(metricsEl, report.agree, '与 AI 一致', 'ok');
+  appendCalMetric(metricsEl, report.overRecommend, 'AI 推你却淘汰', report.overRecommend ? 'warn' : '');
+  appendCalMetric(metricsEl, report.underRecommend, '你推 AI 未推', report.underRecommend ? 'warn' : '');
+
+  const signals = (report.topConcerns || []).slice(0, 3);
+  if (signals.length) {
+    if (signalsWrap) signalsWrap.classList.remove('hidden');
+    signals.forEach((s) => {
+      const row = document.createElement('div');
+      row.className = 'mp-cal-signal';
+      row.textContent = s.text;
+      const count = document.createElement('span');
+      count.className = 'mp-cal-signal-count';
+      count.textContent = '×' + s.count;
+      row.appendChild(count);
+      signalsEl.appendChild(row);
+    });
+  } else if (signalsWrap) {
+    signalsWrap.classList.add('hidden');
+  }
+
+  const actionable = (report.suggestions || []).filter((s) => s.type === 'weight' || s.type === 'mustHave');
+  const infos = (report.suggestions || []).filter((s) => s.type === 'info');
+  actionable.forEach((sug) => listEl.appendChild(buildSuggestionCard(sug)));
+  infos.forEach((sug) => listEl.appendChild(buildSuggestionCard(sug)));
+  listEl.appendChild(buildSuggestionCard({
+    type: 'mustHave',
+    title: '自行新增必备项',
+    detail: '不依赖系统建议，直接写入本岗必备项。',
+    editableValue: ''
+  }, { isAdd: true }));
+
+  panel.classList.remove('hidden');
+  const tab = document.getElementById('results-tab');
+  if (tab) tab.classList.add('cal-open');
+  switchTab('results');
+}
+
+async function applyCalibrationSuggestion(sug) {
+  if (!sug || !sug.apply) return;
+  if (sug.type === 'weight' && sug.apply.weights) {
+    setWeights(sug.apply.weights);
+    updateWeightLabels();
+  } else if (sug.type === 'mustHave' && sug.apply.mustHave) {
+    const cur = mustHaveEditor.get();
+    let item = String(sug.apply.mustHave).trim();
+    if (window.MokaCalibrate && MokaCalibrate.normalizeMustHaveLabel) {
+      item = MokaCalibrate.normalizeMustHaveLabel(item) || item;
+    }
+    if (!item) {
+      showDockToast('必备项文案无效', 'warn');
       return;
     }
-    switchTab('results');
-    refreshResultsAndJobContext();
-  });
+    if (!cur.includes(item)) mustHaveEditor.set(cur.concat([item]));
+  } else {
+    return;
+  }
+  const ok = await saveJobPresetFor(effectiveJobId());
+  if (ok) {
+    showDockToast('保存成功，下次进入本岗将自动填充', 'ok');
+    setPresetNote('已按校准建议更新本岗配置，下次进入将自动填充', '#52c41a');
+  } else {
+    showDockToast('已写入表单，但保存失败，请点底部「保存当前筛选条件」', 'warn');
+  }
+  renderCalibrationPanel();
+}
+
+document.getElementById('open-calibration')?.addEventListener('click', () => {
+  renderCalibrationPanel();
+});
+
+document.getElementById('close-calibration')?.addEventListener('click', () => {
+  hideCalibrationPanel();
 });
 
 document.querySelectorAll('input[name="job-type"]').forEach((r) => {
@@ -1749,6 +1918,7 @@ function renderResults() {
 
   updateExportButton();
   updateFilterTabLabels();
+  refreshCalibrationButton();
 
   list.innerHTML = '';
   const visible = visibleResultViews();

@@ -104,7 +104,26 @@ describe('composeFinalScore', () => {
     assert.deepEqual(result.concerns, ['行业经验短']);
   });
 
-  it('subtracts 5 per unmet must-have and caps at 20', () => {
+  it('subtracts 5 per unmet must-have up to 30 (6 items)', () => {
+    const raw = okRaw({
+      mustHaveResults: [
+        { item: 'Java', met: false },
+        { item: 'Spring', met: false },
+        { item: 'MySQL', met: false },
+        { item: 'Redis', met: false },
+        { item: 'K8s', met: false },
+        { item: 'Docker', met: false }
+      ]
+    });
+    const result = composeFinalScore(raw, WEIGHTS, new Set());
+    assert.equal(result.baseScore, 70);
+    assert.equal(result.penalty, 30);
+    assert.equal(result.score, 40);
+    assert.equal(result.level, '一般');
+    assert.equal(result.unmet.length, 6);
+  });
+
+  it('does not soft-cap at 20 when five must-haves are unmet', () => {
     const raw = okRaw({
       mustHaveResults: [
         { item: 'Java', met: false },
@@ -115,11 +134,8 @@ describe('composeFinalScore', () => {
       ]
     });
     const result = composeFinalScore(raw, WEIGHTS, new Set());
-    assert.equal(result.baseScore, 70);
-    assert.equal(result.penalty, 20);
-    assert.equal(result.score, 50);
-    assert.equal(result.level, '值得推荐');
-    assert.equal(result.unmet.length, 5);
+    assert.equal(result.penalty, 25);
+    assert.equal(result.score, 45);
   });
 
   it('adds waived must-have points back without touching structured misses', () => {

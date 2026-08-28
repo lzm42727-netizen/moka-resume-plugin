@@ -131,7 +131,7 @@
                         <input id="must-input" class="chip-input" placeholder="最多 6 项，如 Java，回车添加">
                     </div>
                 </div>
-                <div class="cond-hint">最多 6 项。可自增；AI 判定是否满足。未满足每条 −5（最多 −20）。点「忽略」加回该条分数。学历等结构化项不能忽略</div>
+                <div class="cond-hint">最多 6 项。可自增；AI 判定是否满足。未满足每条 −5（满 6 条最多 −30）。点「忽略」加回该条分数。学历等结构化项不能忽略</div>
 
                 <div class="cond-row cond-row-wrap">
                     <span class="cond-label">简历关键词</span>
@@ -186,6 +186,24 @@
                 <div id="result-summary" class="mp-summary">尚未开始筛选</div>
                 <div id="result-hint" class="mp-hint">
                     <div class="mp-hint-main">配好条件后点下方「开始筛选」，进度和名单会出现在这里。</div>
+                </div>
+            </div>
+            <div id="calibration-panel" class="mp-cal-panel hidden">
+                <div class="mp-cal-head">
+                    <div class="mp-cal-title">本岗校准</div>
+                    <button type="button" id="close-calibration" class="btn-link">关闭</button>
+                </div>
+                <div class="mp-cal-section">
+                    <div class="mp-cal-section-label">决策概览</div>
+                    <div id="calibration-metrics" class="mp-cal-metrics"></div>
+                </div>
+                <div class="mp-cal-section" id="calibration-signals-wrap">
+                    <div class="mp-cal-section-label">常见信号</div>
+                    <div id="calibration-signals" class="mp-cal-signals"></div>
+                </div>
+                <div class="mp-cal-section">
+                    <div class="mp-cal-section-label">可采纳建议 <span class="mp-cal-section-hint">可改文案后再保存</span></div>
+                    <div id="calibration-suggestions" class="mp-cal-list"></div>
                 </div>
             </div>
             <div class="mp-filters">
@@ -295,7 +313,7 @@
             <button id="save-job-preset" class="btn btn-secondary" type="button" title="保存本岗硬性要求、必备项、关键词与评分权重">保存当前筛选条件</button>
         </div>
         <div class="button-group button-group-tight">
-            <button id="show-last-results" class="btn btn-secondary" disabled>查看上次结果</button>
+            <button id="open-calibration" class="btn btn-secondary" type="button" title="根据本岗历史决策复盘并给出可采纳的规则建议">本岗校准</button>
             <button id="export-results" class="btn btn-secondary" disabled title="导出本岗全部已决策简历">导出 CSV</button>
         </div>
         <div id="progress-container" class="progress-container hidden">
@@ -314,6 +332,7 @@
     <script src="../lib/match.js"></script>
     <script src="../lib/persist.js"></script>
     <script src="../lib/feedback.js"></script>
+    <script src="../lib/calibrate.js"></script>
     <script src="../config.local.js"></script>
     <script src="popup.js"></script>
 </body>
