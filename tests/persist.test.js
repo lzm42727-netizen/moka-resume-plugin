@@ -11,6 +11,9 @@ const {
   slimScreeningItem,
   hydrateScreeningItem,
   lastScreeningStorageKey,
+  LAST_ACTIVE_SCREENING_KEY,
+  resultContextKey,
+  screeningPayloadMatchesJob,
   jobPresetKey,
   sanitizeJobPreset,
   putJobPreset,
@@ -91,9 +94,9 @@ describe('csv', () => {
       hard: { passed: true },
       rawScore: {}
     };
-    const csv = screeningToCsv([item], 'https://app.mokahr.com', { 22: 'positive' });
+    const csv = screeningToCsv([item], 'https://app.mokahr.com', { 22: 'recommend' });
     assert.match(csv, /反馈/);
-    assert.match(csv, /要沟通/);
+    assert.match(csv, /推荐给用人部门/);
   });
 });
 
@@ -114,6 +117,14 @@ describe('slim screening', () => {
 
   it('builds a storage key from pipelineId', () => {
     assert.equal(lastScreeningStorageKey('12345'), 'mokaLastScreening:12345');
+    assert.equal(LAST_ACTIVE_SCREENING_KEY, 'mokaLastScreening:active');
+  });
+
+  it('builds result context keys and matches screening payloads to jobs', () => {
+    assert.equal(resultContextKey('pipe1', 'job9'), 'pipe1:job9');
+    const payload = { screenConfig: { jobId: 'job9' }, items: [{}] };
+    assert.equal(screeningPayloadMatchesJob(payload, 'job9'), true);
+    assert.equal(screeningPayloadMatchesJob(payload, 'job8'), false);
   });
 });
 

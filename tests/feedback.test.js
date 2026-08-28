@@ -4,30 +4,59 @@ const {
   sanitizeFeedbackEntry,
   sanitizeSnapshot,
   getFeedbackVerdict,
+  getFeedbackEntry,
+  feedbackSyncState,
+  isSyncedFeedback,
   getFeedbackForJob,
   putFeedback,
   summarizeFeedback,
   feedbackCsvLabel,
+  normalizeVerdict,
   buildFeedbackContext,
   feedbackRevision,
   buildFeedbackBundle,
   feedbackPromptBlock,
+  feedbackEntryToResultView,
+  listDecidedResultViews,
+  resultViewToCsvItem,
   FEEDBACK_TTL_MS,
   FEEDBACK_LIMIT_PER_JOB
 } = require('../lib/feedback.js');
 
+describe('normalizeVerdict', () => {
+  it('accepts recommend and eliminate', () => {
+    assert.equal(normalizeVerdict('recommend'), 'recommend');
+    assert.equal(normalizeVerdict('eliminate'), 'eliminate');
+  });
+
+  it('maps legacy positive/negative', () => {
+    assert.equal(normalizeVerdict('positive'), 'recommend');
+    assert.equal(normalizeVerdict('negative'), 'eliminate');
+  });
+});
+
 describe('sanitizeFeedbackEntry', () => {
-  it('accepts valid positive entries', () => {
+  it('accepts valid recommend entries', () => {
     const entry = sanitizeFeedbackEntry({
-      verdict: 'positive',
+      verdict: 'recommend',
       savedAt: 100,
       updatedAt: 200,
       snapshot: { score: 72, level: '值得推荐' }
     });
-    assert.equal(entry.verdict, 'positive');
+    assert.equal(entry.verdict, 'recommend');
     assert.equal(entry.savedAt, 100);
     assert.equal(entry.updatedAt, 200);
     assert.equal(entry.snapshot.score, 72);
+  });
+
+  it('normalizes legacy positive to recommend', () => {
+    const entry = sanitizeFeedbackEntry({
+      verdict: 'positive',
+      savedAt: 100,
+      updatedAt: 200,
+      snapshot: {}
+    });
+    assert.equal(entry.verdict, 'recommend');
   });
 
   it('rejects invalid verdicts', () => {
@@ -40,8 +69,8 @@ describe('putFeedback', () => {
   it('upserts and toggles off with null verdict', () => {
     const now = 1_000_000;
     let record = {};
-    record = putFeedback(record, 'job-1', 'app-1', 'positive', { score: 80 }, now);
-    assert.equal(getFeedbackVerdict(record, 'job-1', 'app-1'), 'positive');
+    record = putFeedback(record, 'job-1', 'app-1', 'recommend', { score: 80 }, now);
+    assert.equal(getFeedbackVerdict(record, 'job-1', 'app-1'), 'recommend');
 
     record = putFeedback(record, 'job-1', 'app-1', null, null, now + 1);
     assert.equal(getFeedbackVerdict(record, 'job-1', 'app-1'), null);
@@ -51,8 +80,8 @@ describe('putFeedback', () => {
   it('keeps savedAt on update and refreshes updatedAt', () => {
     const t0 = 1_000_000;
     const t1 = t0 + 5000;
-    let record = putFeedback({}, 'job-1', 'app-1', 'negative', { score: 40 }, t0);
-    record = putFeedback(record, 'job-1', 'app-1', 'negative', { score: 38 }, t1);
+    let record = putFeedback({}, 'job-1', 'app-1', 'eliminate', { score: 40 }, t0);
+    record = putFeedback(record, 'job-1', 'app-1', 'eliminate', { score: 38 }, t1);
     const entry = getFeedbackForJob(record, 'job-1')['app-1'];
     assert.equal(entry.savedAt, t0);
     assert.equal(entry.updatedAt, t1);
@@ -64,20 +93,20 @@ describe('putFeedback', () => {
     const record = {
       'job-1': {
         stale: sanitizeFeedbackEntry({
-          verdict: 'positive',
+          verdict: 'recommend',
           savedAt: now - FEEDBACK_TTL_MS - 1,
           updatedAt: now - FEEDBACK_TTL_MS - 1,
           snapshot: {}
         }),
         fresh: sanitizeFeedbackEntry({
-          verdict: 'negative',
+          verdict: 'eliminate',
           savedAt: now - 1000,
           updatedAt: now - 1000,
           snapshot: {}
         })
       }
     };
-    const next = putFeedback(record, 'job-1', 'app-new', 'positive', {}, now);
+    const next = putFeedback(record, 'job-1', 'app-new', 'recommend', {}, now);
     const bag = getFeedbackForJob(next, 'job-1');
     assert.equal(bag.stale, undefined);
     assert.ok(bag.fresh);
@@ -88,7 +117,7 @@ describe('putFeedback', () => {
     const now = 20_000_000;
     let record = {};
     for (let i = 0; i < FEEDBACK_LIMIT_PER_JOB + 5; i++) {
-      record = putFeedback(record, 'job-cap', 'app-' + i, 'positive', {}, now + i);
+      record = putFeedback(record, 'job-cap', 'app-' + i, 'recommend', {}, now + i);
     }
     const bag = getFeedbackForJob(record, 'job-cap');
     assert.equal(Object.keys(bag).length, FEEDBACK_LIMIT_PER_JOB);
@@ -98,19 +127,27 @@ describe('putFeedback', () => {
 });
 
 describe('summarizeFeedback', () => {
-  it('counts positive and negative labels', () => {
+  it('counts recommend and eliminate labels', () => {
     let record = {};
-    record = putFeedback(record, 'j1', 'a1', 'positive', {}, 1);
-    record = putFeedback(record, 'j1', 'a2', 'positive', {}, 2);
-    record = putFeedback(record, 'j1', 'a3', 'negative', {}, 3);
-    assert.deepEqual(summarizeFeedback(record, 'j1'), { total: 3, positive: 2, negative: 1 });
+    record = putFeedback(record, 'j1', 'a1', 'recommend', {}, 1);
+    record = putFeedback(record, 'j1', 'a2', 'recommend', {}, 2);
+    record = putFeedback(record, 'j1', 'a3', 'eliminate', {}, 3);
+    assert.deepEqual(summarizeFeedback(record, 'j1'), {
+      total: 3,
+      recommend: 2,
+      eliminate: 1,
+      positive: 2,
+      negative: 1
+    });
   });
 });
 
 describe('feedbackCsvLabel', () => {
   it('maps verdicts to export labels', () => {
-    assert.equal(feedbackCsvLabel('positive'), '要沟通');
-    assert.equal(feedbackCsvLabel('negative'), '不考虑');
+    assert.equal(feedbackCsvLabel('recommend'), '推荐给用人部门');
+    assert.equal(feedbackCsvLabel('eliminate'), '淘汰');
+    assert.equal(feedbackCsvLabel('positive'), '推荐给用人部门');
+    assert.equal(feedbackCsvLabel('negative'), '淘汰');
     assert.equal(feedbackCsvLabel(null), '');
   });
 });
@@ -120,21 +157,21 @@ describe('buildFeedbackContext', () => {
     assert.equal(buildFeedbackContext({}, 'job-x'), '');
   });
 
-  it('summarizes positive and negative examples', () => {
-    let record = putFeedback({}, 'job-1', 'a1', 'positive', {
+  it('summarizes recommend and eliminate examples', () => {
+    let record = putFeedback({}, 'job-1', 'a1', 'recommend', {
       score: 68,
       level: '值得推荐',
       highlights: ['有 Meta 投放经验']
     }, 1);
-    record = putFeedback(record, 'job-1', 'a2', 'negative', {
+    record = putFeedback(record, 'job-1', 'a2', 'eliminate', {
       score: 45,
       level: '一般',
       concerns: ['无对口实习']
     }, 2);
     const ctx = buildFeedbackContext(record, 'job-1');
-    assert.match(ctx, /要沟通/);
+    assert.match(ctx, /推荐给用人部门/);
     assert.match(ctx, /Meta 投放/);
-    assert.match(ctx, /不考虑/);
+    assert.match(ctx, /淘汰/);
     assert.match(ctx, /无对口实习/);
   });
 });
@@ -145,8 +182,8 @@ describe('feedbackRevision', () => {
   });
 
   it('changes when feedback is added', () => {
-    const a = feedbackRevision(putFeedback({}, 'job-1', 'a1', 'positive', {}, 1), 'job-1');
-    const b = feedbackRevision(putFeedback({}, 'job-1', 'a1', 'negative', {}, 2), 'job-1');
+    const a = feedbackRevision(putFeedback({}, 'job-1', 'a1', 'recommend', {}, 1), 'job-1');
+    const b = feedbackRevision(putFeedback({}, 'job-1', 'a1', 'eliminate', {}, 2), 'job-1');
     assert.notEqual(a, b);
     assert.notEqual(a, 'none');
   });
@@ -154,11 +191,12 @@ describe('feedbackRevision', () => {
 
 describe('buildFeedbackBundle', () => {
   it('combines context, revision and counts', () => {
-    let record = putFeedback({}, 'job-9', 'a1', 'positive', { score: 70 }, 1);
+    let record = putFeedback({}, 'job-9', 'a1', 'recommend', { score: 70 }, 1);
     const bundle = buildFeedbackBundle(record, 'job-9');
     assert.ok(bundle.context);
     assert.notEqual(bundle.rev, 'none');
     assert.equal(bundle.total, 1);
+    assert.equal(bundle.recommend, 1);
     assert.equal(bundle.positive, 1);
   });
 });
@@ -177,9 +215,28 @@ describe('feedbackPromptBlock', () => {
   });
 });
 
+describe('feedback sync state', () => {
+  it('tracks pending and failed Moka sync separately from synced decisions', () => {
+    let record = {};
+    record = putFeedback(record, 'job1', 'a1', 'recommend', { score: 70 }, 100, { mokaSynced: false });
+    let entry = getFeedbackEntry(record, 'job1', 'a1');
+    assert.equal(feedbackSyncState(entry), 'pending');
+    assert.equal(isSyncedFeedback(entry), false);
+
+    record = putFeedback(record, 'job1', 'a1', 'recommend', { score: 70 }, 200, { mokaSynced: true });
+    entry = getFeedbackEntry(record, 'job1', 'a1');
+    assert.equal(feedbackSyncState(entry), 'synced');
+    assert.equal(isSyncedFeedback(entry), true);
+
+    record = putFeedback(record, 'job1', 'a2', 'eliminate', { score: 40 }, 300, { mokaSynced: false, syncFailed: true });
+    entry = getFeedbackEntry(record, 'job1', 'a2');
+    assert.equal(feedbackSyncState(entry), 'failed');
+  });
+});
+
 describe('buildFeedbackContext mismatch hints', () => {
-  it('notes when positive feedback disagreed with plugin recommend flag', () => {
-    let record = putFeedback({}, 'job-1', 'a1', 'positive', {
+  it('notes when recommend feedback disagreed with plugin recommend flag', () => {
+    let record = putFeedback({}, 'job-1', 'a1', 'recommend', {
       score: 42,
       level: '一般',
       pluginRecommend: false,
@@ -189,8 +246,8 @@ describe('buildFeedbackContext mismatch hints', () => {
     assert.match(ctx, /当时 AI 未推荐/);
   });
 
-  it('notes when negative feedback disagreed with plugin recommend flag', () => {
-    let record = putFeedback({}, 'job-1', 'a2', 'negative', {
+  it('notes when eliminate feedback disagreed with plugin recommend flag', () => {
+    let record = putFeedback({}, 'job-1', 'a2', 'eliminate', {
       score: 72,
       level: '值得推荐',
       pluginRecommend: true,
@@ -212,5 +269,76 @@ describe('sanitizeSnapshot', () => {
     });
     assert.deepEqual(snap.dims, { experience: 70, skill: 80 });
     assert.equal(snap.pluginRecommend, true);
+  });
+
+  it('keeps candidate name and education fields for history display', () => {
+    const snap = sanitizeSnapshot({
+      name: '郝月',
+      meta: '本科 · 北大 · 设计',
+      highestDegree: '本科',
+      highestDegreeSchool: '北大',
+      score: 66
+    });
+    assert.equal(snap.name, '郝月');
+    assert.equal(snap.meta, '本科 · 北大 · 设计');
+    assert.equal(snap.highestDegree, '本科');
+    assert.equal(snap.highestDegreeSchool, '北大');
+  });
+});
+
+describe('listDecidedResultViews', () => {
+  it('merges live views with history-only feedback entries', () => {
+    let record = putFeedback({}, 'job-1', 'live-1', 'recommend', {
+      name: '在场', score: 80, level: '值得推荐'
+    }, 100);
+    record = putFeedback(record, 'job-1', 'old-2', 'eliminate', {
+      name: '历史同学', score: 40, level: '不太匹配', meta: '硕士 · 复旦'
+    }, 200);
+
+    const live = [{
+      id: 'live-1',
+      name: '在场更新名',
+      meta: '本科',
+      hardPassed: true,
+      structuredHardPassed: true,
+      hardMissing: [],
+      keywords: { hit: [], miss: [] },
+      score: { score: 82, level: '值得推荐' },
+      feedback: 'recommend',
+      feedbackSync: 'synced'
+    }];
+
+    const views = listDecidedResultViews(live, record, 'job-1');
+    assert.equal(views.length, 2);
+    assert.equal(views[0].id, 'old-2');
+    assert.equal(views[0].name, '历史同学');
+    assert.equal(views[0].fromHistory, true);
+    assert.equal(views[0].feedback, 'eliminate');
+    assert.equal(views[1].id, 'live-1');
+    assert.equal(views[1].name, '在场更新名');
+    assert.equal(views[1].fromHistory, false);
+  });
+
+  it('builds csv items from decided views', () => {
+    const view = feedbackEntryToResultView('9', sanitizeFeedbackEntry({
+      verdict: 'recommend',
+      savedAt: 1,
+      updatedAt: 1,
+      snapshot: {
+        name: '李四',
+        highestDegree: '硕士',
+        highestDegreeSchool: '交大',
+        score: 70,
+        level: '值得推荐',
+        dims: { skill: 75 },
+        highlights: ['稳'],
+        concerns: ['跳槽']
+      }
+    }));
+    const item = resultViewToCsvItem(view);
+    assert.equal(item.app.name, '李四');
+    assert.equal(item.app.highestDegree, '硕士');
+    assert.equal(item.score.score, 70);
+    assert.equal(item.rawScore.highlights[0], '稳');
   });
 });

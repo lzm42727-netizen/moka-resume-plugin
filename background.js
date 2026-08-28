@@ -22,6 +22,7 @@ try { importScripts('config.local.js'); } catch (e) { /* 无本地配置时忽�
 importScripts('lib/score.js');
 importScripts('lib/persist.js');
 importScripts('lib/feedback.js');
+importScripts('lib/screening-job.js');
 function localForcedSettings() {
   return (typeof self !== 'undefined' && self.MOKA_LOCAL_SETTINGS) ? self.MOKA_LOCAL_SETTINGS : {};
 }
@@ -30,7 +31,8 @@ const DEFAULT_SETTINGS = {
   apiProvider: 'openai',
   apiEndpoint: 'https://api.openai.com/v1/chat/completions',
   apiKey: '',
-  modelName: 'gpt-4o'
+  modelName: 'gpt-4o',
+  notifyOnComplete: true
 };
 
 const MAX_RETRIES = 3;
@@ -122,6 +124,124 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = LLM_TIMEOUT_MS) {
   }
 }
 
+const pendingMokaByTab = new Map();
+const PENDING_MOKA_STORAGE_KEY = 'mokaPendingMokaByTab';
+
+function tabIdFromSender(sender) {
+  return sender && sender.tab && sender.tab.id;
+}
+
+function hydratePendingMokaFromDisk() {
+  try {
+    chrome.storage.local.get(PENDING_MOKA_STORAGE_KEY, (res) => {
+      if (chrome.runtime.lastError) return;
+      const bag = (res && res[PENDING_MOKA_STORAGE_KEY]) || {};
+      Object.entries(bag).forEach(([k, v]) => {
+        const id = Number(k);
+        if (Number.isFinite(id) && v) pendingMokaByTab.set(id, v);
+      });
+    });
+  } catch (e) { /* ignore */ }
+}
+hydratePendingMokaFromDisk();
+
+function persistPendingMokaToDisk() {
+  try {
+    const bag = {};
+    pendingMokaByTab.forEach((v, k) => { bag[String(k)] = v; });
+    chrome.storage.local.set({ [PENDING_MOKA_STORAGE_KEY]: bag });
+  } catch (e) { /* ignore */ }
+}
+
+function setPendingMokaForTab(tabId, pending) {
+  if (tabId == null) return;
+  if (pending) pendingMokaByTab.set(tabId, pending);
+  else pendingMokaByTab.delete(tabId);
+  persistPendingMokaToDisk();
+}
+
+function getPendingMokaForTab(tabId) {
+  if (tabId == null) return null;
+  return pendingMokaByTab.get(tabId) || null;
+}
+
+function loadPendingMokaForTab(tabId) {
+  return new Promise((resolve) => {
+    if (tabId == null) {
+      resolve(null);
+      return;
+    }
+    const mem = pendingMokaByTab.get(tabId);
+    if (mem) {
+      resolve(mem);
+      return;
+    }
+    try {
+      chrome.storage.local.get(PENDING_MOKA_STORAGE_KEY, (res) => {
+        if (chrome.runtime.lastError) {
+          resolve(null);
+          return;
+        }
+        const bag = (res && res[PENDING_MOKA_STORAGE_KEY]) || {};
+        const pending = bag[String(tabId)] || null;
+        if (pending) pendingMokaByTab.set(tabId, pending);
+        resolve(pending);
+      });
+    } catch (e) {
+      resolve(null);
+    }
+  });
+}
+
+function setPendingMokaForTabAsync(tabId, pending) {
+  return new Promise((resolve) => {
+    if (tabId == null) {
+      resolve(false);
+      return;
+    }
+    if (pending) pendingMokaByTab.set(tabId, pending);
+    else pendingMokaByTab.delete(tabId);
+    try {
+      const bag = {};
+      pendingMokaByTab.forEach((v, k) => { bag[String(k)] = v; });
+      chrome.storage.local.set({ [PENDING_MOKA_STORAGE_KEY]: bag }, () => {
+        if (chrome.runtime.lastError) {
+          resolve(!!(!pending || pendingMokaByTab.get(tabId)));
+          return;
+        }
+        if (!pending) {
+          resolve(!pendingMokaByTab.get(tabId));
+          return;
+        }
+        const saved = pendingMokaByTab.get(tabId);
+        resolve(!!(saved && saved.nonce === pending.nonce));
+      });
+    } catch (e) {
+      resolve(false);
+    }
+  });
+}
+
+const mokaResumeTimers = new Map();
+
+function scheduleContentResume(tabId, delayMs) {
+  if (tabId == null) return;
+  const prev = mokaResumeTimers.get(tabId);
+  if (prev) clearTimeout(prev);
+  mokaResumeTimers.set(tabId, setTimeout(() => {
+    mokaResumeTimers.delete(tabId);
+    chrome.tabs.sendMessage(tabId, { action: 'resumeMokaAction' }, () => void chrome.runtime.lastError);
+  }, delayMs == null ? 600 : delayMs));
+}
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== 'complete') return;
+  if (!tab || !tab.url || tab.url.indexOf('app.mokahr.com') === -1) return;
+  loadPendingMokaForTab(tabId).then((pending) => {
+    if (pending) scheduleContentResume(tabId, 800);
+  });
+});
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.log('[Moka 筛选] 后台收到消息:', request.action);
 
@@ -152,7 +272,51 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     case 'updateProgress':
     case 'resultsUpdated':
+    case 'mokaActionComplete':
+    case 'mokaContentReady':
       // 转发到侧栏（侧栏未打开时忽略错误）
+      chrome.runtime.sendMessage({ ...request }).catch(() => {});
+      sendResponse({ received: true });
+      return false;
+
+    case 'setPendingMokaAction':
+      setPendingMokaForTabAsync(tabIdFromSender(sender), request.pending || null)
+        .then((ok) => sendResponse({ ok: !!ok }))
+        .catch(() => sendResponse({ ok: false }));
+      return true;
+
+    case 'getPendingMokaAction':
+      loadPendingMokaForTab(tabIdFromSender(sender))
+        .then((pending) => sendResponse({ pending: pending || null }))
+        .catch(() => sendResponse({ pending: null }));
+      return true;
+
+    case 'clearPendingMokaAction':
+      setPendingMokaForTabAsync(tabIdFromSender(sender), null)
+        .then(() => sendResponse({ ok: true }))
+        .catch(() => sendResponse({ ok: false }));
+      return true;
+
+    case 'notifyScreeningDone':
+      notifyScreeningDone(request)
+        .then((result) => sendResponse(result || { ok: true }))
+        .catch((error) => sendResponse({ ok: false, error: (error && error.message) || '通知失败' }));
+      return true;
+
+    case 'screeningKeepaliveStart':
+      startScreeningKeepalive(tabIdFromSender(sender))
+        .then(() => sendResponse({ ok: true }))
+        .catch(() => sendResponse({ ok: false }));
+      return true;
+
+    case 'screeningKeepaliveStop':
+      stopScreeningKeepalive()
+        .then(() => sendResponse({ ok: true }))
+        .catch(() => sendResponse({ ok: false }));
+      return true;
+
+    case 'screeningResumeAvailable':
+    case 'screeningPausedMismatch':
       chrome.runtime.sendMessage({ ...request }).catch(() => {});
       sendResponse({ received: true });
       return false;
@@ -162,6 +326,83 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       return false;
   }
 });
+
+async function notifyScreeningDone(payload) {
+  const settings = await getSettings();
+  if (settings.notifyOnComplete === false) {
+    console.log('[Moka 筛选] 完成通知已关闭，跳过桌面通知');
+    chrome.runtime.sendMessage({
+      action: 'screeningCompleteToast',
+      message: (payload && payload.message) || '筛选完成',
+      total: payload && payload.total,
+      desktop: false
+    }).catch(() => {});
+    return { ok: true, skipped: true };
+  }
+  const title = 'Moka 筛选完成';
+  const message = (payload && payload.message)
+    || ('共 ' + ((payload && payload.total) || 0) + ' 位候选人已评分');
+  const iconUrl = chrome.runtime.getURL('icons/icon48.png');
+  let desktopOk = false;
+  try {
+    await chrome.notifications.create('moka-screening-done-' + Date.now(), {
+      type: 'basic',
+      iconUrl,
+      title,
+      message,
+      priority: 2,
+      requireInteraction: false
+    });
+    desktopOk = true;
+  } catch (e) {
+    console.warn('[Moka 筛选] 桌面通知失败:', e && e.message);
+    try {
+      await chrome.notifications.create({
+        type: 'basic',
+        iconUrl,
+        title,
+        message
+      });
+      desktopOk = true;
+    } catch (e2) {
+      console.warn('[Moka 筛选] 桌面通知重试失败:', e2 && e2.message);
+    }
+  }
+  // 侧栏内也提示，避免系统通知被静音/拦截时用户完全无感知
+  chrome.runtime.sendMessage({
+    action: 'screeningCompleteToast',
+    message,
+    total: payload && payload.total,
+    desktop: desktopOk
+  }).catch(() => {});
+  return { ok: true, desktop: desktopOk };
+}
+
+let keepaliveTabId = null;
+
+async function startScreeningKeepalive(tabId) {
+  keepaliveTabId = tabId || null;
+  try {
+    await chrome.alarms.create(MokaScreeningJob.KEEP_ALIVE_ALARM, { periodInMinutes: 1 });
+  } catch (e) { /* ignore */ }
+}
+
+async function stopScreeningKeepalive() {
+  keepaliveTabId = null;
+  try {
+    await chrome.alarms.clear(MokaScreeningJob.KEEP_ALIVE_ALARM);
+  } catch (e) { /* ignore */ }
+}
+
+if (chrome.alarms && chrome.alarms.onAlarm) {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (!alarm || alarm.name !== MokaScreeningJob.KEEP_ALIVE_ALARM) return;
+    if (keepaliveTabId == null) return;
+    chrome.tabs.sendMessage(keepaliveTabId, { action: 'screeningKeepalivePing' }, () => {
+      void chrome.runtime.lastError;
+    });
+  });
+}
 
 /**
  * 抓取候选人「附件简历」原件（Moka 托管在 OSS 上的 HTML/文本），提取正文供 AI 阅读。
@@ -237,9 +478,11 @@ async function handleScoreCandidate({ profile, config }) {
   const hardText = (config && config.hardText) || '';
   const feedbackContext = (config && config.feedbackContext) || '';
   const feedbackRev = (config && config.feedbackRev) || 'none';
+  const weightKey = MokaScore.normalizeWeightPercents(config.weights || {});
   await llmCacheReady;
   const cacheKey = MokaPersist.stableHash({
-    profile, spec: jobSpec, jobJD: config.jobJD || '', jobType: config.jobType, hardText, model: settings.modelName,
+    profile, spec: jobSpec, jobJD: config.jobJD || '', jobType: config.jobType, hardText,
+    weights: weightKey, model: settings.modelName,
     promptRev: MokaScore.PROMPT_VERSION, feedbackRev
   });
   if (scoreCache.has(cacheKey)) return scoreCache.get(cacheKey);
@@ -248,7 +491,9 @@ async function handleScoreCandidate({ profile, config }) {
     '你是资深招聘专家，擅长客观评估候选人与岗位的匹配度。'
     + '严格只输出一个 JSON 对象，禁止输出任何思考过程、前言、分析说明或 markdown。'
     + '每个维度的 reason 控制在 40 字以内，highlights/concerns 每条不超过 30 字。';
-  const userPrompt = buildDimensionPrompt(profile, jobSpec, config.jobType, config.jobJD, hardText, feedbackContext);
+  const userPrompt = buildDimensionPrompt(
+    profile, jobSpec, config.jobType, config.jobJD, hardText, feedbackContext, config.weights
+  );
 
   // 推理型模型会先输出思考，需给足 token，避免 JSON 被截断
   const content = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: 4000, temperature: 0 });
@@ -439,16 +684,18 @@ ${DIM_DESC}
 要求：
 1. summary：一句话概括该岗位主要在做什么。
 2. responsibilities：列出 3-6 条核心职责。
-3. mustHaves：按重要性列出最多 6 条必备技能/经验/资质（硬门槛）。不要重复学历、院校、性别、年龄、工作年限这些已有筛选项。
+3. mustHaves：按 JD 写「必须/需/要求」的硬门槛，最多 6 条。
+4. importantHaves：JD 写「优先/熟悉/有相关更好」的重要项，最多 6 条。
 ${MokaScore.mustHaveExtractionGuide()}
-4. niceToHaves：列出加分项。
-5. resumeKeywords：按重要性列出最多 6 个可在简历中检索的关键词（技能/工具/岗位缩写，如 HRBP、Excel）。
-6. suggestedWeights：给出四个维度的建议权重（整数、合计恰好 100），要体现该岗位最看重什么（例如强执行/经验型岗位 experience 权重更高；校招/实习岗 potential 与 education 权重更高）。
+5. niceToHaves：加分项，最多 6 条。
+6. resumeKeywords：按重要性列出最多 6 个可在简历中检索的关键词（技能/工具/岗位缩写，如 HRBP、Excel）。
+7. suggestedWeights：给出四个维度的建议权重（整数、合计恰好 100），要体现该岗位最看重什么（例如强执行/经验型岗位 experience 权重更高；校招/实习岗 potential 与 education 权重更高）。
 只返回以下 JSON，不要输出多余文字：
 {
   "summary": "...",
   "responsibilities": ["..."],
   "mustHaves": ["..."],
+  "importantHaves": ["..."],
   "niceToHaves": ["..."],
   "resumeKeywords": ["..."],
   "suggestedWeights": {"experience": 40, "skill": 30, "education": 20, "potential": 10}
@@ -461,22 +708,27 @@ ${MokaScore.mustHaveExtractionGuide()}
 function renderSpec(spec) {
   const lines = [];
   if (spec.summary) lines.push('岗位概述：' + spec.summary);
-  if (Array.isArray(spec.responsibilities) && spec.responsibilities.length) lines.push('核心职责：\n- ' + spec.responsibilities.join('\n- '));
-  if (Array.isArray(spec.mustHaves) && spec.mustHaves.length) lines.push('必备项：\n- ' + spec.mustHaves.join('\n- '));
-  if (Array.isArray(spec.niceToHaves) && spec.niceToHaves.length) lines.push('加分项：\n- ' + spec.niceToHaves.join('\n- '));
+  if (Array.isArray(spec.responsibilities) && spec.responsibilities.length) {
+    lines.push('核心职责：\n- ' + spec.responsibilities.join('\n- '));
+  }
+  const checklist = MokaScore.renderRequirementChecklist(spec);
+  if (checklist) lines.push(checklist);
   return lines.join('\n\n') || '（无岗位画像，请依据 JD 常识判断）';
 }
 
 /**
  * 候选人「分维度」评分提示词
  */
-function buildDimensionPrompt(profile, spec, jobType, jobJD, hardText, feedbackContext) {
-  const hasSpec = spec && (spec.summary || (spec.responsibilities && spec.responsibilities.length) || (spec.mustHaves && spec.mustHaves.length));
+function buildDimensionPrompt(profile, spec, jobType, jobJD, hardText, feedbackContext, weights) {
+  const hasSpec = spec && (spec.summary || (spec.responsibilities && spec.responsibilities.length)
+    || (spec.mustHaves && spec.mustHaves.length) || (spec.importantHaves && spec.importantHaves.length));
   const jobBlock = hasSpec ? renderSpec(spec) : (jobJD || '（无岗位信息）');
   const hardBlock = MokaScore.hardConditionsPromptBlock(hardText);
   const hardSection = hardBlock ? `\n${hardBlock}\n` : '';
   const feedbackBlock = MokaFeedback.feedbackPromptBlock(feedbackContext);
   const feedbackSection = feedbackBlock ? `\n${feedbackBlock}\n` : '';
+  const weightsBlock = weights ? MokaScore.weightsPromptBlock(weights) : '';
+  const weightsSection = weightsBlock ? `\n${weightsBlock}\n` : '';
 
   return `请基于岗位信息，对候选人做「分维度」评估。
 
@@ -485,13 +737,13 @@ ${profile || '（无候选人信息）'}
 
 【岗位信息】
 ${jobBlock}
-${hardSection}${feedbackSection}【职位类型】
+${hardSection}${feedbackSection}${weightsSection}【职位类型】
 ${JOB_TYPE_TEXT[jobType] || JOB_TYPE_TEXT['full-time']}
 
 请对以下四个维度分别打分（0-100 整数），并给出简短理由，尽量引用候选人简历中的具体经历/项目作为证据：
 ${DIM_DESC}
 
-同时对每条「必备项」判断候选人是否满足（met: true/false）：只在简历中有明确证据时才判 true；也不要在已有相关经历时臆断为 false。未满足的项会由系统扣综合分，不要因此把四个维度一律打成 0。
+同时对「必须 / 重要 / 加分」各级要求逐条判定是否满足（met: true/false）：只在简历中有明确或等价证据时才判 true；相邻/可迁移能力可判 true 并在 note 说明。mustHaveResults 每项须含 tier（must / important / nice）。未满足的必须/重要项会按条扣综合分（−5 / −3），加分项不扣分，不要因此把四维一律打成 0。
 
 评分注意：
 1. 仅依据上方候选人信息判断，逐条阅读每段经历（含实习、项目）的具体描述；列出的经历若职能不同，按相邻/擦边计，不要当成对口。
@@ -505,7 +757,7 @@ ${DIM_DESC}
     "education": {"score": 0, "reason": "..."},
     "potential": {"score": 0, "reason": "..."}
   },
-  "mustHaveResults": [{"item": "必备项", "met": true, "note": "证据/说明"}],
+  "mustHaveResults": [{"item": "要求项", "tier": "must", "met": true, "note": "证据/说明"}],
   "highlights": ["亮点1", "亮点2"],
   "concerns": ["主要差距1", "主要差距2"]
 }`;
@@ -573,12 +825,16 @@ function parseJDAnalysis(content) {
     }
   }
   if (!best) {
-    return { summary: '', responsibilities: [], mustHaves: [], niceToHaves: [], resumeKeywords: [], suggestedWeights: { ...DEFAULT_WEIGHTS }, parseError: true };
+    return {
+      summary: '', responsibilities: [], mustHaves: [], importantHaves: [], niceToHaves: [],
+      resumeKeywords: [], suggestedWeights: { ...DEFAULT_WEIGHTS }, parseError: true
+    };
   }
   return {
     summary: best.summary ? String(best.summary) : '',
     responsibilities: arrOf(best.responsibilities, 8),
     mustHaves: arrOf(best.mustHaves, 6),
+    importantHaves: arrOf(best.importantHaves, 6),
     niceToHaves: arrOf(best.niceToHaves, 10),
     resumeKeywords: arrOf(best.resumeKeywords, 6),
     suggestedWeights: normalizeWeights(best.suggestedWeights)
@@ -619,7 +875,12 @@ function parseDimensionResponse(content) {
   };
   const mustHaveResults = Array.isArray(best.mustHaveResults)
     ? best.mustHaveResults
-        .map((r) => ({ item: String((r && r.item) || ''), met: !!(r && r.met), note: r && r.note ? String(r.note) : '' }))
+        .map((r) => ({
+          item: String((r && r.item) || ''),
+          tier: MokaScore.normalizeTier(r && r.tier),
+          met: !!(r && r.met),
+          note: r && r.note ? String(r.note) : ''
+        }))
         .filter((r) => r.item)
         .slice(0, 12)
     : [];
@@ -773,13 +1034,6 @@ function clampScore(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 50;
   return Math.min(100, Math.max(0, Math.round(n)));
-}
-
-function levelFromScore(score) {
-  if (score >= 75) return '强烈推荐';
-  if (score >= 50) return '值得推荐';
-  if (score >= 35) return '一般';
-  return '不推荐';
 }
 
 function isRetriableNetworkError(error) {

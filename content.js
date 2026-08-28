@@ -35,8 +35,14 @@ let results = []; // { app, profile, jobJD, rawScore, waivedMustHaves, score, ha
 let sortTimer = null;
 let activeWeights = null; // 本轮归一化权重，供忽略自增硬性后重排
 let lastScreenConfig = null; // 供单人重评 / 回看后重评
+let lastKnownPipelineId = ''; // 离开列表页后仍用于 storage 键
+let lastKnownJobName = ''; // 离开列表页后仍显示左侧职位名
+let lastRestoredSavedAt = null;
+let activeScreeningJob = null; // 本轮进行中的筛选任务快照
 let lastUiStatus = '';
 let lastBanner = null; // { type: 'need-click' | 'ready' } | null
+let lastListUrl = '';
+let mokaActionBusy = false;
 
 // 捕获到的 Moka 真实请求模板（来自 inject.js）
 let capturedRequest = null;        // 列表搜索请求
@@ -68,8 +74,7 @@ window.addEventListener('message', (event) => {
 
 function persistCapture() {
   try {
-    const area = (chrome.storage && chrome.storage.session) ? chrome.storage.session : chrome.storage.local;
-    area.set({
+    chrome.storage.local.set({
       [MokaCapture.CAPTURE_STORAGE_KEY]: { search: capturedRequest, detail: capturedDetailRequest }
     });
   } catch (e) { /* ignore */ }
@@ -78,8 +83,7 @@ function persistCapture() {
 function restoreCapture() {
   return new Promise((resolve) => {
     try {
-      const area = (chrome.storage && chrome.storage.session) ? chrome.storage.session : chrome.storage.local;
-      area.get(MokaCapture.CAPTURE_STORAGE_KEY, (result) => {
+      chrome.storage.local.get(MokaCapture.CAPTURE_STORAGE_KEY, (result) => {
         if (chrome.runtime.lastError) {
           resolve();
           return;
@@ -170,16 +174,41 @@ function init() {
     if (request.action === 'ping') {
       sendResponse({ ok: true });
     } else if (request.action === 'getJobs') {
-      sendResponse({ jobs: getCurrentJobs() });
+      const respond = () => respondGetJobs(sendResponse);
+      if (getCurrentJobs().length) respond();
+      else {
+        restoreResultsSilently().then(respond);
+      }
+      return true;
     } else if (request.action === 'getJobContext') {
       getJobContext()
-        .then((autofill) => sendResponse({ autofill }))
-        .catch(() => sendResponse({ autofill: null }));
+        .then((autofill) => sendResponse(autofill
+          ? { autofill, ok: true }
+          : {
+            autofill: null,
+            ok: false,
+            error: '无法获取 JD：请回到候选人列表页后再点预填（详情页需先在列表加载过）'
+          }))
+        .catch((err) => sendResponse({
+          autofill: null,
+          ok: false,
+          error: (err && err.message) || '读取 JD 失败'
+        }));
       return true; // 异步
     } else if (request.action === 'getJobSpec') {
       getJobSpec(request.jobType)
-        .then((spec) => sendResponse({ spec }))
-        .catch(() => sendResponse({ spec: null }));
+        .then((spec) => sendResponse(spec
+          ? { spec, ok: true }
+          : {
+            spec: null,
+            ok: false,
+            error: '无法解读 JD：请回到候选人列表页，确认 API Key，或先跑一轮筛选后再点'
+          }))
+        .catch((err) => sendResponse({
+          spec: null,
+          ok: false,
+          error: (err && err.message) || '解读 JD 失败'
+        }));
       return true; // 异步
     } else if (request.action === 'startScreening') {
       if (isScreening) {
@@ -189,9 +218,32 @@ function init() {
       isScreening = true;
       performScreening(request).finally(() => { isScreening = false; publishResults(undefined, undefined, { flush: true }); });
       sendResponse({ ok: true });
+    } else if (request.action === 'resumeScreening') {
+      if (isScreening) {
+        sendResponse({ ok: false, error: '正在筛选中' });
+        return true;
+      }
+      resumeScreeningFromJob()
+        .then((result) => sendResponse(result || { ok: true }))
+        .catch((err) => sendResponse({ ok: false, error: (err && err.message) || '续筛失败' }));
+      return true;
+    } else if (request.action === 'discardScreeningJob') {
+      discardScreeningJob()
+        .then(() => sendResponse({ ok: true }))
+        .catch(() => sendResponse({ ok: false }));
+      return true;
+    } else if (request.action === 'getScreeningJob') {
+      loadScreeningJob().then((job) => sendResponse({ job }))
+        .catch(() => sendResponse({ job: null }));
+      return true;
     } else if (request.action === 'stopScreening') {
       isScreening = false;
+      finishScreeningJob('stopped');
       sendResponse({ ok: true });
+    } else if (request.action === 'screeningKeepalivePing') {
+      sendResponse({ ok: true, screening: isScreening });
+      if (isScreening) checkScreeningJobMismatch();
+      return false;
     } else if (request.action === 'hasLastResults') {
       hasLastResults()
         .then((meta) => sendResponse(meta))
@@ -203,7 +255,12 @@ function init() {
         .catch(() => sendResponse({ ok: false }));
       return true;
     } else if (request.action === 'getResults') {
-      sendResponse(buildResultsSnapshot());
+      const finish = async () => {
+        await alignResultsForPageJob();
+        sendResponse(buildResultsSnapshot());
+      };
+      finish();
+      return true;
     } else if (request.action === 'openCandidate') {
       sendResponse({ ok: openCandidate(request.appId) });
     } else if (request.action === 'exportCsv') {
@@ -219,9 +276,34 @@ function init() {
         .then((result) => sendResponse(result))
         .catch((err) => sendResponse({ ok: false, error: (err && err.message) || '操作失败' }));
       return true;
+    } else if (request.action === 'mokaAction') {
+      handleMokaAction(request.appId, request.type)
+        .then((result) => sendResponse(result))
+        .catch((err) => sendResponse({ ok: false, error: (err && err.message) || 'Moka 操作失败' }));
+      return true;
+    } else if (request.action === 'resumeMokaAction') {
+      resumePendingMokaAction()
+        .then((result) => sendResponse(result || { ok: true }))
+        .catch((err) => sendResponse({ ok: false, error: (err && err.message) || '恢复操作失败' }));
+      return true;
     }
     return true;
   });
+  captureReady.then(() => {
+    bootstrapResultsIfEmpty().catch(() => {});
+    offerResumeIfNeeded().catch(() => {});
+  });
+  resumePendingMokaAction().catch((e) => console.warn('[Moka 筛选] resume pending action:', e));
+  notifyContentReady();
+}
+
+function notifyContentReady() {
+  try {
+    chrome.runtime.sendMessage({
+      action: 'mokaContentReady',
+      url: location.href
+    }).catch(() => {});
+  } catch (e) { /* ignore */ }
 }
 
 /* ---------------- 页面上下文 ---------------- */
@@ -237,15 +319,84 @@ function parsePageContext() {
   return { pipelineId, jobIds, title: params.get('title') || '' };
 }
 
+function parseJobTitleFromUrl(url) {
+  if (!url) return '';
+  try {
+    const t = new URL(url, location.origin).searchParams.get('title');
+    return t ? safeDecode(t) : '';
+  } catch (e) {
+    return '';
+  }
+}
+
+function resolveJobDisplayName(jobId) {
+  const ctx = parsePageContext();
+  if (ctx && ctx.title) return safeDecode(ctx.title);
+  const fromList = parseJobTitleFromUrl(lastListUrl);
+  if (fromList) return fromList;
+  if (lastScreenConfig && lastScreenConfig.jobName) return lastScreenConfig.jobName;
+  if (lastKnownJobName) return lastKnownJobName;
+  const id = String(jobId || (lastScreenConfig && lastScreenConfig.jobId) || '');
+  if (id && id !== 'current') return `职位 ${id.slice(0, 8)}`;
+  return '';
+}
+
 function getCurrentJobs() {
   const ctx = parsePageContext();
-  if (!ctx || ctx.jobIds.length === 0) {
-    // 即便无法从 URL 拿到 jobId，只要捕获到了请求也允许筛选
-    if (capturedRequest) return [{ id: 'current', name: '当前列表候选人' }];
-    return [];
+  if (ctx && ctx.jobIds.length > 0) {
+    const name = resolveJobDisplayName(ctx.jobIds[0]) || `职位 ${ctx.jobIds[0].slice(0, 8)}`;
+    if (name) lastKnownJobName = name;
+    return [{ id: ctx.jobIds[0], name }];
   }
-  const name = ctx.title ? safeDecode(ctx.title) : `职位 ${ctx.jobIds[0].slice(0, 8)}`;
-  return [{ id: ctx.jobIds[0], name }];
+  if (lastScreenConfig && lastScreenConfig.jobId) {
+    const name = resolveJobDisplayName(lastScreenConfig.jobId)
+      || `职位 ${String(lastScreenConfig.jobId).slice(0, 8)}`;
+    return [{ id: lastScreenConfig.jobId, name }];
+  }
+  if (capturedRequest) {
+    let jobId = 'current';
+    try {
+      const body = JSON.parse(capturedRequest.body || '{}');
+      if (body.jobIds && body.jobIds[0]) jobId = String(body.jobIds[0]);
+    } catch (e) { /* ignore */ }
+    const name = resolveJobDisplayName(jobId);
+    if (name) return [{ id: jobId, name }];
+    return [{ id: jobId, name: '当前列表候选人' }];
+  }
+  return [];
+}
+
+async function resolveJobNameFromApi() {
+  try {
+    const app = await fetchOneApplication();
+    const title = app && app.job && app.job.title;
+    if (!title) return '';
+    lastKnownJobName = String(title);
+    if (lastScreenConfig) {
+      lastScreenConfig = Object.assign({}, lastScreenConfig, { jobName: lastKnownJobName });
+    }
+    return lastKnownJobName;
+  } catch (e) {
+    return '';
+  }
+}
+
+async function respondGetJobs(sendResponse) {
+  let jobs = getCurrentJobs();
+  if (
+    jobs.length === 1
+    && jobs[0].id !== 'current'
+    && (/^职位\s/.test(jobs[0].name) || jobs[0].name === '当前列表候选人')
+  ) {
+    const apiName = await resolveJobNameFromApi();
+    if (apiName) jobs = [{ id: jobs[0].id, name: apiName }];
+  }
+  const ctx = parsePageContext();
+  const pageJobId = ctx && ctx.jobIds[0] ? String(ctx.jobIds[0]) : '';
+  const jobId = (lastScreenConfig && lastScreenConfig.jobId) || (jobs[0] && jobs[0].id) || '';
+  const jobName = (jobs[0] && jobs[0].name) || resolveJobDisplayName(jobId) || '';
+  if (jobName) lastKnownJobName = jobName;
+  sendResponse({ jobs, jobId, jobName, pageJobId });
 }
 
 function safeDecode(s) {
@@ -353,17 +504,63 @@ async function fetchAllApplications(onProgress, maxCount = 0) {
 /** 轻量拉取一条候选人，用其 job 字段做硬条件预填 */
 async function getJobContext() {
   const app = await fetchOneApplication();
-  if (!app || !app.job) return null;
-  return autofillFromJob(app.job);
+  if (app && app.job) return autofillFromJob(app.job);
+  // 兜底：本轮/上次筛选里已有候选人与 JD
+  const cached = results.find((r) => r && r.app && r.app.job) || results[0];
+  if (cached && cached.app && cached.app.job) return autofillFromJob(cached.app.job);
+  if (lastScreenConfig && lastScreenConfig.jobJD) {
+    const parsed = MokaMatch.extractHardAutofillFromText(lastScreenConfig.jobJD);
+    parsed.majors = extractMajorsFromText(lastScreenConfig.jobJD);
+    return parsed;
+  }
+  return null;
 }
 
 /** 解读当前职位 JD，返回岗位画像 + 建议权重（供 popup 预填滑块） */
 async function getJobSpec(jobType) {
+  const type = jobType || 'full-time';
+  let jobJD = '';
   const app = await fetchOneApplication();
-  if (!app) return null;
-  const jobJD = buildJobJD(app);
+  if (app) jobJD = buildJobJD(app);
+  if (!jobJD && lastScreenConfig && lastScreenConfig.jobJD) {
+    const pageJob = pageJobIdFromContext();
+    if (!pageJob || !lastScreenConfig.jobId || String(pageJob) === String(lastScreenConfig.jobId)) {
+      jobJD = lastScreenConfig.jobJD;
+    }
+  }
+  if (!jobJD) {
+    const cached = results.find((r) => r && r.app) || null;
+    if (cached) jobJD = buildJobJD(cached.app);
+  }
   if (!jobJD) return null;
-  return analyzeJobViaBackground(jobJD, jobType || 'full-time');
+  return analyzeJobViaBackground(jobJD, type);
+}
+
+/** 从 URL / 内存 / 捕获请求拼出列表查询上下文 */
+function resolveSearchContext() {
+  const ctx = parsePageContext();
+  let pipelineId = (ctx && ctx.pipelineId) || lastKnownPipelineId || '';
+  let jobIds = (ctx && ctx.jobIds && ctx.jobIds.length) ? ctx.jobIds.slice() : [];
+  if (!pipelineId && lastListUrl) {
+    try {
+      const u = new URL(lastListUrl, location.origin);
+      pipelineId = u.searchParams.get('pipelineId') || '';
+      if (!jobIds.length) {
+        u.searchParams.forEach((value, key) => {
+          if (/^jobIds(\[\d+\])?$/.test(key) && value) jobIds.push(value);
+        });
+      }
+    } catch (e) { /* ignore */ }
+  }
+  if (!jobIds.length && lastScreenConfig && lastScreenConfig.jobId) {
+    jobIds = [String(lastScreenConfig.jobId)];
+  }
+  if (!jobIds.length) {
+    const jobs = getCurrentJobs();
+    if (jobs[0] && jobs[0].id && jobs[0].id !== 'current') jobIds = [String(jobs[0].id)];
+  }
+  if (pipelineId) lastKnownPipelineId = String(pipelineId);
+  return { pipelineId, jobIds };
 }
 
 /** 轻量拉取一条候选人（供 JD 解读 / 预填复用） */
@@ -377,16 +574,38 @@ async function fetchOneApplication() {
   const headers = { 'Content-Type': 'application/json', ...(capturedRequest?.headers || {}) };
   let baseBody = {};
   if (capturedRequest?.body) { try { baseBody = JSON.parse(capturedRequest.body); } catch (e) {} }
-  if (!baseBody.pipelineId) {
-    const ctx = parsePageContext();
-    if (!ctx) return null;
-    baseBody = { ...baseBody, pipelineId: Number(ctx.pipelineId) || ctx.pipelineId, jobIds: ctx.jobIds };
+
+  const searchCtx = resolveSearchContext();
+  if (!baseBody.pipelineId && searchCtx.pipelineId) {
+    baseBody.pipelineId = Number(searchCtx.pipelineId) || searchCtx.pipelineId;
   }
+  if ((!baseBody.jobIds || !baseBody.jobIds.length) && searchCtx.jobIds.length) {
+    baseBody.jobIds = searchCtx.jobIds;
+  }
+  // 详情页无 pipelineId、也从未在列表捕获过时，无法拉列表
+  if (!baseBody.pipelineId) {
+    console.warn('[Moka 筛选] fetchOneApplication: 缺少 pipelineId，请回到候选人列表页');
+    return null;
+  }
+
   const body = { ...baseBody, limit: 1, offsetInfo: { includeThis: false } };
-  const resp = await fetchWithTimeout(url, { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) });
-  if (!resp.ok) return null;
-  const json = await resp.json();
-  return json.data?.applications?.[0] || null;
+  try {
+    const resp = await fetchWithTimeout(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers,
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+      console.warn('[Moka 筛选] fetchOneApplication HTTP', resp.status);
+      return null;
+    }
+    const json = await resp.json();
+    return json.data?.applications?.[0] || null;
+  } catch (e) {
+    console.warn('[Moka 筛选] fetchOneApplication 失败:', e && e.message);
+    return null;
+  }
 }
 
 /** 从 JD 的结构化要求 / 文本里解析可预填的硬条件 */
@@ -472,7 +691,7 @@ function evaluateHardConditions(app, hc, jobType) {
     let ok = true;
     if (hc.exp === 'fresh') ok = years <= 1;
     else if (hc.exp === '1-3') ok = years >= 1 && years < 3;
-    else if (hc.exp === '3-5') ok = years >= 3 && years < 5;
+    else if (hc.exp === '3-5') ok = years >= 3 && years <= 5;
     else if (hc.exp === '5+') ok = years >= 5;
     if (!ok) missing.push(`经验需 ${hc.exp === 'fresh' ? '在校/应届' : hc.exp + '年'}`);
   }
@@ -943,14 +1162,277 @@ function buildJobJD(app) {
 
 /* ---------------- 主流程 ---------------- */
 
+function loadScreeningJob() {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get(MokaScreeningJob.SCREENING_JOB_KEY, (r) => {
+        const job = MokaScreeningJob.sanitizeScreeningJob(r && r[MokaScreeningJob.SCREENING_JOB_KEY]);
+        activeScreeningJob = job;
+        resolve(job);
+      });
+    } catch (e) {
+      resolve(null);
+    }
+  });
+}
+
+function saveScreeningJob(job) {
+  const clean = MokaScreeningJob.sanitizeScreeningJob(job);
+  activeScreeningJob = clean;
+  return new Promise((resolve) => {
+    try {
+      if (!clean) {
+        chrome.storage.local.remove(MokaScreeningJob.SCREENING_JOB_KEY, () => resolve(null));
+        return;
+      }
+      chrome.storage.local.set({ [MokaScreeningJob.SCREENING_JOB_KEY]: clean }, () => resolve(clean));
+    } catch (e) {
+      resolve(clean);
+    }
+  });
+}
+
+function patchScreeningJob(patch) {
+  const base = activeScreeningJob || {};
+  return saveScreeningJob(Object.assign({}, base, patch || {}, { updatedAt: Date.now() }));
+}
+
+async function finishScreeningJob(status, extra) {
+  if (activeScreeningJob) {
+    await saveScreeningJob(MokaScreeningJob.withStatus(
+      activeScreeningJob,
+      status,
+      extra || {}
+    ));
+  }
+  chrome.runtime.sendMessage({ action: 'screeningKeepaliveStop' }).catch(() => {});
+}
+
+function startScreeningKeepalive() {
+  chrome.runtime.sendMessage({ action: 'screeningKeepaliveStart' }).catch(() => {});
+}
+
+function notifyScreeningComplete(total, message) {
+  chrome.runtime.sendMessage({
+    action: 'notifyScreeningDone',
+    total,
+    message
+  }).catch(() => {});
+}
+
+function countScoredResults() {
+  return results.filter((item) => item && item.score && item.score.level !== '错误').length;
+}
+
+function hasPendingScore(item) {
+  return !item || !item.score || item.score.level === '错误';
+}
+
+async function checkScreeningJobMismatch() {
+  if (!isScreening || !activeScreeningJob) return false;
+  const pageJobId = pageJobIdFromContext();
+  if (!pageJobId) return false;
+  if (MokaScreeningJob.matchesPageJob(activeScreeningJob, pageJobId)) return false;
+  isScreening = false;
+  await finishScreeningJob('paused_mismatch');
+  updatePanelStatus('已暂停：Moka 职位与当前筛选任务不一致，请切回原职位后在侧栏确认是否继续');
+  chrome.runtime.sendMessage({
+    action: 'screeningPausedMismatch',
+    job: activeScreeningJob
+  }).catch(() => {});
+  publishResults(undefined, undefined, { flush: true });
+  return true;
+}
+
+async function offerResumeIfNeeded() {
+  if (isScreening) return;
+  const job = await loadScreeningJob();
+  if (!MokaScreeningJob.isResumableJob(job)) return;
+  const pageJobId = pageJobIdFromContext();
+  if (pageJobId && !MokaScreeningJob.matchesPageJob(job, pageJobId)) {
+    await saveScreeningJob(MokaScreeningJob.withStatus(job, 'paused_mismatch'));
+    chrome.runtime.sendMessage({
+      action: 'screeningPausedMismatch',
+      job: activeScreeningJob
+    }).catch(() => {});
+    return;
+  }
+  await alignResultsForPageJob();
+  const pending = results.filter(hasPendingScore).length;
+  if (!results.length || pending === 0) {
+    await finishScreeningJob('done', { completed: job.total });
+    return;
+  }
+  await saveScreeningJob(MokaScreeningJob.withStatus(job, 'awaiting_resume', {
+    completed: Math.max(job.completed, countScoredResults()),
+    total: Math.max(job.total, results.length)
+  }));
+  chrome.runtime.sendMessage({
+    action: 'screeningResumeAvailable',
+    job: activeScreeningJob,
+    pending
+  }).catch(() => {});
+}
+
+async function discardScreeningJob() {
+  chrome.runtime.sendMessage({ action: 'screeningKeepaliveStop' }).catch(() => {});
+  activeScreeningJob = null;
+  await saveScreeningJob(null);
+}
+
+async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
+  const options = opts || {};
+  const onlyPending = !!options.onlyPending;
+  const total = results.length;
+  let completed = countScoredResults();
+  let cursor = 0;
+  let enrichedExp = results.filter((it) => it && it.app && (hasAnyExperience(it.app) || it.app.__resumeText)).length;
+
+  async function worker() {
+    while (isScreening) {
+      if (await checkScreeningJobMismatch()) break;
+      const index = cursor++;
+      if (index >= total) break;
+      const item = results[index];
+      if (onlyPending && !hasPendingScore(item)) continue;
+
+      try {
+        setRowStage(item.app.id, 'enrich');
+        await enrichCandidate(item.app);
+        if (hasAnyExperience(item.app) || item.app.__resumeText) enrichedExp++;
+        item.profile = buildCandidateProfile(item.app);
+        item.hardLocal = evaluateHardConditions(item.app, hc, scoreConfig.jobType);
+        item.hard = item.hardLocal;
+        item.keywords = MokaMatch.matchKeywords(item.profile, keywords);
+        applyHardToRow(item);
+        applyKeywordTags(item);
+
+        setRowStage(item.app.id, 'score');
+        const raw = await scoreViaBackgroundWithRetry(item.profile, scoreConfig);
+        applyScoreResult(item, raw, weights);
+      } catch (err) {
+        console.error('[Moka 筛选] 候选人处理失败:', item.app && item.app.name, err);
+        applyScoreResult(item, {
+          dimensions: null,
+          error: (err && err.message) ? err.message : '处理失败'
+        }, weights);
+      } finally {
+        clearRowStage(item.app.id);
+      }
+      completed = countScoredResults();
+      updateRow(item);
+      applyPanelFilter();
+      scheduleSort();
+      schedulePersistLastScreening();
+      await patchScreeningJob({
+        status: 'running',
+        completed,
+        total
+      });
+      updatePanelStatus(`评分 ${completed}/${total} · 已补全经历 ${enrichedExp} 位 · Moka 标签请保持打开（可切去其他浏览器标签）`);
+      reportProgress(completed, total, Math.round((completed / Math.max(total, 1)) * 100), `已评分 ${completed}/${total}`);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(total, 1)) }, worker));
+  return { completed: countScoredResults(), enrichedExp, total };
+}
+
+async function resumeScreeningFromJob() {
+  const job = await loadScreeningJob();
+  if (!MokaScreeningJob.isResumableJob(job)) {
+    return { ok: false, error: '没有可继续的筛选任务' };
+  }
+  const pageJobId = pageJobIdFromContext();
+  if (pageJobId && !MokaScreeningJob.matchesPageJob(job, pageJobId)) {
+    await saveScreeningJob(MokaScreeningJob.withStatus(job, 'paused_mismatch'));
+    return { ok: false, error: '当前 Moka 职位与未完成任务不一致，请切回原职位后再继续' };
+  }
+
+  await alignResultsForPageJob();
+  if (!results.length) {
+    await restoreResultsSilently(job.pipelineId, job.jobId);
+  }
+  if (!results.length) {
+    return { ok: false, error: '找不到上次筛选进度，请重新开始筛选' };
+  }
+
+  if (!lastScreenConfig) {
+    lastScreenConfig = {
+      jobId: job.jobId,
+      jobName: job.jobName,
+      jobType: job.jobType,
+      jobSpec: job.jobSpec,
+      hardText: '',
+      hc: job.hardConditions,
+      weights: job.weights,
+      keywords: job.keywords
+    };
+  }
+  const weights = normalizeWeights(job.weights || (lastScreenConfig && lastScreenConfig.weights));
+  activeWeights = weights;
+  const hc = job.hardConditions || (lastScreenConfig && lastScreenConfig.hc) || null;
+  const keywords = job.keywords || (lastScreenConfig && lastScreenConfig.keywords) || [];
+  const scoreConfig = {
+    jobType: job.jobType || (lastScreenConfig && lastScreenConfig.jobType) || 'full-time',
+    jobSpec: job.jobSpec || (lastScreenConfig && lastScreenConfig.jobSpec),
+    jobJD: (lastScreenConfig && lastScreenConfig.jobJD) || '',
+    hardText: (lastScreenConfig && lastScreenConfig.hardText) || '',
+    weights,
+    feedbackContext: (lastScreenConfig && lastScreenConfig.feedbackContext) || '',
+    feedbackRev: (lastScreenConfig && lastScreenConfig.feedbackRev) || 'none'
+  };
+
+  isScreening = true;
+  startScreeningKeepalive();
+  await patchScreeningJob({
+    status: 'running',
+    total: results.length,
+    completed: countScoredResults()
+  });
+  updatePanelStatus('已恢复筛选，继续评分未完成的候选人… · Moka 标签请保持打开');
+  publishResults(undefined, undefined, { flush: true });
+
+  try {
+    const { completed, enrichedExp, total } = await scoreResultsBatch(
+      scoreConfig, weights, hc, keywords, { onlyPending: true }
+    );
+    sortRows();
+    persistLastScreening();
+    if (isScreening && completed >= total) {
+      await finishScreeningJob('done', { completed, total });
+      reportProgress(total, total, 100, '筛选完成！');
+      updatePanelStatus(`筛选完成，共 ${total} 位（已补全经历 ${enrichedExp} 位）`);
+      notifyScreeningComplete(total, `筛选完成，共 ${total} 位候选人`);
+    } else if (!isScreening) {
+      const cur = await loadScreeningJob();
+      if (!cur || (cur.status !== 'stopped' && cur.status !== 'done')) {
+        await finishScreeningJob(
+          cur && cur.status === 'paused_mismatch' ? 'paused_mismatch' : 'awaiting_resume',
+          { completed, total }
+        );
+        updatePanelStatus(`已暂停（完成 ${completed}/${total}）`);
+      }
+    }
+    return { ok: true, completed, total };
+  } finally {
+    isScreening = false;
+    publishResults(undefined, undefined, { flush: true });
+  }
+}
+
 async function performScreening(config) {
   results = [];
   resetResultUi();
   await captureReady;
+  if (isOnListPage()) lastListUrl = location.href;
 
   try {
     const maxCount = Number(config.maxCount) > 0 ? Number(config.maxCount) : 0;
-    updatePanelStatus(maxCount ? `正在拉取候选人列表（最多 ${maxCount} 位）...` : '正在拉取候选人列表（全部）...');
+    updatePanelStatus(
+      (maxCount ? `正在拉取候选人列表（最多 ${maxCount} 位）...` : '正在拉取候选人列表（全部）...')
+      + ' · Moka 标签请保持打开（可切去其他浏览器标签）'
+    );
     const apps = await fetchAllApplications((count) => {
       updatePanelStatus(`正在拉取候选人... 已获取 ${count} 位`);
       reportProgress(0, count, 0, `拉取中，已获取 ${count} 位`);
@@ -959,6 +1441,7 @@ async function performScreening(config) {
     if (apps.length === 0) {
       updatePanelStatus('未找到候选人（请确认在候选人列表页，并刷新一次）');
       reportProgress(0, 0, 100, '未找到候选人');
+      await finishScreeningJob('stopped');
       return;
     }
 
@@ -991,17 +1474,38 @@ async function performScreening(config) {
 
     // 先解读 JD（缓存）：拿到统一的岗位画像，作为所有候选人的评分尺子
     let jobSpec = config.jobSpec || null;
-    if (!jobSpec) {
+    const manualMust = MokaMatch.dedupeMustHavesAgainstHard(
+      (config.jobSpec && config.jobSpec.mustHaves) || [],
+      hc
+    );
+    if (!jobSpec || (!jobSpec.summary && !jobSpec.importantHaves && !jobSpec.mustHaves)) {
       updatePanelStatus('正在解读 JD...');
       jobSpec = await analyzeJobViaBackground(jobJD, config.jobType);
     }
-    const extraMust = MokaMatch.dedupeMustHavesAgainstHard((config.jobSpec && config.jobSpec.mustHaves) || [], hc);
-    if (jobSpec) jobSpec = Object.assign({}, jobSpec, { mustHaves: extraMust });
-    else if (extraMust.length) jobSpec = { mustHaves: extraMust };
-    const hardText = buildHardText(hc, config.jobType, extraMust);
+    if (jobSpec) {
+      const aiMust = Array.isArray(jobSpec.mustHaves) ? jobSpec.mustHaves.slice() : [];
+      const mergedMust = manualMust.slice();
+      aiMust.forEach((m) => {
+        const t = String(m || '').trim();
+        if (t && mergedMust.indexOf(t) === -1) mergedMust.push(t);
+      });
+      jobSpec = Object.assign({}, jobSpec, { mustHaves: mergedMust.slice(0, 6) });
+    } else if (manualMust.length) {
+      jobSpec = { mustHaves: manualMust };
+    }
+    const hardText = buildHardText(hc, config.jobType, manualMust);
     const feedbackBundle = await loadFeedbackBundle(config.jobId);
+    const ctx = parsePageContext();
+    const jobName = String(config.jobName || '').trim()
+      || (ctx && ctx.title && safeDecode(ctx.title))
+      || parseJobTitleFromUrl(lastListUrl)
+      || (apps[0] && apps[0].job && apps[0].job.title)
+      || lastKnownJobName
+      || '';
+    if (jobName) lastKnownJobName = String(jobName);
     lastScreenConfig = {
       jobId: config.jobId || '',
+      jobName: lastKnownJobName,
       jobType: config.jobType,
       jobSpec,
       jobJD,
@@ -1013,6 +1517,27 @@ async function performScreening(config) {
       feedbackRev: feedbackBundle.rev
     };
 
+    const pipelineId = (ctx && ctx.pipelineId) || lastKnownPipelineId || '';
+    if (pipelineId) lastKnownPipelineId = String(pipelineId);
+    await saveScreeningJob({
+      status: 'running',
+      pipelineId,
+      jobId: config.jobId || '',
+      jobName: lastKnownJobName,
+      listUrl: lastListUrl || (isOnListPage() ? location.href : ''),
+      maxCount,
+      jobType: config.jobType,
+      hardConditions: hc,
+      weights: config.weights || weights,
+      keywords,
+      jobSpec,
+      total,
+      completed: 0,
+      startedAt: Date.now(),
+      updatedAt: Date.now()
+    });
+    startScreeningKeepalive();
+
     // 先建占位行；画像/硬条件在补全详情后于 worker 内生成，保证经历数据完整
     results = apps.map((app) => ({ app, profile: null, jobJD, hard: null, score: null }));
     buildRows();
@@ -1022,76 +1547,46 @@ async function performScreening(config) {
       jobSpec,
       jobJD,
       hardText,
+      weights,
       feedbackContext: feedbackBundle.context,
       feedbackRev: feedbackBundle.rev
     };
     const prefHint = feedbackBundle.total > 0
-      ? ` · 已对齐 ${feedbackBundle.total} 条历史偏好`
+      ? ` · 已对齐 ${feedbackBundle.total} 条历史决策（推荐 ${feedbackBundle.recommend || feedbackBundle.positive || 0} · 淘汰 ${feedbackBundle.eliminate || feedbackBundle.negative || 0}）`
       : '';
 
-    updatePanelStatus(`共 ${total} 位候选人，正在补全简历并 AI 评分${prefHint}...`);
+    updatePanelStatus(`共 ${total} 位候选人，正在补全简历并 AI 评分${prefHint}... · Moka 标签请保持打开（可切去其他浏览器标签）`);
     reportProgress(0, total, 0, `共 ${total} 位，开始评分...`);
 
-    let completed = 0;
-    let cursor = 0;
-    let enrichedExp = 0; // 成功补全到经历的人数（可见反馈）
-
-    async function worker() {
-      while (isScreening) {
-        const index = cursor++;
-        if (index >= total) break;
-        const item = results[index];
-
-        try {
-          // 列表接口的经历字段可能缺失，按需调用详情接口补全，避免 AI「看不到经历」而误判
-          setRowStage(item.app.id, 'enrich');
-          await enrichCandidate(item.app);
-          if (hasAnyExperience(item.app) || item.app.__resumeText) enrichedExp++;
-          item.profile = buildCandidateProfile(item.app);
-          item.hardLocal = evaluateHardConditions(item.app, hc, config.jobType);
-          item.hard = item.hardLocal;
-          item.keywords = MokaMatch.matchKeywords(item.profile, keywords);
-          applyHardToRow(item);
-          applyKeywordTags(item);
-
-          setRowStage(item.app.id, 'score');
-          const raw = await scoreViaBackground(item.profile, scoreConfig);
-          applyScoreResult(item, raw, weights);
-        } catch (err) {
-          console.error('[Moka 筛选] 候选人处理失败:', item.app && item.app.name, err);
-          applyScoreResult(item, {
-            dimensions: null,
-            error: (err && err.message) ? err.message : '处理失败'
-          }, weights);
-        } finally {
-          clearRowStage(item.app.id);
-        }
-        completed++;
-        updateRow(item);
-        applyPanelFilter();
-        scheduleSort();
-        schedulePersistLastScreening();
-        updatePanelStatus(`评分 ${completed}/${total} · 已补全经历 ${enrichedExp} 位`);
-        reportProgress(completed, total, Math.round((completed / total) * 100), `已评分 ${completed}/${total}`);
-      }
-    }
-
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, worker));
+    const { completed, enrichedExp } = await scoreResultsBatch(
+      scoreConfig, weights, hc, keywords, { onlyPending: false }
+    );
     sortRows();
     persistLastScreening();
 
     if (isScreening) {
+      await finishScreeningJob('done', { completed: total, total });
       reportProgress(total, total, 100, '筛选完成！');
       const hint = enrichedExp === 0 && !capturedDetailRequest
         ? '（未捕获到详情接口，经历可能读不全：请在 Moka 点开任一候选人详情后重试）'
         : `（已补全经历 ${enrichedExp} 位）`;
       updatePanelStatus(`筛选完成，共 ${total} 位 ${hint}`);
+      notifyScreeningComplete(total, `筛选完成，共 ${total} 位候选人`);
     } else {
-      updatePanelStatus(`已停止（完成 ${completed}/${total}）`);
+      const cur = await loadScreeningJob();
+      if (!cur || (cur.status !== 'stopped' && cur.status !== 'done')) {
+        const paused = cur && cur.status === 'paused_mismatch';
+        await finishScreeningJob(paused ? 'paused_mismatch' : 'awaiting_resume', {
+          completed,
+          total
+        });
+        updatePanelStatus(`已停止（完成 ${completed}/${total}）` + (paused ? ' · 职位不一致已暂停' : ' · 可在侧栏选择是否继续'));
+      }
     }
   } catch (error) {
     console.error('[Moka 筛选] 错误:', error);
     updatePanelStatus('❌ 出错: ' + error.message);
+    await finishScreeningJob('awaiting_resume');
   }
 }
 
@@ -1131,6 +1626,7 @@ function scoreViaBackground(profile, config) {
           jobSpec: config.jobSpec,
           jobJD: config.jobJD,
           hardText: config.hardText || '',
+          weights: config.weights || null,
           feedbackContext: config.feedbackContext || '',
           feedbackRev: config.feedbackRev || 'none'
         }
@@ -1146,6 +1642,18 @@ function scoreViaBackground(profile, config) {
       }
     );
   });
+}
+
+const SCORE_RETRY_DELAY_MS = 1000;
+
+async function scoreViaBackgroundWithRetry(profile, config) {
+  let raw = await scoreViaBackground(profile, config);
+  for (let attempt = 0; attempt < MokaScore.SCORE_AUTO_RETRY_MAX; attempt++) {
+    if (!MokaScore.isRetryableScoreFailure(raw)) return raw;
+    await sleep(SCORE_RETRY_DELAY_MS * (attempt + 1));
+    raw = await scoreViaBackground(profile, config);
+  }
+  return raw;
 }
 
 const WEIGHT_KEYS = MokaScore.WEIGHT_KEYS;
@@ -1166,22 +1674,32 @@ function normalizeWeights(w) {
 const composeFinalScore = MokaScore.composeFinalScore;
 
 function lastScreeningKey() {
-  const ctx = parsePageContext();
-  return MokaPersist.lastScreeningStorageKey(ctx && ctx.pipelineId);
+  return screeningStorageKey();
 }
 
 function persistLastScreening() {
   if (!results.length) return;
   const ctx = parsePageContext();
+  if (isOnListPage()) lastListUrl = location.href;
+  const pipelineId = (ctx && ctx.pipelineId) || lastKnownPipelineId || '';
+  if (pipelineId) lastKnownPipelineId = String(pipelineId);
   const payload = {
-    pipelineId: ctx && ctx.pipelineId,
+    pipelineId: pipelineId || null,
+    resultContextKey: MokaPersist.resultContextKey(
+      pipelineId,
+      lastScreenConfig && lastScreenConfig.jobId
+    ),
+    listUrl: lastListUrl || (isOnListPage() ? location.href : ''),
     savedAt: Date.now(),
     weights: activeWeights,
     screenConfig: lastScreenConfig,
     items: results.map(MokaPersist.slimScreeningItem)
   };
   try {
-    chrome.storage.local.set({ [lastScreeningKey()]: payload });
+    const store = {};
+    store[lastScreeningKey()] = payload;
+    store[MokaPersist.LAST_ACTIVE_SCREENING_KEY] = payload;
+    chrome.storage.local.set(store);
   } catch (e) { /* ignore */ }
 }
 
@@ -1197,10 +1715,12 @@ function schedulePersistLastScreening() {
 function hasLastResults() {
   return new Promise((resolve) => {
     try {
-      chrome.storage.local.get(lastScreeningKey(), (r) => {
-        const payload = r && r[lastScreeningKey()];
+      const keys = [lastScreeningKey(), MokaPersist.LAST_ACTIVE_SCREENING_KEY]
+        .filter((k, i, arr) => k && arr.indexOf(k) === i);
+      chrome.storage.local.get(keys, (r) => {
+        const payload = keys.map((k) => r && r[k]).find((p) => p && Array.isArray(p.items) && p.items.length);
         resolve({
-          has: !!(payload && Array.isArray(payload.items) && payload.items.length),
+          has: !!payload,
           savedAt: payload && payload.savedAt
         });
       });
@@ -1211,22 +1731,11 @@ function hasLastResults() {
 }
 
 function restoreLastResults() {
-  return new Promise((resolve) => {
-    try {
-      chrome.storage.local.get(lastScreeningKey(), (r) => {
-        const payload = r && r[lastScreeningKey()];
-        if (!payload || !Array.isArray(payload.items) || !payload.items.length) {
-          resolve(false);
-          return;
-        }
-        restoreResultsFromPayload(payload);
-        const when = payload.savedAt ? new Date(payload.savedAt).toLocaleString() : '';
-        publishResults(`上次结果${when ? '（' + when + '）' : ''}，共 ${results.length} 位`, null, { flush: true });
-        resolve(true);
-      });
-    } catch (e) {
-      resolve(false);
-    }
+  return restoreResultsSilently().then((ok) => {
+    if (!ok) return false;
+    const when = lastRestoredSavedAt ? new Date(lastRestoredSavedAt).toLocaleString() : '';
+    publishResults(`上次结果${when ? '（' + when + '）' : ''}，共 ${results.length} 位`, null, { flush: true });
+    return true;
   });
 }
 
@@ -1247,11 +1756,23 @@ function exportResultsCsv(feedbackByAppId) {
   URL.revokeObjectURL(url);
 }
 
+function resolveMustHaveItemKey(raw, input) {
+  const key = String(input || '').trim();
+  if (!key || !raw || !Array.isArray(raw.mustHaveResults)) return key;
+  const unmet = raw.mustHaveResults.filter((r) => r && String(r.item || '').trim() && !r.met);
+  if (unmet.some((r) => String(r.item).trim() === key)) return key;
+  const hit = unmet.find((r) => {
+    const item = String(r.item || '').trim();
+    return item && (key.includes(item) || item.includes(key));
+  });
+  return hit ? String(hit.item).trim() : key;
+}
+
 /** 单人忽略 / 恢复某条自增硬性：加回或重新扣除该条 −5，再按新分排序 */
 function setMustHaveWaived(item, mustHaveItem, waived, weights) {
   const w = weights || activeWeights;
   if (!item || !item.rawScore || !w) return false;
-  const key = String(mustHaveItem || '').trim();
+  const key = resolveMustHaveItemKey(item.rawScore, mustHaveItem);
   if (!key) return false;
   if (!item.waivedMustHaves) item.waivedMustHaves = new Set();
   if (waived) item.waivedMustHaves.add(key);
@@ -1265,6 +1786,423 @@ function setMustHaveWaived(item, mustHaveItem, waived, weights) {
   updateHeaderCount();
   schedulePersistLastScreening();
   return true;
+}
+
+function persistLastScreeningNow() {
+  if (saveScreeningTimer) {
+    clearTimeout(saveScreeningTimer);
+    saveScreeningTimer = null;
+  }
+  persistLastScreening();
+}
+
+function savePendingMokaAction(pending) {
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.runtime.sendMessage({ action: 'setPendingMokaAction', pending }, (resp) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        if (pending && (!resp || !resp.ok)) {
+          reject(new Error('保存操作状态失败'));
+          return;
+        }
+        resolve();
+      });
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function loadPendingMokaAction() {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ action: 'getPendingMokaAction' }, (resp) => {
+        if (chrome.runtime.lastError) {
+          resolve(null);
+          return;
+        }
+        resolve(resp && resp.pending ? resp.pending : null);
+      });
+    } catch (e) {
+      resolve(null);
+    }
+  });
+}
+
+function clearPendingMokaAction() {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ action: 'clearPendingMokaAction' }, () => {
+        void chrome.runtime.lastError;
+        resolve();
+      });
+    } catch (e) {
+      resolve();
+    }
+  });
+}
+
+function pipelineIdFromUrl(url) {
+  try {
+    return new URL(url).searchParams.get('pipelineId') || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+function screeningStorageKey(pipelineId) {
+  const pid = pipelineId
+    || lastKnownPipelineId
+    || (parsePageContext() && parsePageContext().pipelineId);
+  return MokaPersist.lastScreeningStorageKey(pid);
+}
+
+function restoreResultsFromStorageKey(key, requiredJobId) {
+  return new Promise((resolve) => {
+    if (!key) {
+      resolve(false);
+      return;
+    }
+    try {
+      chrome.storage.local.get(key, (r) => {
+        const payload = r && r[key];
+        if (!payload || !Array.isArray(payload.items) || !payload.items.length) {
+          resolve(false);
+          return;
+        }
+        if (requiredJobId && !MokaPersist.screeningPayloadMatchesJob(payload, requiredJobId)) {
+          resolve(false);
+          return;
+        }
+        restoreResultsFromPayload(payload);
+        resolve(true);
+      });
+    } catch (e) {
+      resolve(false);
+    }
+  });
+}
+
+function restoreResultsSilently(pipelineId, requiredJobId) {
+  const primary = screeningStorageKey(pipelineId);
+  return restoreResultsFromStorageKey(primary, requiredJobId).then((ok) => {
+    if (ok) return true;
+    if (primary === MokaPersist.LAST_ACTIVE_SCREENING_KEY) {
+      return restoreFromLatestScreeningKey(requiredJobId);
+    }
+    return restoreResultsFromStorageKey(MokaPersist.LAST_ACTIVE_SCREENING_KEY, requiredJobId).then((activeOk) => {
+      if (activeOk) return true;
+      return restoreFromLatestScreeningKey(requiredJobId);
+    });
+  });
+}
+
+function restoreFromLatestScreeningKey(requiredJobId) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get(null, (all) => {
+        if (!all) {
+          resolve(false);
+          return;
+        }
+        const prefix = MokaPersist.LAST_SCREENING_PREFIX;
+        const activeKey = MokaPersist.LAST_ACTIVE_SCREENING_KEY;
+        let best = null;
+        Object.keys(all).forEach((key) => {
+          if (!key.startsWith(prefix) || key === activeKey) return;
+          const payload = all[key];
+          if (!payload || !Array.isArray(payload.items) || !payload.items.length) return;
+          if (requiredJobId && !MokaPersist.screeningPayloadMatchesJob(payload, requiredJobId)) return;
+          if (!best || (payload.savedAt || 0) > (best.savedAt || 0)) {
+            best = payload;
+          }
+        });
+        if (!best) {
+          resolve(false);
+          return;
+        }
+        restoreResultsFromPayload(best);
+        resolve(true);
+      });
+    } catch (e) {
+      resolve(false);
+    }
+  });
+}
+
+function pageJobIdFromContext() {
+  const ctx = parsePageContext();
+  return ctx && ctx.jobIds[0] ? String(ctx.jobIds[0]) : '';
+}
+
+function resultsBelongToPageJob(pageJobId) {
+  if (!results.length) return true;
+  if (!pageJobId || pageJobId === 'current') return true;
+  const cfgJob = lastScreenConfig && lastScreenConfig.jobId;
+  return !!(cfgJob && String(cfgJob) === String(pageJobId));
+}
+
+async function alignResultsForPageJob() {
+  const pageJobId = pageJobIdFromContext();
+  const pipelineId = (parsePageContext() && parsePageContext().pipelineId) || lastKnownPipelineId || '';
+  if (pageJobId && !resultsBelongToPageJob(pageJobId)) {
+    results = [];
+    if (lastScreenConfig && String(lastScreenConfig.jobId) !== String(pageJobId)) {
+      lastScreenConfig = null;
+      activeWeights = null;
+    }
+    lastUiStatus = '';
+    lastBanner = null;
+  }
+  if (!results.length) {
+    await restoreResultsSilently(pipelineId, pageJobId || undefined);
+  }
+}
+
+function loadListUrlFromStorage(pipelineId) {
+  return new Promise((resolve) => {
+    const key = screeningStorageKey(pipelineId);
+    if (!key) {
+      resolve(lastListUrl || '');
+      return;
+    }
+    try {
+      chrome.storage.local.get(key, (r) => {
+        const payload = r && r[key];
+        const url = (payload && payload.listUrl) || lastListUrl || '';
+        if (url) lastListUrl = url;
+        resolve(url);
+      });
+    } catch (e) {
+      resolve(lastListUrl || '');
+    }
+  });
+}
+
+async function resolveListUrl(pipelineId) {
+  if (isOnListPage()) {
+    lastListUrl = location.href;
+    return location.href;
+  }
+  if (lastListUrl) return lastListUrl;
+  return loadListUrlFromStorage(pipelineId);
+}
+
+function scheduleMokaNavigation(fn) {
+  setTimeout(fn, 150);
+}
+
+async function waitForDomReady(timeoutMs) {
+  if (document.body && (document.readyState === 'complete' || document.readyState === 'interactive')) {
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    const ms = timeoutMs || 20000;
+    const timer = setTimeout(() => reject(new Error('页面加载超时')), ms);
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+      done();
+      return;
+    }
+    window.addEventListener('DOMContentLoaded', done, { once: true });
+    window.addEventListener('load', done, { once: true });
+  });
+}
+
+function candidateUrlFor(appId, listUrl) {
+  const search = listUrl ? (function () {
+    try { return new URL(listUrl).search; } catch (e) { return location.search; }
+  })() : location.search;
+  return location.origin + MokaMatch.candidateOpenPath(appId, search);
+}
+
+function isOnCandidatePage(appId) {
+  return location.pathname.indexOf('/candidates/application/' + String(appId)) !== -1;
+}
+
+function isOnListPage() {
+  return location.pathname.indexOf('/candidates/application/') === -1
+    && location.href.indexOf('pipelineId=') !== -1;
+}
+
+async function ensureResultsLoaded(pipelineId) {
+  if (results.length) return true;
+  return restoreResultsSilently(pipelineId);
+}
+
+function notifyMokaActionComplete(payload) {
+  chrome.runtime.sendMessage(Object.assign({ action: 'mokaActionComplete' }, payload)).catch(() => {});
+}
+
+async function runMokaActionOnPage(action) {
+  if (action === 'recommend') await MokaActions.automateRecommend(document);
+  else if (action === 'eliminate') await MokaActions.automateEliminate(document);
+  else throw new Error('未知操作类型');
+  await MokaActions.sleep(700);
+}
+
+function mokaActionStatusText(action) {
+  return action === 'recommend' ? '正在 Moka 中推荐给用人部门…' : '正在 Moka 中淘汰…';
+}
+
+async function publishWithResults(statusText, banner, pipelineId) {
+  await ensureResultsLoaded(pipelineId);
+  publishResults(statusText, banner, { flush: true });
+}
+
+async function bootstrapResultsIfEmpty() {
+  if (results.length) return;
+  if (await loadPendingMokaAction()) return;
+  const restored = await restoreResultsSilently();
+  if (restored) publishResults(undefined, undefined, { flush: true });
+}
+
+async function resumePendingMokaAction() {
+  const pending = await loadPendingMokaAction();
+  if (!pending) return { ok: false, skipped: true, reason: 'no-pending' };
+
+  if (Date.now() - (pending.ts || 0) > 120000) {
+    await clearPendingMokaAction();
+    await restoreResultsSilently(pending.pipelineId);
+    publishResults(undefined, undefined, { flush: true });
+    return { ok: false, error: '操作超时' };
+  }
+
+  if (pending.phase === 'executing') {
+    if (Date.now() - (pending.ts || 0) < 45000) {
+      return { ok: false, skipped: true, reason: 'executing' };
+    }
+    pending.phase = 'candidate';
+    pending.ts = Date.now();
+    await savePendingMokaAction(pending);
+  }
+
+  if (mokaActionBusy) return { ok: false, skipped: true, reason: 'busy' };
+  mokaActionBusy = true;
+
+  try {
+    if (pending.phase === 'candidate') {
+      if (!isOnCandidatePage(pending.appId)) {
+        scheduleMokaNavigation(() => {
+          location.href = candidateUrlFor(pending.appId, pending.listUrl);
+        });
+        return { ok: true, navigating: 'candidate' };
+      }
+      pending.phase = 'executing';
+      pending.ts = Date.now();
+      await savePendingMokaAction(pending);
+      await publishWithResults(mokaActionStatusText(pending.action), undefined, pending.pipelineId);
+      await waitForDomReady();
+      await MokaActions.sleep(1500);
+      await runMokaActionOnPage(pending.action);
+      pending.phase = 'list';
+      pending.ts = Date.now();
+      await savePendingMokaAction(pending);
+      scheduleMokaNavigation(() => {
+        location.href = pending.listUrl;
+      });
+      return { ok: true, phase: 'list-navigate' };
+    }
+
+    if (pending.phase === 'list') {
+      if (!isOnListPage()) {
+        if (pending.listUrl) {
+          scheduleMokaNavigation(() => { location.href = pending.listUrl; });
+        }
+        return { ok: true, navigating: 'list' };
+      }
+      const done = Object.assign({}, pending);
+      await clearPendingMokaAction();
+      await restoreResultsSilently(done.pipelineId);
+      publishResults('Moka 操作完成', undefined, { flush: true });
+      notifyMokaActionComplete({
+        ok: true,
+        appId: done.appId,
+        type: done.action
+      });
+      return { ok: true, complete: true };
+    }
+  } catch (err) {
+    const msg = (err && err.message) || 'Moka 操作失败';
+    const failed = Object.assign({}, pending);
+    await clearPendingMokaAction();
+    if (failed.listUrl && !isOnListPage()) {
+      scheduleMokaNavigation(() => { location.href = failed.listUrl; });
+    }
+    await restoreResultsSilently(failed.pipelineId);
+    publishResults('❌ ' + msg, undefined, { flush: true });
+    notifyMokaActionComplete({
+      ok: false,
+      error: msg,
+      appId: failed.appId,
+      type: failed.action
+    });
+    return { ok: false, error: msg };
+  } finally {
+    mokaActionBusy = false;
+  }
+  return { ok: false, skipped: true, reason: 'unknown-phase' };
+}
+
+async function handleMokaAction(appId, type) {
+  if (mokaActionBusy) return { ok: false, error: '上一位候选人操作尚未完成，请稍候' };
+  if (isScreening) return { ok: false, error: '筛选进行中，请稍后再操作' };
+  const existing = await loadPendingMokaAction();
+  if (existing) {
+    return { ok: false, error: '上一位候选人操作尚未完成，请稍候' };
+  }
+  const action = String(type || '').trim();
+  if (action !== 'recommend' && action !== 'eliminate') {
+    return { ok: false, error: '未知操作类型' };
+  }
+  const id = String(appId);
+  mokaActionBusy = true;
+  try {
+    persistLastScreeningNow();
+    const ctx = parsePageContext();
+    const pipelineId = (ctx && ctx.pipelineId) || pipelineIdFromUrl(location.href);
+    const listUrl = await resolveListUrl(pipelineId);
+    if (!listUrl) {
+      return { ok: false, error: '无法定位列表页，请回到 Moka 候选人列表后重试' };
+    }
+    lastListUrl = listUrl;
+
+    const pending = {
+      appId: id,
+      action,
+      listUrl,
+      pipelineId,
+      phase: 'candidate',
+      ts: Date.now(),
+      nonce: String(Date.now()) + '-' + Math.random().toString(36).slice(2, 8)
+    };
+    await savePendingMokaAction(pending);
+    await publishWithResults(mokaActionStatusText(action), undefined, pipelineId);
+
+    scheduleMokaNavigation(() => {
+      mokaActionBusy = false;
+      if (isOnCandidatePage(id)) {
+        resumePendingMokaAction().catch((e) => console.warn('[Moka 筛选] resume pending action:', e));
+      } else {
+        location.href = candidateUrlFor(id, listUrl);
+      }
+    });
+
+    return { ok: true, pending: true, type: action, appId: id };
+  } catch (err) {
+    mokaActionBusy = false;
+    const msg = (err && err.message) || 'Moka 操作失败';
+    await clearPendingMokaAction();
+    await restoreResultsSilently();
+    publishResults('❌ ' + msg, undefined, { flush: true });
+    return { ok: false, error: msg };
+  }
 }
 
 async function handleWaiveMustHave(appId, mustHaveItem, waived) {
@@ -1283,6 +2221,7 @@ async function handleWaiveMustHave(appId, mustHaveItem, waived) {
   if (!ok) {
     return { ok: false, error: '无法忽略：缺少权重配置，请重新跑一轮筛选' };
   }
+  persistLastScreeningNow();
   publishResults(undefined, undefined, { flush: true });
   return { ok: true };
 }
@@ -1291,6 +2230,13 @@ function restoreResultsFromPayload(payload) {
   if (!payload || !Array.isArray(payload.items) || !payload.items.length) return false;
   activeWeights = payload.weights || activeWeights;
   lastScreenConfig = payload.screenConfig || lastScreenConfig;
+  if (lastScreenConfig && lastScreenConfig.jobName) lastKnownJobName = String(lastScreenConfig.jobName);
+  else if (lastKnownJobName && lastScreenConfig) {
+    lastScreenConfig = Object.assign({}, lastScreenConfig, { jobName: lastKnownJobName });
+  }
+  if (payload.pipelineId) lastKnownPipelineId = String(payload.pipelineId);
+  if (payload.listUrl) lastListUrl = payload.listUrl;
+  lastRestoredSavedAt = payload.savedAt || null;
   results = payload.items.map(MokaPersist.hydrateScreeningItem);
   results.forEach((item) => {
     ensureHardLocal(item);
@@ -1305,15 +2251,7 @@ function ensureScreenConfig() {
       resolve(lastScreenConfig);
       return;
     }
-    try {
-      chrome.storage.local.get(lastScreeningKey(), (r) => {
-        const payload = r && r[lastScreeningKey()];
-        if (payload) restoreResultsFromPayload(payload);
-        resolve(lastScreenConfig);
-      });
-    } catch (e) {
-      resolve(null);
-    }
+    restoreResultsSilently().then(() => resolve(lastScreenConfig));
   });
 }
 
@@ -1361,7 +2299,7 @@ async function rescoreItem(item) {
     applyKeywordTags(item);
     setRowStage(item.app.id, 'score');
     const fbBundle = await loadFeedbackBundle(cfg.jobId);
-    const raw = await scoreViaBackground(item.profile, {
+    const raw = await scoreViaBackgroundWithRetry(item.profile, {
       jobType: cfg.jobType,
       jobSpec: cfg.jobSpec,
       jobJD: cfg.jobJD,
@@ -1395,11 +2333,21 @@ function findResult(appId) {
 }
 
 function buildResultsSnapshot() {
+  const ctx = parsePageContext();
+  const pageJobId = ctx && ctx.jobIds[0] ? String(ctx.jobIds[0]) : '';
+  const resultJobId = (lastScreenConfig && lastScreenConfig.jobId) || '';
+  const pipelineId = (ctx && ctx.pipelineId) || lastKnownPipelineId || '';
   return {
     action: 'resultsUpdated',
     status: lastUiStatus,
     banner: lastBanner,
     screening: isScreening,
+    jobId: resultJobId,
+    jobName: resolveJobDisplayName(resultJobId) || lastKnownJobName || '',
+    pageJobId,
+    resultJobId,
+    resultContextKey: MokaPersist.resultContextKey(pipelineId, resultJobId),
+    resultMismatch: !!(pageJobId && resultJobId && pageJobId !== resultJobId),
     items: MokaMatch.sortResultViews(results.map((item) => MokaMatch.toResultView(item)))
   };
 }

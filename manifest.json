@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Moka 智能简历筛选助手",
-  "version": "1.5.13",
+  "version": "1.6.1",
   "description": "基于 AI 的 Moka 候选人筛选插件，自动匹配 JD 要求并给出评分建议",
   "minimum_chrome_version": "116",
   "permissions": [
@@ -9,7 +9,9 @@
     "tabs",
     "scripting",
     "activeTab",
-    "sidePanel"
+    "sidePanel",
+    "notifications",
+    "alarms"
   ],
   "host_permissions": [
     "https://app.mokahr.com/*",
@@ -22,7 +24,14 @@
     "http://*/*"
   ],
   "action": {
-    "default_title": "Moka 智能筛选助手"
+    "default_title": "Moka 智能筛选助手",
+    "default_icon": {
+      "48": "icons/icon48.png"
+    }
+  },
+  "icons": {
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   },
   "side_panel": {
     "default_path": "popup/popup.html"
@@ -39,7 +48,7 @@
     },
     {
       "matches": ["https://app.mokahr.com/*"],
-      "js": ["lib/score.js", "lib/capture.js", "lib/persist.js", "lib/feedback.js", "lib/match.js", "content.js"],
+      "js": ["lib/score.js", "lib/capture.js", "lib/persist.js", "lib/feedback.js", "lib/screening-job.js", "lib/moka-actions.js", "lib/match.js", "content.js"],
       "run_at": "document_start"
     }
   ]

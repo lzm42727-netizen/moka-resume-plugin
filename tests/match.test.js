@@ -1,5 +1,6 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
+require('../lib/score.js');
 const {
   parseChipList,
   matchKeywords,
@@ -124,6 +125,7 @@ describe('toResultView', () => {
       name: '王敏',
       meta: '本科 · 复旦 · 新闻',
       hardPassed: false,
+      structuredHardPassed: false,
       hardMissing: ['学历'],
       keywords: { hit: ['SEO'], miss: ['Excel'] },
       score: {
@@ -135,8 +137,10 @@ describe('toResultView', () => {
         concerns: [],
         unmet: [],
         waivedUnmet: [],
+        unmetNice: [],
         penalty: 0,
-        baseScore: 88
+        baseScore: 88,
+        matchScore: 88
       },
       stage: 'score',
       rescoring: true
@@ -160,11 +164,11 @@ describe('toResultView', () => {
 describe('summarizeResultViews', () => {
   it('counts scored / recommend / hardfail / error independently of order', () => {
     const views = [
-      { score: { score: 88, level: '强烈推荐' }, hardPassed: true },
-      { score: { score: 90, level: '强烈推荐' }, hardPassed: false },
-      { score: { score: 40, level: '一般' }, hardPassed: false },
-      { score: { score: 0, level: '错误' }, hardPassed: true },
-      { score: null, hardPassed: true }
+      { score: { score: 88, level: '强烈推荐' }, structuredHardPassed: true },
+      { score: { score: 90, level: '强烈推荐' }, structuredHardPassed: false },
+      { score: { score: 40, level: '一般' }, structuredHardPassed: false },
+      { score: { score: 0, level: '错误' }, structuredHardPassed: true },
+      { score: null, structuredHardPassed: true }
     ];
     assert.deepEqual(summarizeResultViews(views), {
       total: 5,
@@ -192,6 +196,7 @@ describe('viewMatchesFilter', () => {
   const view = {
     name: '张三',
     hardPassed: false,
+    structuredHardPassed: false,
     score: { score: 70, level: '值得推荐' }
   };
 
@@ -205,10 +210,44 @@ describe('viewMatchesFilter', () => {
     assert.equal(viewMatchesFilter(passed, { tab: 'recommend' }), true);
   });
 
+  it('hides decided candidates from the default pending tab', () => {
+    const pending = { name: '待处理', feedback: null, score: { score: 60, level: '一般' } };
+    const eliminated = {
+      name: '已淘汰',
+      feedback: 'eliminate',
+      feedbackSync: 'synced',
+      score: { score: 40, level: '一般' }
+    };
+    assert.equal(viewMatchesFilter(pending, { tab: 'all' }), true);
+    assert.equal(viewMatchesFilter(eliminated, { tab: 'all' }), false);
+    assert.equal(viewMatchesFilter(eliminated, { tab: 'feedback' }), true);
+  });
+
+  it('also hides pending or failed Moka sync from the default tab', () => {
+    const syncing = {
+      name: '同步中',
+      feedback: 'eliminate',
+      feedbackSync: 'pending',
+      score: { score: 70, level: '值得推荐' }
+    };
+    const failed = {
+      name: '失败',
+      feedback: 'recommend',
+      feedbackSync: 'failed',
+      score: { score: 70, level: '值得推荐' }
+    };
+    assert.equal(viewMatchesFilter(syncing, { tab: 'all' }), false);
+    assert.equal(viewMatchesFilter(syncing, { tab: 'feedback' }), true);
+    assert.equal(viewMatchesFilter(failed, { tab: 'all' }), false);
+    assert.equal(viewMatchesFilter(failed, { tab: 'feedback' }), true);
+  });
+
   it('filters by feedback tab', () => {
-    const tagged = { name: '李四', feedback: 'positive', score: { score: 40, level: '一般' } };
+    const tagged = { name: '李四', feedback: 'recommend', score: { score: 40, level: '一般' } };
+    const legacy = { name: '张三', feedback: 'positive', score: { score: 50, level: '一般' } };
     const untagged = { name: '王五', feedback: null, score: { score: 80, level: '强烈推荐' } };
     assert.equal(viewMatchesFilter(tagged, { tab: 'feedback' }), true);
+    assert.equal(viewMatchesFilter(legacy, { tab: 'feedback' }), true);
     assert.equal(viewMatchesFilter(untagged, { tab: 'feedback' }), false);
   });
 });
@@ -228,6 +267,7 @@ describe('scoreColor', () => {
   it('uses the same four bands as the result cards', () => {
     assert.equal(scoreColor(75), '#52c41a');
     assert.equal(scoreColor(50), '#1890ff');
+    assert.equal(scoreColor(45), '#13c2c2');
     assert.equal(scoreColor(35), '#fa8c16');
     assert.equal(scoreColor(34), '#ff4d4f');
   });
@@ -285,6 +325,14 @@ describe('dedupeMustHavesAgainstHard', () => {
     const kept = dedupeMustHavesAgainstHard(['211院校', 'SEO'], { schools: ['211'] });
     assert.deepEqual(kept, ['SEO']);
   });
+
+  it('rewrites long year chips into domain-only when structured exp is set', () => {
+    const kept = dedupeMustHavesAgainstHard(
+      ['3年以上广告设计或海外素材设计经验', 'Midjourney'],
+      { exp: '3-5', degree: '', schools: [] }
+    );
+    assert.deepEqual(kept, ['广告设计或海外素材设计经验', 'Midjourney']);
+  });
 });
 
 describe('buildEvidenceColumns', () => {
@@ -303,14 +351,14 @@ describe('buildEvidenceColumns', () => {
     const cols = buildEvidenceColumns({
       highlights: [],
       concerns: ['党员身份未明确，无法满足硬性门槛'],
-      unmet: [{ item: '党员', note: '简历未写明' }],
+      unmet: [{ item: '党员', note: '简历未写明', tier: 'must' }],
       waivedUnmet: []
     });
     assert.equal(cols.right.length, 1);
     assert.equal(cols.right[0].kind, 'unmet');
     assert.equal(cols.right[0].item, '党员');
     assert.equal(cols.right[0].action, 'ignore');
-    assert.equal(cols.right[0].text, '缺「党员」（简历未写明）');
+    assert.equal(cols.right[0].text, '缺「党员」（必须，简历未写明）');
   });
 
   it('keeps a concern that does not overlap an unmet item', () => {
