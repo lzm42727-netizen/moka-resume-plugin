@@ -6,6 +6,7 @@ const {
   getFeedbackVerdict,
   getFeedbackEntry,
   feedbackSyncState,
+  mokaActionIntent,
   isSyncedFeedback,
   getFeedbackForJob,
   putFeedback,
@@ -157,22 +158,104 @@ describe('buildFeedbackContext', () => {
     assert.equal(buildFeedbackContext({}, 'job-x'), '');
   });
 
-  it('summarizes recommend and eliminate examples', () => {
+  it('summarizes recommend and eliminate examples with decision and match scores', () => {
     let record = putFeedback({}, 'job-1', 'a1', 'recommend', {
       score: 68,
-      level: '值得推荐',
+      matchScore: 68,
+      level: '可推进',
       highlights: ['有 Meta 投放经验']
     }, 1);
     record = putFeedback(record, 'job-1', 'a2', 'eliminate', {
       score: 45,
-      level: '一般',
+      matchScore: 45,
+      level: '不建议推进',
       concerns: ['无对口实习']
     }, 2);
     const ctx = buildFeedbackContext(record, 'job-1');
     assert.match(ctx, /推荐给用人部门/);
+    assert.match(ctx, /决策分 68/);
+    assert.match(ctx, /经历匹配 68/);
     assert.match(ctx, /Meta 投放/);
     assert.match(ctx, /淘汰/);
     assert.match(ctx, /无对口实习/);
+    assert.doesNotMatch(ctx, /综合分/);
+  });
+
+  it('prefers mismatch samples over newer agreeing ones', () => {
+    let record = putFeedback({}, 'job-1', 'agree-new', 'recommend', {
+      score: 80,
+      matchScore: 80,
+      pluginRecommend: true,
+      highlights: ['新的一致推荐']
+    }, 90);
+    record = putFeedback(record, 'job-1', 'agree-2', 'recommend', {
+      score: 79,
+      matchScore: 79,
+      pluginRecommend: true,
+      highlights: ['也是一致']
+    }, 80);
+    record = putFeedback(record, 'job-1', 'agree-3', 'recommend', {
+      score: 78,
+      matchScore: 78,
+      pluginRecommend: true,
+      highlights: ['还是一致']
+    }, 70);
+    record = putFeedback(record, 'job-1', 'under-old', 'recommend', {
+      score: 42,
+      matchScore: 42,
+      pluginRecommend: false,
+      highlights: ['当时插件未推的人']
+    }, 10);
+    const ctx = buildFeedbackContext(record, 'job-1');
+    assert.match(ctx, /当时插件未推的人/);
+    assert.match(ctx, /当时插件未推/);
+  });
+
+  it('mentions bonus keywords when they were configured', () => {
+    const record = putFeedback({}, 'job-1', 'a1', 'eliminate', {
+      score: 81,
+      matchScore: 78,
+      level: '优先推进',
+      bonusMetCount: 1,
+      bonusTotalCount: 2,
+      bonusPromoted: true,
+      pluginRecommend: true,
+      concerns: ['稳定性一般']
+    }, 1);
+    const ctx = buildFeedbackContext(record, 'job-1');
+    assert.match(ctx, /加分看 1\/2/);
+    assert.match(ctx, /加分晋级/);
+  });
+
+  it('prefixes full-job aggregate stats while still listing at most 3 examples per side', () => {
+    let record = {};
+    for (let i = 0; i < 5; i++) {
+      record = putFeedback(record, 'job-1', 'e' + i, 'eliminate', {
+        score: 72,
+        matchScore: 72,
+        pluginRecommend: true,
+        hardMissing: ['缺「日语 N1」'],
+        concerns: ['无达人合作']
+      }, 100 + i);
+    }
+    for (let i = 0; i < 4; i++) {
+      record = putFeedback(record, 'job-1', 'r' + i, 'recommend', {
+        score: 80,
+        matchScore: 80,
+        pluginRecommend: true,
+        highlights: ['业务对口' + i]
+      }, 200 + i);
+    }
+    const ctx = buildFeedbackContext(record, 'job-1');
+    assert.match(ctx, /本岗已决策 9（推荐 4 · 淘汰 5）/);
+    assert.match(ctx, /插件推你却淘汰 5/);
+    assert.match(ctx, /反复信号：/);
+    assert.match(ctx, /未过门槛「日语 N1」×5/);
+    assert.match(ctx, /淘汰原因「无达人合作」×5/);
+    const numbered = ctx.split('\n').filter((line) => /^\d+\. /.test(line));
+    assert.equal(numbered.length, 6);
+    assert.match(ctx, /业务对口3/);
+    assert.doesNotMatch(ctx, /业务对口0/);
   });
 });
 
@@ -211,7 +294,11 @@ describe('feedbackPromptBlock', () => {
     const block = feedbackPromptBlock('示例偏好');
     assert.match(block, /招聘官历史偏好/);
     assert.match(block, /示例偏好/);
+    assert.match(block, /开头是全岗统计/);
     assert.match(block, /不要机械复制历史分数/);
+    assert.match(block, /不要把加分项写入 matchScore/);
+    assert.doesNotMatch(block, /上调相关维度/);
+    assert.doesNotMatch(block, /综合分/);
   });
 });
 
@@ -234,6 +321,58 @@ describe('feedback sync state', () => {
   });
 });
 
+describe('bonus scoring feedback snapshot', () => {
+  it('keeps bonus explanation fields when a decided candidate is restored from history', () => {
+    const record = putFeedback({}, 'job1', 'a1', 'recommend', {
+      score: 81,
+      baseScore: 78,
+      level: '优先推进',
+      bonusApplied: 3,
+      bonusMetCount: 1,
+      bonusTotalCount: 2,
+      bonusPromoted: true,
+      bonusKeywordResults: [
+        { item: '作品集', met: true, reason: '附有作品集' },
+        { item: '海外经历', met: false, reason: '未提及' }
+      ]
+    }, 100);
+    const view = feedbackEntryToResultView('a1', getFeedbackEntry(record, 'job1', 'a1'));
+    assert.equal(view.score.matchScore, 78);
+    assert.equal(view.score.bonusApplied, 3);
+    assert.equal(view.score.bonusPromoted, true);
+    assert.deepEqual(view.score.bonusKeywordResults, [
+      { item: '作品集', met: true, reason: '附有作品集' },
+      { item: '海外经历', met: false, reason: '未提及' }
+    ]);
+  });
+});
+
+describe('mokaActionIntent', () => {
+  it('未做过决定时是首次提交', () => {
+    assert.equal(mokaActionIntent(null, 'recommend'), 'submit');
+  });
+
+  it('改判成另一个结论时也是提交', () => {
+    const record = putFeedback({}, 'job1', 'a1', 'eliminate', { score: 40 }, 100);
+    assert.equal(mokaActionIntent(getFeedbackEntry(record, 'job1', 'a1'), 'recommend'), 'submit');
+  });
+
+  it('已同步成功后再点同一个按钮才是撤销', () => {
+    const record = putFeedback({}, 'job1', 'a1', 'recommend', { score: 70 }, 100);
+    assert.equal(mokaActionIntent(getFeedbackEntry(record, 'job1', 'a1'), 'recommend'), 'cancel');
+  });
+
+  it('同步失败后再点同一个按钮是重试，而不是把本地记录清掉', () => {
+    const record = putFeedback({}, 'job1', 'a1', 'recommend', { score: 70 }, 100, { mokaSynced: false, syncFailed: true });
+    assert.equal(mokaActionIntent(getFeedbackEntry(record, 'job1', 'a1'), 'recommend'), 'retry');
+  });
+
+  it('仍在同步中（未收到结果）时再点也是重试', () => {
+    const record = putFeedback({}, 'job1', 'a1', 'recommend', { score: 70 }, 100, { mokaSynced: false });
+    assert.equal(mokaActionIntent(getFeedbackEntry(record, 'job1', 'a1'), 'recommend'), 'retry');
+  });
+});
+
 describe('buildFeedbackContext mismatch hints', () => {
   it('notes when recommend feedback disagreed with plugin recommend flag', () => {
     let record = putFeedback({}, 'job-1', 'a1', 'recommend', {
@@ -243,18 +382,18 @@ describe('buildFeedbackContext mismatch hints', () => {
       highlights: ['有潜力']
     }, 1);
     const ctx = buildFeedbackContext(record, 'job-1');
-    assert.match(ctx, /当时 AI 未推荐/);
+    assert.match(ctx, /当时插件未推/);
   });
 
   it('notes when eliminate feedback disagreed with plugin recommend flag', () => {
     let record = putFeedback({}, 'job-1', 'a2', 'eliminate', {
       score: 72,
-      level: '值得推荐',
+      level: '可推进',
       pluginRecommend: true,
       concerns: ['行业不对口']
     }, 1);
     const ctx = buildFeedbackContext(record, 'job-1');
-    assert.match(ctx, /当时 AI 曾推荐/);
+    assert.match(ctx, /当时插件曾推/);
   });
 });
 

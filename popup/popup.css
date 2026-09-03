@@ -647,6 +647,18 @@ body {
   margin: 2px 0 4px;
 }
 
+.mp-grad-risk {
+  margin: 0 0 4px;
+  padding: 2px 6px;
+  display: inline-block;
+  border-radius: 4px;
+  background: #fff7e6;
+  border: 1px solid #ffd591;
+  color: #ad6800;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .mp-sync-note {
   font-size: 11px;
   margin: 2px 0 4px;
@@ -692,6 +704,32 @@ body {
 .mp-penalty {
   font-weight: 400;
   color: var(--text-muted);
+}
+
+.mp-bonus-promoted {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid #d6b45f;
+  border-radius: 999px;
+  background: #fff8e1;
+  color: #9a6700;
+  font-size: 10px;
+  line-height: 1.4;
+  vertical-align: 1px;
+}
+
+.mp-advance-reason {
+  margin-top: 2px;
+  color: #cf1322;
+  font-size: 11px;
+}
+
+.mp-error-reason {
+  margin-top: 2px;
+  color: #cf1322;
+  font-size: 11px;
+  word-break: break-all;
 }
 
 .mp-dims {
@@ -854,6 +892,26 @@ body {
   background: #f6ffed;
   color: #389e0d;
   border: 1px solid #b7eb8f;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.mp-tag-nice-hit {
+  background: #f6ffed;
+  color: #389e0d;
+  border: 1px solid #b7eb8f;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.mp-tag-nice-miss {
+  background: #fff7e6;
+  color: #d46b08;
+  border: 1px solid #ffd591;
   border-radius: 4px;
   padding: 1px 6px;
   font-size: 10px;
@@ -1119,6 +1177,7 @@ select:focus {
 }
 
 .chip {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1129,6 +1188,65 @@ select:focus {
   border-radius: 999px;
   font-size: 12px;
   line-height: 18px;
+  max-width: 100%;
+}
+
+.chip-movable {
+  cursor: pointer;
+}
+
+.chip-movable:hover {
+  border-color: var(--primary);
+  background: #d6efff;
+}
+
+.chip.is-menu-open {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.15);
+}
+
+.chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.chip-menu {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  z-index: 40;
+  min-width: 88px;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid var(--border, #d9d9d9);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.chip-menu-title {
+  padding: 2px 6px 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.chip-menu-item {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.chip-menu-item:hover {
+  background: var(--primary-bg);
+  color: var(--primary);
 }
 
 .chip-x {
@@ -1139,6 +1257,7 @@ select:focus {
   font-size: 14px;
   line-height: 1;
   padding: 0;
+  flex-shrink: 0;
 }
 
 .chip-x:hover {
@@ -1154,7 +1273,7 @@ select:focus {
   font-size: 13px;
 }
 
-/* 评分维度权重 */
+/* 岗位理解（原权重区样式） */
 .jd-understanding {
   background: var(--success-bg);
   border: 1px solid var(--success-border);
@@ -1163,7 +1282,7 @@ select:focus {
   font-size: 12px;
   line-height: 1.6;
   color: var(--text-secondary);
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 .jd-understanding.hidden {
@@ -1176,9 +1295,11 @@ select:focus {
   color: var(--text);
 }
 
-.jd-understanding .jd-musts {
-  color: var(--text-muted);
+.jd-understanding .jd-skills {
+  color: var(--text-secondary);
   font-size: 12px;
+  font-weight: 400;
+  line-height: 1.55;
 }
 
 .weight-item {

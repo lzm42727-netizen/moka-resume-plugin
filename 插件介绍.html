@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Moka 智能简历筛选助手 · 给招聘团队的介绍</title>
+<style>
+  :root {
+    --paper: #fbfaf8;
+    --paper-2: #ffffff;
+    --ink: #16181d;
+    --ink-soft: #5a6069;
+    --ink-faint: #8b9098;
+    --rule: #e4e0d8;
+    --rule-soft: #efece5;
+    --pass: #1f6f45;
+    --pass-bg: #eef6f0;
+    --fail: #b23a2b;
+    --fail-bg: #fbf0ee;
+    --mid: #3a5ba0;
+    --mid-bg: #eef1f8;
+    --accent: #b8862b;
+    --accent-bg: #fbf4e4;
+
+    --serif: "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", "SimSun", Georgia, serif;
+    --sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.75;
+  }
+
+  .wrap { max-width: 940px; margin: 0 auto; padding: 0 24px 96px; }
+
+  /* ---------- 通用排版 ---------- */
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 12px;
+  }
+  h1, h2, h3 { font-family: var(--serif); font-weight: 700; letter-spacing: -0.01em; }
+  p { margin: 0 0 14px; }
+  a { color: var(--mid); text-underline-offset: 3px; }
+  a:focus-visible, button:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 3px;
+  }
+  strong { font-weight: 600; }
+  code {
+    font-family: var(--mono);
+    font-size: 0.9em;
+    background: var(--rule-soft);
+    padding: 1px 6px;
+    border-radius: 3px;
+  }
+  .lede { font-size: 17px; color: var(--ink-soft); max-width: 34em; }
+  .note { font-size: 13.5px; color: var(--ink-faint); }
+
+  /* ---------- 顶栏 ---------- */
+  .topbar {
+    border-bottom: 1px solid var(--rule);
+    background: rgba(251, 250, 248, 0.92);
+    backdrop-filter: blur(6px);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+  }
+  .topbar-in {
+    max-width: 940px;
+    margin: 0 auto;
+    padding: 12px 24px;
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    flex-wrap: wrap;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.1em;
+    color: var(--ink-faint);
+  }
+  .topbar-in b { color: var(--ink); font-family: var(--sans); letter-spacing: 0; font-size: 13px; }
+  .topbar-in .sep { color: var(--rule); }
+
+  /* ---------- Hero ---------- */
+  .hero { padding: 56px 0 8px; }
+  .hero h1 {
+    margin: 0 0 18px;
+    font-size: clamp(30px, 5.2vw, 46px);
+    line-height: 1.24;
+  }
+  .hero h1 em {
+    font-style: normal;
+    color: var(--accent);
+    border-bottom: 3px solid var(--accent-bg);
+  }
+  .hero-meta {
+    display: flex;
+    gap: 28px;
+    flex-wrap: wrap;
+    margin: 26px 0 0;
+    padding-top: 20px;
+    border-top: 1px solid var(--rule);
+  }
+  .hero-meta div { min-width: 150px; }
+  .hero-meta dt {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-bottom: 2px;
+  }
+  .hero-meta dd { margin: 0; font-size: 14.5px; }
+
+  /* ---------- 标注卡片（页面主角） ---------- */
+  .exhibit { margin: 44px 0 8px; }
+  .exhibit-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 16px;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 8px;
+    margin-bottom: 22px;
+  }
+  .exhibit-head h2 { margin: 0; font-size: 19px; }
+  .exhibit-grid { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 28px; align-items: start; }
+
+  .card {
+    position: relative;
+    background: var(--paper-2);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 16px 18px;
+    box-shadow: 0 1px 0 var(--rule-soft), 0 18px 36px -28px rgba(20, 24, 30, 0.35);
+  }
+  .card-top { display: flex; gap: 14px; align-items: flex-start; }
+  .card-score {
+    flex: 0 0 auto;
+    width: 52px;
+    height: 52px;
+    border-radius: 8px;
+    background: var(--mid);
+    color: #fff;
+    font-family: var(--serif);
+    font-size: 25px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .card-body { flex: 1 1 auto; min-width: 0; }
+  .card-name { font-family: var(--serif); font-size: 17px; font-weight: 700; }
+  .card-actions { float: right; display: flex; gap: 6px; }
+  .btn-ghost {
+    font-family: var(--sans);
+    font-size: 11.5px;
+    padding: 4px 9px;
+    border-radius: 5px;
+    border: 1px solid var(--pass);
+    color: var(--pass);
+    background: var(--pass-bg);
+    white-space: nowrap;
+  }
+  .btn-ghost.plain { border-color: var(--rule); color: var(--ink-soft); background: #fff; }
+  .card-sync { color: #c1741b; font-size: 12.5px; margin: 2px 0; }
+  .card-sub { color: var(--ink-soft); font-size: 13px; }
+  .card-tier { color: var(--mid); font-size: 13px; font-weight: 600; margin-top: 2px; }
+
+  .evidence { position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--rule); }
+  .evidence h4 {
+    margin: 0 0 6px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+  }
+  .evidence .col-pass h4 { color: var(--pass); }
+  .evidence .col-fail h4 { color: var(--fail); }
+  .evidence ul { list-style: none; margin: 0; padding: 0; font-size: 12.5px; line-height: 1.6; }
+  .evidence li { position: relative; padding-left: 16px; margin-bottom: 7px; color: var(--ink-soft); }
+  .evidence li::before { position: absolute; left: 0; top: 0; font-weight: 700; }
+  .col-pass li::before { content: "✓"; color: var(--pass); }
+  .col-fail li::before { content: "✕"; color: var(--fail); }
+
+  /* 编号标注点 */
+  .pin {
+    position: absolute;
+    width: 21px;
+    height: 21px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 0 3px var(--paper);
+    animation: pin-in 0.5s ease-out backwards;
+  }
+  @keyframes pin-in { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: scale(1); } }
+  /* 1 挂在决策分左侧，2 挂在决策按钮右侧；3 / 4 锚在证据两栏的标题行 */
+  .pin.p1 { left: -10px; top: 28px; animation-delay: 0.15s; }
+  .pin.p2 { right: -10px; top: 20px; animation-delay: 0.3s; }
+  .pin.p3 { left: -28px; top: -10px; animation-delay: 0.45s; }
+  .pin.p4 { right: -28px; top: -10px; animation-delay: 0.6s; }
+
+  .legend { list-style: none; margin: 0; padding: 0; counter-reset: lg; }
+  .legend li {
+    position: relative;
+    padding: 0 0 16px 34px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--rule-soft);
+    font-size: 13.5px;
+    color: var(--ink-soft);
+  }
+  .legend li:last-child { border-bottom: 0; margin-bottom: 0; padding-bottom: 0; }
+  .legend li::before {
+    counter-increment: lg;
+    content: counter(lg);
+    position: absolute;
+    left: 0;
+    top: 2px;
+    width: 21px;
+    height: 21px;
+    border-radius: 50%;
+    background: var(--accent-bg);
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .legend b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- 章节 ---------- */
+  .sec { padding-top: 60px; }
+  .sec > h2 {
+    margin: 0 0 6px;
+    font-size: 25px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--ink);
+  }
+  .sec > .lede { margin-top: 14px; }
+  .sec h3 { margin: 30px 0 10px; font-size: 17px; }
+
+  /* 两栏对照 */
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 22px; }
+  .panel { border: 1px solid var(--rule); border-radius: 10px; padding: 18px 20px; background: var(--paper-2); }
+  .panel.does { border-left: 3px solid var(--pass); }
+  .panel.doesnt { border-left: 3px solid var(--fail); }
+  .panel h3 { margin: 0 0 10px; font-size: 16px; }
+  .panel.does h3 { color: var(--pass); }
+  .panel.doesnt h3 { color: var(--fail); }
+  .panel ul { list-style: none; margin: 0; padding: 0; font-size: 14px; }
+  .panel li { position: relative; padding-left: 18px; margin-bottom: 10px; }
+  .panel li::before { position: absolute; left: 0; font-weight: 700; }
+  .panel.does li::before { content: "✓"; color: var(--pass); }
+  .panel.doesnt li::before { content: "✕"; color: var(--fail); }
+
+  /* 步骤时间轴 */
+  .flow { list-style: none; margin: 18px 0 0; padding: 0 0 0 30px; border-left: 1px solid var(--rule); counter-reset: st; }
+  .flow > li { position: relative; padding-bottom: 22px; }
+  .flow > li::before {
+    counter-increment: st;
+    content: counter(st);
+    position: absolute;
+    left: -41px;
+    top: 1px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--paper);
+    border: 1px solid var(--ink);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .flow h4 { margin: 0 0 4px; font-family: var(--sans); font-size: 15px; font-weight: 600; }
+  .flow p { margin: 0; font-size: 14px; color: var(--ink-soft); }
+  .flow .ui { font-family: var(--sans); background: var(--mid-bg); color: var(--mid); padding: 1px 6px; border-radius: 4px; font-size: 13px; white-space: nowrap; }
+
+  /* 提示块 */
+  .tip { border-radius: 8px; padding: 14px 16px; margin: 18px 0; font-size: 14px; border: 1px solid; }
+  .tip b { display: block; margin-bottom: 3px; font-weight: 600; }
+  .tip.must { background: var(--accent-bg); border-color: #e8cf9a; color: #7a5511; }
+  .tip.warn { background: var(--fail-bg); border-color: #eec9c2; color: #8e2c1f; }
+  .tip.calm { background: var(--mid-bg); border-color: #ccd6ec; color: #2b4479; }
+
+  /* 表格 */
+  table { width: 100%; border-collapse: collapse; margin: 18px 0 6px; font-size: 14px; }
+  caption { text-align: left; font-size: 13px; color: var(--ink-faint); padding-bottom: 8px; }
+  th, td { border-bottom: 1px solid var(--rule); padding: 11px 12px; text-align: left; vertical-align: top; }
+  th {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    border-bottom: 1px solid var(--ink);
+    font-weight: 400;
+  }
+  td:first-child { white-space: nowrap; }
+  .tier { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tier.t-hi { color: var(--pass); }
+  .tier.t-mid { color: var(--mid); }
+  .tier.t-lo { color: var(--fail); }
+
+  /* 算式 */
+  .formula {
+    background: var(--paper-2);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 20px 22px;
+    margin: 20px 0;
+  }
+  .formula-row { display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; padding: 10px 0; }
+  .formula-row + .formula-row { border-top: 1px dashed var(--rule); }
+  .formula-when {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: var(--ink-faint);
+    flex: 0 0 96px;
+  }
+  .formula-eq { font-family: var(--serif); font-size: 18px; }
+  .formula-eq .num { color: var(--accent); font-weight: 700; }
+  .formula-note { flex: 1 1 220px; font-size: 13px; color: var(--ink-soft); }
+
+  /* 校准指标条 */
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    overflow: hidden;
+    margin: 22px 0 6px;
+  }
+  .metric { background: var(--paper-2); padding: 14px 16px; }
+  .metric-num {
+    font-family: var(--serif);
+    font-size: 24px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+  }
+  .metric-num.ok { color: var(--pass); }
+  .metric-num.gap { color: var(--fail); }
+  .metric-label { font-size: 12.5px; color: var(--ink-soft); }
+  .metric-hint { font-size: 12px; color: var(--ink-faint); margin-top: 4px; }
+
+  /* 循环三步 */
+  .loop { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 22px 0 6px; }
+  .loop-step { border: 1px solid var(--rule); border-radius: 10px; padding: 16px 18px; background: var(--paper-2); position: relative; }
+  .loop-step .eyebrow { margin-bottom: 6px; }
+  .loop-step h4 { margin: 0 0 6px; font-family: var(--sans); font-size: 15px; font-weight: 600; }
+  .loop-step p { margin: 0; font-size: 13px; color: var(--ink-soft); }
+
+  /* FAQ */
+  details { border-bottom: 1px solid var(--rule); }
+  details summary {
+    cursor: pointer;
+    padding: 14px 0;
+    font-weight: 600;
+    font-size: 14.5px;
+    list-style: none;
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+  }
+  details summary::-webkit-details-marker { display: none; }
+  details summary::before { content: "+"; color: var(--accent); font-family: var(--mono); font-weight: 700; }
+  details[open] summary::before { content: "–"; }
+  details .body { padding: 0 0 16px 22px; font-size: 14px; color: var(--ink-soft); }
+  details .body p:last-child { margin-bottom: 0; }
+
+  footer {
+    margin-top: 72px;
+    padding-top: 22px;
+    border-top: 2px solid var(--ink);
+    font-size: 13px;
+    color: var(--ink-faint);
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  @media (max-width: 760px) {
+    .exhibit-grid, .split, .loop { grid-template-columns: 1fr; }
+    .metrics { grid-template-columns: repeat(2, 1fr); }
+    .pin { display: none; }
+    .evidence { grid-template-columns: 1fr; }
+    .card-actions { float: none; margin-bottom: 8px; }
+    .formula-when { flex-basis: 100%; }
+    .wrap { padding: 0 18px 64px; }
+    .hero { padding-top: 36px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .pin { animation: none; }
+  }
+
+  @media print {
+    .topbar { position: static; }
+    .pin { animation: none; }
+    details { break-inside: avoid; }
+    details[open] .body, details .body { display: block; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-in">
+    <b>Moka 智能简历筛选助手</b>
+    <span class="sep">/</span><span>CHROME 侧栏插件</span>
+    <span class="sep">/</span><span>V1.6.3</span>
+    <span class="sep">/</span><span>招聘团队内部工具</span>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <header class="hero">
+    <p class="eyebrow">写给每天要看上百份简历的人</p>
+    <h1>把「翻完 200 份简历」<br />变成「复核 200 张<em>带证据的评审卡</em>」</h1>
+    <p class="lede">
+      插件在 Moka 候选人列表页批量拉简历：先按你设的硬性门槛逐条核对，再让 AI 摘出经历证据、判断与 JD 的对口程度，最后给一个决策分和一张「具备 / 未体现」对照卡。你只负责复核和拍板。
+    </p>
+    <dl class="hero-meta">
+      <div>
+        <dt>用在哪里</dt>
+        <dd>Moka 候选人列表 / 初筛页</dd>
+      </div>
+      <div>
+        <dt>一轮能筛</dt>
+        <dd>30 / 50 / 100 / 200 / 全部</dd>
+      </div>
+      <div>
+        <dt>结果去哪</dt>
+        <dd>侧栏卡片 · 可导出 CSV</dd>
+      </div>
+      <div>
+        <dt>决策动作</dt>
+        <dd>在侧栏直接推荐或淘汰</dd>
+      </div>
+    </dl>
+  </header>
+
+  <section class="exhibit" aria-labelledby="exhibit-title">
+    <div class="exhibit-head">
+      <h2 id="exhibit-title">一张结果卡上有什么</h2>
+      <span class="note">以下为示意，非真实候选人</span>
+    </div>
+    <div class="exhibit-grid">
+      <div class="card">
+        <span class="pin p1" aria-hidden="true">1</span>
+        <span class="pin p2" aria-hidden="true">2</span>
+        <div class="card-top">
+          <div class="card-score">58</div>
+          <div class="card-body">
+            <div class="card-actions">
+              <span class="btn-ghost">推荐给用人部门</span>
+              <span class="btn-ghost plain">淘汰</span>
+            </div>
+            <div class="card-name">示例候选人</div>
+            <div class="card-sub">硕士 · 某大学 · 艺术学（戏影方向）</div>
+            <div class="card-tier">可推进</div>
+          </div>
+        </div>
+        <div class="evidence">
+          <span class="pin p3" aria-hidden="true">3</span>
+          <span class="pin p4" aria-hidden="true">4</span>
+          <div class="col-pass">
+            <h4>具备</h4>
+            <ul>
+              <li>独立运营 3 个 YouTube 账号，日更 10+ 条短剧／网文内容，全流程负责生产与发布</li>
+              <li>建立每日数据复盘机制，2 周内将账号平均播放量提升 30%</li>
+              <li>熟练使用 Publisher／InDesign，2 周完成全刊 60 页视觉改版</li>
+            </ul>
+          </div>
+          <div class="col-fail">
+            <h4>未体现</h4>
+            <ul>
+              <li>无 AI 视频／图像生成工具使用经验，与岗位 AI 方向不匹配</li>
+              <li>无达人／KOL 合作全流程经验</li>
+              <li>无明确短视频创作者身份或社交平台活跃证据</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <ol class="legend">
+        <li><b>决策分</b>——排序和拍板只看这个数字。门槛没过会压到 49 以下；门槛全过且匹配 ≥ 50 时，有证据的加分看每项 +3。</li>
+        <li><b>决策动作</b>——点一下，插件替你在 Moka 里完成推荐或淘汰并自动确认。</li>
+        <li><b>具备</b>——AI 从简历里摘出的经历证据，原文级别的事实，够你 3 秒判断要不要细看。</li>
+        <li><b>未体现</b>——简历里找不到证据的岗位要求。不等于「这人不行」，而是「这几点得你去问」。</li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="sec" id="scope">
+    <h2>它替你做什么，不替你做什么</h2>
+    <p class="lede">这一节最重要。用错它的前提，就是把它当成能替你决定录用的机器。</p>
+    <div class="split">
+      <div class="panel does">
+        <h3>它替你做</h3>
+        <ul>
+          <li>批量拉当前列表，并补全常常只在详情页里的实习与项目经历</li>
+          <li>逐条核对门槛：学历、院校、经验或实习、性别、年龄本地判定；语言和你手写的条件由 AI 对着简历核</li>
+          <li>摘出经历证据，评估与 JD、与「重点看」的对口程度，按决策分排序并写清原因</li>
+          <li>把推荐 / 淘汰同步回 Moka、导出 CSV，并攒成本岗样本修正下一轮判断</li>
+        </ul>
+      </div>
+      <div class="panel doesnt">
+        <h3>它不替你做</h3>
+        <ul>
+          <li>不替你决定录用。分数是排序和分流的依据，不是结论</li>
+          <li>不自动淘汰任何人。除非你亲手点，插件不会动任何人</li>
+          <li>不看简历以外的信息：作品集链接、附件内容、面试印象都不在视野里</li>
+          <li>不保证 AI 不出错，也不做背调。所以每张卡都给证据，方便你反驳它</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="setup">
+    <h2>第一次使用：装好并配通</h2>
+    <p class="lede">只做一次。已经有人帮你装好，直接跳到下一节。</p>
+    <ol class="flow">
+      <li>
+        <h4>加载插件文件夹</h4>
+        <p>地址栏进 <code>chrome://extensions/</code>，开<strong>开发者模式</strong>，点「加载已解压的扩展程序」，选整个 <code>moka-resume-plugin</code> 文件夹。需要 Chrome 116 及以上。</p>
+      </li>
+      <li>
+        <h4>打开侧栏</h4>
+        <p>登录 Moka，进任意职位的候选人列表，点工具栏里的插件图标。侧栏不会因为你点页面而关闭。</p>
+      </li>
+      <li>
+        <h4>在「设置」里配好 AI 接口</h4>
+        <p>填 Endpoint、API Key、模型名称，先 <span class="ui">🧪 测试 API</span> 再 <span class="ui">💾 保存设置</span>。内网模型需在办公网或 VPN 下测试；Key 只存在你自己浏览器里。</p>
+      </li>
+    </ol>
+    <div class="tip calm">
+      <b>维护同学更新了代码之后</b>
+      去 <code>chrome://extensions</code> 点插件卡片上的「重新加载」，再刷新 Moka 页面。少了这一步，浏览器里跑的还是旧版本。
+    </div>
+  </section>
+
+  <section class="sec" id="run">
+    <h2>每轮筛选：五步</h2>
+    <ol class="flow">
+      <li>
+        <h4>先点开一位候选人的简历详情</h4>
+        <p>点任意一位的姓名，停 1～2 秒再回列表。这是插件读详情的凭证，<strong>决定它能不能看到实习和项目经历</strong>。</p>
+      </li>
+      <li>
+        <h4>选职位和范围</h4>
+        <p>选职位、职位类型、本轮人数。类型选错会影响门槛——正式员工看工作年限，实习生看实习经历。</p>
+      </li>
+      <li>
+        <h4>点「按 JD 刷新」，然后逐条改</h4>
+        <p>插件会读 JD 生成岗位理解并预填门槛与关键词。<strong>预填只是草稿</strong>：删掉写了但实际不卡的，补上 JD 没写、你心里有的。</p>
+      </li>
+      <li>
+        <h4>保存条件，开始筛选</h4>
+        <p>点 <span class="ui">保存当前筛选条件</span>，下次进同岗自动带出。再点 <span class="ui">开始筛选</span>，边筛边出卡片，可随时停止。</p>
+      </li>
+      <li>
+        <h4>从高到低复核，边看边决策</h4>
+        <p>读两栏证据做判断。点卡片会在 Moka 打开这个人；点「推荐给用人部门」或「淘汰」会同步回 Moka。看完可 <span class="ui">导出 CSV</span>。</p>
+      </li>
+    </ol>
+    <div class="tip must">
+      <b>第一步真的不能省</b>
+      Moka 列表接口里经常没有实习经历，真实经历在详情接口里。跳过它，AI 只能看到自我评价，实习生和主动投递的人很容易被判成「无相关经验」。开筛后留意状态行的「已补全经历 N 位」，长期是 0 就回列表重新点开一位。
+    </div>
+  </section>
+
+  <section class="sec" id="inputs">
+    <h2>你填的三样东西，决定了结果好坏</h2>
+
+    <h3>硬性门槛：不满足就该往后排的条件</h3>
+    <p>门槛是「一票压分项」，只填你真的会因此拒掉人的条件。把「最好有」塞进门槛，会把一大批可看的人压到 49 分以下。</p>
+    <table>
+      <caption>前四行由插件本地判定，后两行由 AI 对着简历逐条核对</caption>
+      <thead>
+        <tr><th>门槛</th><th>怎么判</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>学历</td><td>按候选人最高学历比</td></tr>
+        <tr><td>院校</td><td>211、985、双一流、留学生、QS100、QS500 多选，<strong>满足任一即过</strong></td></tr>
+        <tr><td>经验 / 实习</td><td>正式员工按工作年限区间；实习生看有没有相关实习或项目</td></tr>
+        <tr><td>性别 / 年龄</td><td>年龄可多选、满足任一即过；简历里没这个字段时不判</td></tr>
+        <tr><td>语言</td><td>手写完整要求，如「日语 N1」。<strong>简历里没有证据就算没过</strong></td></tr>
+        <tr><td>专业及其他</td><td>手写可核对的条件，如「设计类专业」「会用 Photoshop」</td></tr>
+      </tbody>
+    </table>
+
+    <h3>筛选关键词：重点看定义匹配，加分看拉开排序</h3>
+    <p>两者都不是门槛。<strong>重点看</strong>是想让 AI 优先核对的经历，如「品牌实习」；完全没有会拉低匹配分，但有职责重叠的相邻经历时不会被打穿 50。<strong>加分看</strong>是有更好、没有也不扣的项，最多 5 项；只在门槛全过且匹配 ≥ 50 时每项 +3、最多 +15——救不了不建议推进的人，但能把 78 送到 81 进优先推进。</p>
+
+    <h3>岗位理解：AI 读 JD 读出了什么</h3>
+    <p>「按 JD 刷新」后配置页会显示岗位理解摘要。<strong>开筛前扫一眼</strong>：方向理解偏了，后面所有匹配分都会跟着偏，这时候改 JD 描述或调门槛关键词，比事后质疑分数有效得多。</p>
+  </section>
+
+  <section class="sec" id="score">
+    <h2>分数怎么读</h2>
+    <p class="lede">卡片上只有一个大数字：决策分。它由门槛、AI 给的经历匹配，以及符合条件时的加分看共同决定。</p>
+
+    <div class="formula">
+      <div class="formula-row">
+        <span class="formula-when">门槛全过，匹配 &lt; 50</span>
+        <span class="formula-eq">决策分 = 经历匹配分</span>
+        <span class="formula-note"><strong>加分看只提示、不计分</strong>，不能把不建议推进的人救到 50。</span>
+      </div>
+      <div class="formula-row">
+        <span class="formula-when">有门槛没过</span>
+        <span class="formula-eq">决策分 = 49 − <span class="num">7</span> × 未过条数</span>
+        <span class="formula-note">两条没过就是 <strong>49 − 14 = 35</strong> 分，最低到 0。差得越多，掉得越靠后。</span>
+      </div>
+      <div class="formula-row">
+        <span class="formula-when">门槛全过，匹配 ≥ 50</span>
+        <span class="formula-eq">决策分 = 经历匹配 + <span class="num">3</span> × 加分项</span>
+        <span class="formula-note">最多 5 项、+15，满分 100。可以跨过 80，卡片会单独标注「加分晋级」。没配门槛也按这一条计算。</span>
+      </div>
+    </div>
+
+    <table>
+      <caption>侧栏标题里的「推荐 N」统计的是决策分 ≥ 50 的人数，以全部结果为准</caption>
+      <thead>
+        <tr><th>决策分</th><th>档位</th><th>怎么处理</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="tier t-hi">80 – 100</td><td><strong style="color:var(--pass)">优先推进</strong></td><td>门槛已过且经历明显对口，优先安排沟通</td></tr>
+        <tr><td class="tier t-mid">50 – 79</td><td><strong style="color:var(--mid)">可推进</strong></td><td>门槛已过、匹配尚可，读两栏证据后决定</td></tr>
+        <tr><td class="tier t-lo">0 – 49</td><td><strong style="color:var(--fail)">不建议推进</strong></td><td>门槛没过，或经历与岗位确实不对口。卡片会区分这两种情况</td></tr>
+      </tbody>
+    </table>
+
+    <p class="note">卡片只在需要解释时多写一行：门槛没过会标出「经历匹配 N」和未过项——匹配很高、只差一条门槛的就是值得人工复核的边缘人选；加分让人跨进优先推进时会标「加分晋级」；评分失败会写明原因，可单独点「重评」，失败不写缓存。</p>
+
+    <div class="tip calm">
+      <b>为什么留学 + 相关实习的人只有 45 分</b>
+      先看卡片上有没有列出未过门槛。有，就是门槛在压分，跟经历好坏无关，去松一松门槛；没有，说明 AI 认为这段经历和岗位主责不对口，看右栏「未体现」写了什么，再去调「重点看」或修 JD 描述。
+    </div>
+  </section>
+
+  <section class="sec" id="calibrate">
+    <h2>它会越用越准，前提是决策留在侧栏</h2>
+    <p class="lede">
+      每次在侧栏点「推荐给用人部门」或「淘汰」，都会给这个岗位留一条样本。插件用这些样本往两个方向修正：一是下一轮评分先对齐你的口味，二是把反复出现的分歧整理成你能一键采纳的规则。
+    </p>
+
+    <div class="loop">
+      <div class="loop-step">
+        <p class="eyebrow">你做的</p>
+        <h4>在侧栏点推荐或淘汰</h4>
+        <p>插件替你在 Moka 里完成动作，同时记下这一位当时的分数、档位和 AI 的说法。</p>
+      </div>
+      <div class="loop-step">
+        <p class="eyebrow">自动发生的</p>
+        <h4>下一轮先对齐你的偏好</h4>
+        <p>再筛这个岗位时，你推过和淘汰过的人、以及反复出现的淘汰理由，会作为「招聘官历史偏好」写进 AI 的评估要求，并声明<strong>优先于通用打分习惯</strong>。开筛状态行会显示「已对齐 N 条历史决策」。</p>
+      </div>
+      <div class="loop-step">
+        <p class="eyebrow">你来复盘的</p>
+        <h4>用「本岗校准」把默契变成规则</h4>
+        <p>攒够样本后，面板告诉你分歧在哪，并整理成可一键写入门槛 / 重点看 / 加分看的建议。</p>
+      </div>
+    </div>
+
+    <p class="note">决策样本按岗位存在你本地并一直累计，同一个人重复点只更新一条；每个岗位最多 200 条、约 180 天过期。</p>
+
+    <h3>「本岗校准」面板里有什么</h3>
+    <p>入口是侧栏底部的 <span class="ui">本岗校准</span> 按钮，打开后在结果页顶部展开，随时可关。先是六个数字：</p>
+
+    <div class="metrics">
+      <div class="metric">
+        <div class="metric-num">12</div>
+        <div class="metric-label">已决策</div>
+        <div class="metric-hint">本岗累计样本量</div>
+      </div>
+      <div class="metric">
+        <div class="metric-num">5</div>
+        <div class="metric-label">已推荐</div>
+        <div class="metric-hint">你点过推荐的人数</div>
+      </div>
+      <div class="metric">
+        <div class="metric-num">7</div>
+        <div class="metric-label">已淘汰</div>
+        <div class="metric-hint">你点过淘汰的人数</div>
+      </div>
+      <div class="metric">
+        <div class="metric-num ok">9</div>
+        <div class="metric-label">与插件一致</div>
+        <div class="metric-hint">越高说明规则配得越准</div>
+      </div>
+      <div class="metric">
+        <div class="metric-num gap">2</div>
+        <div class="metric-label">插件推你却淘汰</div>
+        <div class="metric-hint">门槛或关键词还不够严</div>
+      </div>
+      <div class="metric">
+        <div class="metric-num gap">1</div>
+        <div class="metric-label">你推插件未推</div>
+        <div class="metric-hint">门槛可能卡掉了好苗子</div>
+      </div>
+    </div>
+    <p class="note">示意数字。后两个是你和插件的分歧度，也是判断「该松门槛还是该改重点看 / 加分看」最直接的依据。</p>
+
+    <p>下面是<b>常见信号</b>（反复未过的门槛优先，其次淘汰原因、未命中的加分看，按次数排序），再往下是<b>可采纳建议</b>——只对着三颗真正的旋钮给：</p>
+
+    <table>
+      <caption>建议里的文案都可以先改短再保存</caption>
+      <thead>
+        <tr><th>面板看到的情况</th><th>它会建议</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>淘汰记录里同一条门槛反复缺</td><td>加进「专业及其他」门槛</td></tr>
+        <tr><td>插件推你却淘汰，且门槛都过了</td><td>把反复出现的差距加进「重点看」</td></tr>
+        <tr><td>插件推你却淘汰，且多是「加分晋级」</td><td>从「加分看」里去掉那一项</td></tr>
+        <tr><td>你推的人被某条手写门槛卡住</td><td>放宽或删掉那条门槛</td></tr>
+        <tr><td>你推的人插件没推，但匹配本来够</td><td>把反复出现的亮点加进「加分看」</td></tr>
+        <tr><td>卡在学历 / 院校 / 年龄等下拉门槛</td><td>只提示你去核对，<strong>不自动改</strong></td></tr>
+      </tbody>
+    </table>
+
+    <p>点「采纳并保存」会写入本岗配置并落盘，界面切回配置页便于核对，<strong>下次进这个岗位自动带出来</strong>。面板底部固定留两张空白卡：不等系统建议，也可以自己手写一条门槛或重点看直接保存。</p>
+
+    <div class="tip calm">
+      <b>样本太少时它不会乱给建议</b>
+      不满 5 条决策只提示你继续积累；某一类分歧不满 3 次，不给那一类建议；同一个缺项要出现 2 次以上才会被整理成门槛。判断一直一致时，它直接说「暂无明显系统性偏差」。用三五条样本去改门槛，比不改更危险。
+    </div>
+
+    <div class="tip must">
+      <b>回 Moka 手动推荐，这一条就不算样本</b>
+      只有在侧栏点「推荐给用人部门 / 淘汰」才会记进校准和历史偏好。在 Moka 页面手动操作，流程照样走完，但插件看不到你的判断，也就学不到东西。
+    </div>
+  </section>
+
+  <section class="sec" id="cautions">
+    <h2>注意事项</h2>
+
+    <h3>四个习惯，能避掉大部分误判</h3>
+    <ol class="flow">
+      <li>
+        <h4>每轮筛选前先点开一位候选人详情</h4>
+        <p>重复强调，因为这是最常见的误判来源。</p>
+      </li>
+      <li>
+        <h4>门槛只填硬条件，「最好有」放重点看</h4>
+        <p>门槛是压分项，关键词是提示项。「最好有品牌实习」应该写进「重点看」，不是「专业及其他」。</p>
+      </li>
+      <li>
+        <h4>新岗位先跑 30～50 人试试</h4>
+        <p>小批量验证门槛和关键词配得对不对，再放开人数。人越多，耗时和 AI 调用成本越高。</p>
+      </li>
+      <li>
+        <h4>决策留在侧栏点，也别只看分数</h4>
+        <p>在侧栏点才会攒成本岗样本，下一轮评分才会往你的偏好靠。分数负责排序，证据负责决策——两栏证据就是给你反驳 AI 用的。筛过三五轮后去看一次「本岗校准」。</p>
+      </li>
+    </ol>
+
+    <h3>几个容易误会的地方</h3>
+    <details>
+      <summary>同一个人重复筛选，分数一模一样</summary>
+      <div class="body">
+        <p>同一个人在同一套配置下的评分会缓存在本地约 7 天，重复筛选不会重复调用 AI，也就不会重复计费。改了门槛或关键词后配置变了，会重新评分。</p>
+      </div>
+    </details>
+    <details>
+      <summary>卡片上写着「Moka 未同步成功」</summary>
+      <div class="body">
+        <p>说明你的推荐或淘汰在 Moka 侧没执行完，本地先记下了你的决定。<strong>再点一次同一个按钮就是重试同步</strong>，不会把记录清掉。等它同步成功后，再点同一个按钮才是撤销这次决定。</p>
+        <p>如果重试仍然失败，请到 Moka 里手动操作这一位，并把提示原文反馈给维护同学。</p>
+      </div>
+    </details>
+    <details>
+      <summary>我明明处理了很多人，本岗校准里只有几条</summary>
+      <div class="body">
+        <p>校准只统计<strong>在插件侧栏点过按钮</strong>的人。在 Moka 页面手动推荐或淘汰的，插件没有记录。另外样本不满 5 条时不给规则建议，避免用极少样本改错门槛。</p>
+      </div>
+    </details>
+    <details>
+      <summary>「推荐 N」和筛到的人数跟我预期不一样</summary>
+      <div class="body">
+        <p>「推荐 N」统计全部结果里决策分 ≥ 50 的人，不是屏幕上的卡片数，门槛没过的不计入。只筛到几十人时，先确认「本轮筛选人数」不是默认的前 50，需要全量选「全部」。</p>
+      </div>
+    </details>
+    <details>
+      <summary>改了设置或门槛，结果没变化</summary>
+      <div class="body">
+        <p>顺序是：<code>chrome://extensions</code> 点「重新加载」→ 刷新 Moka 页面 → 确认侧栏配置还在 → 再开筛。</p>
+      </div>
+    </details>
+
+    <div class="tip warn">
+      <b>反馈问题时请带上这些信息</b>
+      报错原文、职位名称、有没有点开过候选人详情、本轮人数、用的模型名，以及怎么复现。请不要把完整 API Key 或带 Cookie 的请求粘到群里。
+    </div>
+  </section>
+
+  <section class="sec" id="privacy">
+    <h2>数据去了哪里</h2>
+    <ul>
+      <li>API Key、筛选配置和决策样本都存在<strong>你自己浏览器本地</strong>，不上传任何第三方服务。</li>
+      <li>为了评分，候选人画像会发到<strong>你在设置里配的那个 AI 服务</strong>（OpenAI、Claude、公司自建或内网路由）。发哪儿由配置决定。</li>
+      <li>插件不做任何使用行为统计，代码可在本地审计。</li>
+      <li>候选人简历属于敏感个人信息。有合规要求时请用公司内网或本地部署的模型，并遵守公司数据管理规范。</li>
+    </ul>
+  </section>
+
+  <footer>
+    <span>Moka 智能简历筛选助手 · v1.6.3 · 招聘团队内部工具</span>
+    <span>安装、配置与完整排查见《使用说明.html》</span>
+  </footer>
+
+</div>
+</body>
+</html>

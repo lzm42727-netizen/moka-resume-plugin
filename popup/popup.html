@@ -21,7 +21,7 @@
             <section class="panel">
                 <h3 class="panel-title">
                     <span class="panel-icon">📋</span>职位信息
-                    <span class="panel-title-paren">（<button type="button" id="reload-panel" class="btn-link" title="刷新侧栏，无需关闭再打开">点击刷新</button>）</span>
+                    <span class="panel-title-paren">（<button type="button" id="reload-panel" class="btn-link" title="重载侧栏（等于关掉再打开）；会先保存本岗配置">点击刷新</button>）</span>
                 </h3>
 
                 <div class="form-group">
@@ -29,7 +29,7 @@
                     <select id="job-select">
                         <option value="">加载中...</option>
                     </select>
-                    <div id="preset-note" class="cond-hint cond-hint-flush">同岗位的硬性要求和权重会自动保存，下次打开直接恢复</div>
+                    <div id="preset-note" class="cond-hint cond-hint-flush">改完点「保存当前筛选条件」，或开筛时自动保存；下次进入本岗会自动填充</div>
                 </div>
 
                 <div class="form-group">
@@ -52,11 +52,21 @@
                 </div>
             </section>
 
-            <!-- 硬性条件：点「按 JD 预填」才识别；未过按条扣综合分，自增项可忽略加回 -->
+            <!-- 岗位理解：沿用原权重区绿色摘要样式 -->
             <section class="panel">
                 <h3 class="panel-title">
-                    <span class="panel-icon">🔒</span>硬性要求
-                    <span class="panel-title-paren">（<button type="button" id="autofill-hard" class="btn-link">点击按 JD 预填</button>）</span>
+                    <span class="panel-icon">💡</span>岗位理解
+                    <span class="panel-title-paren">（<button type="button" id="refresh-job-understanding" class="btn-link">按 JD 刷新</button>）</span>
+                </h3>
+                <div id="jd-understanding" class="jd-understanding hidden"></div>
+                <div id="understanding-note" class="cond-hint cond-hint-flush">只读摘要；清单与职位不符时点「按 JD 刷新」整表重写</div>
+            </section>
+
+            <!-- 硬性门槛：点「按 JD 预填」识别，空项不参与筛选 -->
+            <section class="panel">
+                <h3 class="panel-title">
+                    <span class="panel-icon">🔒</span>硬性门槛
+                    <span class="panel-title-paren">（<button type="button" id="autofill-hard" class="btn-link">点击按 JD 预填硬性</button>）</span>
                 </h3>
                 <div id="autofill-note" class="cond-hint cond-hint-flush"></div>
 
@@ -125,50 +135,42 @@
                 <div class="cond-hint">年龄多选：满足任一区间即算符合；不选则不限；仅在有年龄信息时判定</div>
 
                 <div class="cond-row cond-row-wrap">
-                    <span class="cond-label">其他必备</span>
+                    <span class="cond-label">语言</span>
                     <div class="chip-editor">
-                        <div id="must-chips" class="chip-list"></div>
-                        <input id="must-input" class="chip-input" placeholder="最多 6 项，如 Java，回车添加">
+                        <div id="lang-chips" class="chip-list"></div>
+                        <input id="lang-input" class="chip-input" placeholder="如：日语 N1、英语 CET6（最多 6 项）">
                     </div>
                 </div>
-                <div class="cond-hint">最多 6 项。可自增；AI 判定是否满足。未满足每条 −5（满 6 条最多 −30）。点「忽略」加回该条分数。学历等结构化项不能忽略</div>
 
                 <div class="cond-row cond-row-wrap">
-                    <span class="cond-label">简历关键词</span>
+                    <span class="cond-label">专业及其他</span>
                     <div class="chip-editor">
-                        <div id="keyword-chips" class="chip-list"></div>
-                        <input id="keyword-input" class="chip-input" placeholder="最多 6 项，如 SEO、Excel，回车添加">
+                        <div id="gate-chips" class="chip-list"></div>
+                        <input id="gate-input" class="chip-input" placeholder="如：设计类专业、会使用 Photoshop（最多 6 项）">
                     </div>
                 </div>
-                <div class="cond-hint">最多 6 项。软性标注：未命中会在结果里标黄，不置底、不扣分</div>
+                <div class="cond-hint">按填写内容逐条核对；简历无证据即视为未过</div>
             </section>
 
-            <!-- 评分维度权重（AI 读 JD 给建议值，可自行拉动） -->
+            <!-- 筛选关键词：重点看定义匹配；加分看仅给已可推进候选人加分 -->
             <section class="panel panel-last">
-                <h3 class="panel-title">
-                    <span class="panel-icon">⚖️</span>评分权重
-                    <span class="panel-title-paren">（可手动调整，或点击<button type="button" id="suggest-weights" class="btn-link">按 JD 生成建议权重</button>）</span>
-                </h3>
-                <div id="weight-note" class="cond-hint cond-hint-flush"></div>
-                <div id="jd-understanding" class="jd-understanding hidden"></div>
+                <h3 class="panel-title"><span class="panel-icon">✅</span>筛选关键词</h3>
+                <div class="cond-hint cond-hint-flush">重点看定义经历匹配；加分看有证据时每项 +3，最多 +15，不能把匹配不足 50 的人救进可推进</div>
+                <div class="cond-row cond-row-wrap">
+                    <span class="cond-label">重点看</span>
+                    <div class="chip-editor">
+                        <div id="important-chips" class="chip-list"></div>
+                        <input id="important-input" class="chip-input" placeholder="如：品牌实习、海外社媒（最多 6 项）">
+                    </div>
+                </div>
 
-                <div class="weight-item">
-                    <label>经验相关性 <span class="weight-val" id="w-experience-val">40%</span></label>
-                    <input type="range" id="w-experience" class="weight-slider" min="0" max="100" value="40">
+                <div class="cond-row cond-row-wrap">
+                    <span class="cond-label">加分看</span>
+                    <div class="chip-editor">
+                        <div id="nice-chips" class="chip-list"></div>
+                        <input id="nice-input" class="chip-input" placeholder="如：作品集、跨文化经历（最多 5 项）">
+                    </div>
                 </div>
-                <div class="weight-item">
-                    <label>技能匹配 <span class="weight-val" id="w-skill-val">30%</span></label>
-                    <input type="range" id="w-skill" class="weight-slider" min="0" max="100" value="30">
-                </div>
-                <div class="weight-item">
-                    <label>专业与教育背景 <span class="weight-val" id="w-education-val">20%</span></label>
-                    <input type="range" id="w-education" class="weight-slider" min="0" max="100" value="20">
-                </div>
-                <div class="weight-item">
-                    <label>潜力/稳定性/加分项 <span class="weight-val" id="w-potential-val">10%</span></label>
-                    <input type="range" id="w-potential" class="weight-slider" min="0" max="100" value="10">
-                </div>
-                <div class="cond-hint cond-hint-flush">按各维度占比加权得综合分；比例会自动归一化，无需凑满 100%</div>
             </section>
         </div>
 
@@ -310,7 +312,7 @@
         <div id="dock-toast" class="dock-toast hidden" role="status" aria-live="polite"></div>
         <div class="button-group">
             <button id="start-screening" class="btn btn-primary">开始筛选</button>
-            <button id="save-job-preset" class="btn btn-secondary" type="button" title="保存本岗硬性要求、必备项、关键词与评分权重">保存当前筛选条件</button>
+            <button id="save-job-preset" class="btn btn-secondary" type="button" title="保存本岗硬性门槛与筛选关键词">保存当前筛选条件</button>
         </div>
         <div class="button-group button-group-tight">
             <button id="open-calibration" class="btn btn-secondary" type="button" title="根据本岗历史决策复盘并给出可采纳的规则建议">本岗校准</button>
@@ -333,6 +335,7 @@
     <script src="../lib/persist.js"></script>
     <script src="../lib/feedback.js"></script>
     <script src="../lib/calibrate.js"></script>
+    <script src="../lib/moka-actions.js"></script>
     <script src="../config.local.js"></script>
     <script src="popup.js"></script>
 </body>

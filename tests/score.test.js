@@ -8,8 +8,13 @@ const {
   SCORE_AUTO_RETRY_MAX,
   hardConditionsPromptBlock,
   dimensionScoringNotes,
+  matchScoringPromptBlock,
+  normalizeModelScoreResponse,
+  ensureHandwrittenGateResults,
+  ensureBonusKeywordResults,
   mustHaveExtractionGuide,
-  formatPenaltyHint,
+  matchScoreDisplayText,
+  scoreFailureMessage,
   PROMPT_VERSION
 } = require('../lib/score.js');
 
@@ -51,22 +56,65 @@ describe('isRetryableScoreFailure', () => {
   it('allows up to 2 automatic retries', () => {
     assert.equal(SCORE_AUTO_RETRY_MAX, 2);
   });
-
-  it('matches waived keys after trim', () => {
-    const raw = okRaw({
-      mustHaveResults: [
-        { item: ' Java ', met: false },
-        { item: 'SEO', met: false }
-      ]
-    });
-    const result = composeFinalScore(raw, WEIGHTS, new Set(['Java']), []);
-    assert.equal(result.penalty, 5);
-    assert.equal(result.score, 65);
-    assert.deepEqual(result.unmet.map((r) => r.item), ['SEO']);
-  });
 });
 
 describe('composeFinalScore', () => {
+  it('caps at 49 - 7 per unmet gate and ignores high match', () => {
+    const raw = {
+      dimensions: {
+        experience: { score: 90 },
+        skill: { score: 90 },
+        education: { score: 90 },
+        potential: { score: 90 }
+      },
+      matchScore: 90,
+      highlights: ['社媒'],
+      concerns: [],
+      handwrittenGateResults: [{ item: '日语', met: false }]
+    };
+    const out = composeFinalScore(raw, null, [], ['学历本科']);
+    assert.equal(out.score, 35);
+    assert.equal(out.matchScore, 90);
+    assert.equal(out.level, '不建议推进');
+    assert.equal(out.advanceReason, 'gate');
+  });
+
+  it('uses match score when all gates pass even if match is 32', () => {
+    const raw = {
+      dimensions: {
+        experience: { score: 32 },
+        skill: { score: 32 },
+        education: { score: 32 },
+        potential: { score: 32 }
+      },
+      matchScore: 32,
+      highlights: [],
+      concerns: ['无相关实习'],
+      handwrittenGateResults: []
+    };
+    const out = composeFinalScore(raw, null, [], []);
+    assert.equal(out.score, 32);
+    assert.equal(out.level, '不建议推进');
+    assert.equal(out.advanceReason, 'match');
+  });
+
+  it('labels 可推进 and 优先推进 from composite score', () => {
+    const mk = (match) => composeFinalScore({
+      matchScore: match,
+      dimensions: {
+        experience: { score: match },
+        skill: { score: match },
+        education: { score: match },
+        potential: { score: match }
+      },
+      highlights: [],
+      concerns: [],
+      handwrittenGateResults: []
+    }, null, [], []);
+    assert.equal(mk(65).level, '可推进');
+    assert.equal(mk(80).level, '优先推进');
+  });
+
   it('treats parseError as 错误 even if dummy 50-point dimensions are present', () => {
     const raw = {
       parseError: true,
@@ -93,116 +141,111 @@ describe('composeFinalScore', () => {
     assert.equal(result.score, 0);
   });
 
-  it('still computes weighted score for a valid dimension result', () => {
+  it('falls back to the legacy weighted dimensions when matchScore is absent', () => {
     // 80*0.4 + 70*0.3 + 60*0.2 + 50*0.1 = 32+21+12+5 = 70
     const result = composeFinalScore(okRaw(), WEIGHTS, new Set());
     assert.equal(result.score, 70);
     assert.equal(result.baseScore, 70);
-    assert.equal(result.level, '值得推荐');
-    assert.equal(result.penalty, 0);
+    assert.equal(result.level, '可推进');
     assert.deepEqual(result.highlights, ['有相关项目']);
     assert.deepEqual(result.concerns, ['行业经验短']);
   });
 
-  it('subtracts 5 per unmet must-have up to 30 (6 items)', () => {
+  it('maps seven or more unmet gates to zero', () => {
     const raw = okRaw({
-      mustHaveResults: [
-        { item: 'Java', met: false },
-        { item: 'Spring', met: false },
-        { item: 'MySQL', met: false },
-        { item: 'Redis', met: false },
-        { item: 'K8s', met: false },
-        { item: 'Docker', met: false }
-      ]
+      matchScore: 95,
+      handwrittenGateResults: Array.from({ length: 7 }, (_, i) => ({
+        item: `门槛${i + 1}`,
+        met: false
+      }))
     });
     const result = composeFinalScore(raw, WEIGHTS, new Set());
-    assert.equal(result.baseScore, 70);
-    assert.equal(result.penalty, 30);
-    assert.equal(result.score, 40);
-    assert.equal(result.level, '一般');
-    assert.equal(result.unmet.length, 6);
+    assert.equal(result.matchScore, 95);
+    assert.equal(result.score, 0);
+    assert.equal(result.unmet.length, 7);
+    assert.equal(result.advanceReason, 'gate');
   });
 
-  it('does not soft-cap at 20 when five must-haves are unmet', () => {
+  it('counts only failed handwritten gates and keeps their reasons', () => {
     const raw = okRaw({
-      mustHaveResults: [
-        { item: 'Java', met: false },
-        { item: 'Spring', met: false },
-        { item: 'MySQL', met: false },
-        { item: 'Redis', met: false },
-        { item: 'K8s', met: false }
+      matchScore: 88,
+      handwrittenGateResults: [
+        { item: '日语', met: true, reason: 'JLPT N1' },
+        { item: '会使用 Photoshop', met: false, reason: '简历无相关证据' }
       ]
     });
     const result = composeFinalScore(raw, WEIGHTS, new Set());
-    assert.equal(result.penalty, 25);
+    assert.equal(result.score, 42);
+    assert.deepEqual(result.unmet.map((r) => r.item), ['会使用 Photoshop']);
+    assert.equal(result.unmet[0].reason, '简历无相关证据');
+  });
+
+  it('does not apply bonus points when a hard gate fails', () => {
+    const result = composeFinalScore({
+      matchScore: 90,
+      handwrittenGateResults: [{ item: '日语 N1', met: false }],
+      bonusKeywordResults: [
+        { item: '作品集', met: true, reason: '附有作品集' },
+        { item: '海外经历', met: true, reason: '海外交换' }
+      ]
+    }, WEIGHTS, [], []);
+    assert.equal(result.score, 42);
+    assert.equal(result.bonusPoints, 6);
+    assert.equal(result.bonusApplied, 0);
+    assert.equal(result.bonusMetCount, 2);
+    assert.equal(result.bonusTotalCount, 2);
+  });
+
+  it('does not let bonus points rescue match score below 50', () => {
+    const result = composeFinalScore({
+      matchScore: 45,
+      bonusKeywordResults: Array.from({ length: 5 }, (_, i) => ({
+        item: `加分项${i + 1}`,
+        met: true
+      }))
+    }, WEIGHTS, [], []);
     assert.equal(result.score, 45);
+    assert.equal(result.bonusPoints, 15);
+    assert.equal(result.bonusApplied, 0);
+    assert.equal(result.advanceReason, 'match');
   });
 
-  it('adds waived must-have points back without touching structured misses', () => {
-    const raw = okRaw({
-      mustHaveResults: [
-        { item: 'Java', met: false },
-        { item: 'SEO', met: false }
+  it('adds three points per met bonus item once match score reaches 50', () => {
+    const result = composeFinalScore({
+      matchScore: 50,
+      bonusKeywordResults: [
+        { item: '作品集', met: true },
+        { item: '海外经历', met: false }
       ]
-    });
-    const waived = composeFinalScore(raw, WEIGHTS, new Set(['Java']));
-    assert.equal(waived.penalty, 5);
-    assert.equal(waived.score, 65);
-    assert.deepEqual(waived.unmet.map((r) => r.item), ['SEO']);
-    assert.deepEqual(waived.waivedUnmet.map((r) => r.item), ['Java']);
+    }, WEIGHTS, [], []);
+    assert.equal(result.score, 53);
+    assert.equal(result.bonusApplied, 3);
+    assert.equal(result.level, '可推进');
   });
 
-  it('does not penalize structured hard misses in default tag mode', () => {
-    const raw = okRaw({
-      mustHaveResults: [{ item: 'SEO', met: false, tier: 'must' }]
-    });
-    const tagged = composeFinalScore(raw, WEIGHTS, new Set(), ['学历需本科及以上']);
-    assert.equal(tagged.penalty, 5);
-    assert.equal(tagged.score, 65);
-    assert.equal(tagged.matchScore, 70);
+  it('allows bonus points to promote a candidate into 优先推进', () => {
+    const result = composeFinalScore({
+      matchScore: 78,
+      bonusKeywordResults: [{ item: '作品集', met: true }]
+    }, WEIGHTS, [], []);
+    assert.equal(result.score, 81);
+    assert.equal(result.level, '优先推进');
+    assert.equal(result.bonusPromoted, true);
+    assert.equal(result.advanceReason, 'bonus');
   });
 
-  it('applies tiered penalties for must and important', () => {
-    const raw = okRaw({
-      mustHaveResults: [
-        { item: 'Java', met: false, tier: 'must' },
-        { item: 'SEO', met: false, tier: 'important' },
-        { item: 'Midjourney', met: false, tier: 'nice' }
-      ]
-    });
-    const result = composeFinalScore(raw, WEIGHTS, new Set());
-    assert.equal(result.penalty, 8);
-    assert.equal(result.score, 62);
-    assert.equal(result.unmetNice.length, 1);
-  });
-
-  it('labels conditional recommend when matchScore is high with one must miss', () => {
-    const raw = okRaw({
-      dimensions: {
-        experience: { score: 55, reason: '同方向' },
-        skill: { score: 60, reason: '够用' },
-        education: { score: 52, reason: '本科' },
-        potential: { score: 65, reason: '可培养' }
-      },
-      mustHaveResults: [{ item: 'TikTok', met: false, tier: 'must' }]
-    });
-    const result = composeFinalScore(raw, WEIGHTS, new Set());
-    assert.equal(result.matchScore, 57);
-    assert.equal(result.score, 52);
-    assert.equal(result.level, '值得推荐');
-    const raw2 = okRaw({
-      dimensions: {
-        experience: { score: 50, reason: '擦边' },
-        skill: { score: 55, reason: '部分' },
-        education: { score: 50, reason: '本科' },
-        potential: { score: 60, reason: '可培养' }
-      },
-      mustHaveResults: [{ item: 'TikTok', met: false, tier: 'must' }]
-    });
-    const cond = composeFinalScore(raw2, WEIGHTS, new Set());
-    assert.equal(cond.matchScore, 53);
-    assert.equal(cond.score, 48);
-    assert.equal(cond.level, '有条件推荐');
+  it('caps the final score at 100 and bonus points at 15', () => {
+    const result = composeFinalScore({
+      matchScore: 96,
+      bonusKeywordResults: Array.from({ length: 7 }, (_, i) => ({
+        item: `加分项${i + 1}`,
+        met: true
+      }))
+    }, WEIGHTS, [], []);
+    assert.equal(result.score, 100);
+    assert.equal(result.bonusPoints, 15);
+    assert.equal(result.bonusMetCount, 5);
+    assert.equal(result.bonusTotalCount, 5);
   });
 });
 
@@ -224,6 +267,126 @@ describe('PROMPT_VERSION', () => {
   it('is a non-empty string so score cache can invalidate on prompt changes', () => {
     assert.equal(typeof PROMPT_VERSION, 'string');
     assert.ok(PROMPT_VERSION.length >= 1);
+  });
+
+  it('is not the previous gate-only prompt revision', () => {
+    assert.notEqual(PROMPT_VERSION, 'gate-ai-match-v1');
+    assert.match(PROMPT_VERSION, /evidence-first/);
+    assert.notEqual(PROMPT_VERSION, 'evidence-first-bonus-cal-v3');
+  });
+});
+
+describe('AI match scoring contract', () => {
+  it('prompts for per-item handwritten gates and a standalone match score', () => {
+    const prompt = matchScoringPromptBlock(
+      'intern',
+      ['日语 N1', '会使用 Photoshop'],
+      ['品牌实习'],
+      ['作品集']
+    );
+    assert.match(prompt, /无证据.*不过/);
+    assert.match(prompt, /PS.*Photoshop|Photoshop.*PS/);
+    assert.match(prompt, /matchScore/);
+    assert.match(prompt, /重点看.*品牌实习/);
+    assert.match(prompt, /加分看.*作品集/);
+    assert.match(prompt, /bonusKeywordResults/);
+    assert.match(prompt, /加分看.*(?:不得|不要).*matchScore|matchScore.*(?:不得|不要).*加分看/);
+    assert.match(prompt, /逐条.*加分|加分.*逐条/);
+    assert.match(prompt, /学历.*(?:不要|不得).*加分/);
+    assert.match(prompt, /experienceEvidence|经历证据/);
+    assert.match(prompt, /相邻/);
+    assert.match(prompt, /不得.{0,12}低于\s*50|不得.{0,12}50\s*以下/);
+    assert.doesNotMatch(prompt, /education|综合分约\s*50/);
+    assert.doesNotMatch(prompt, /重点看缺失会拉低匹配分/);
+  });
+
+  it('normalizes model match score and handwritten gate results', () => {
+    const raw = normalizeModelScoreResponse({
+      matchScore: 108,
+      handwrittenGateResults: [
+        { item: '日语', met: false, reason: '简历未提及' },
+        { item: '', met: true, reason: '忽略空项' }
+      ],
+      highlights: ['品牌项目'],
+      concerns: ['经验较浅']
+    });
+    assert.equal(raw.matchScore, 100);
+    assert.deepEqual(raw.handwrittenGateResults, [
+      { item: '日语', met: false, reason: '简历未提及' }
+    ]);
+    assert.deepEqual(raw.highlights, ['品牌项目']);
+    assert.deepEqual(raw.experienceEvidence, []);
+  });
+
+  it('normalizes at most five per-item bonus results', () => {
+    const raw = normalizeModelScoreResponse({
+      matchScore: 70,
+      bonusKeywordResults: [
+        { item: '作品集', met: true, reason: '附有作品集' },
+        { item: '', met: true },
+        { item: '海外经历', met: false, note: '未提及' },
+        { item: 'A', met: true },
+        { item: 'B', met: true },
+        { item: 'C', met: true },
+        { item: 'D', met: true }
+      ]
+    });
+    assert.deepEqual(raw.bonusKeywordResults, [
+      { item: '作品集', met: true, reason: '附有作品集' },
+      { item: '海外经历', met: false, reason: '未提及' },
+      { item: 'A', met: true, reason: '' },
+      { item: 'B', met: true, reason: '' },
+      { item: 'C', met: true, reason: '' }
+    ]);
+  });
+
+  it('keeps experience evidence and still scores when the model omits the field', () => {
+    const withEvidence = normalizeModelScoreResponse({
+      matchScore: 62,
+      experienceEvidence: ['澳启教育：海外用户访谈', '', '小红书内容优化']
+    });
+    assert.deepEqual(withEvidence.experienceEvidence, ['澳启教育：海外用户访谈', '小红书内容优化']);
+    const composed = composeFinalScore(withEvidence, WEIGHTS, [], []);
+    assert.equal(composed.matchScore, 62);
+    assert.deepEqual(composed.experienceEvidence, ['澳启教育：海外用户访谈', '小红书内容优化']);
+    assert.equal(composed.level, '可推进');
+  });
+
+  it('marks a response without matchScore as a parse error instead of a silent zero', () => {
+    const raw = normalizeModelScoreResponse({
+      handwrittenGateResults: [{ item: '日语', met: true, reason: 'N1' }],
+      concerns: ['行业经验短']
+    });
+    assert.equal(raw.parseError, true);
+    assert.match(raw.error, /matchScore/);
+    assert.equal(isScoreFailure(raw), true);
+    const composed = composeFinalScore(raw, WEIGHTS, [], []);
+    assert.equal(composed.level, '错误');
+    assert.match(scoreFailureMessage(composed), /matchScore/);
+  });
+
+  it('fails any configured handwritten gate omitted by the model', () => {
+    const results = ensureHandwrittenGateResults({
+      handwrittenGateResults: [
+        { item: '日语 N1', met: true, reason: 'JLPT N1' }
+      ]
+    }, ['日语 N1', '会使用 Photoshop']);
+    assert.deepEqual(results.handwrittenGateResults, [
+      { item: '日语 N1', met: true, reason: 'JLPT N1' },
+      { item: '会使用 Photoshop', met: false, reason: '简历未提供可核对证据' }
+    ]);
+  });
+
+  it('treats any configured bonus keyword omitted by the model as not met', () => {
+    const result = ensureBonusKeywordResults({
+      bonusKeywordResults: [
+        { item: '作品集', met: true, reason: '附有作品集' }
+      ]
+    }, ['作品集', '海外经历']);
+    assert.deepEqual(result.bonusKeywordResults, [
+      { item: '作品集', met: true, reason: '附有作品集' },
+      { item: '海外经历', met: false, reason: '简历未提供可核对证据' }
+    ]);
   });
 });
 
@@ -255,18 +418,51 @@ describe('dimensionScoringNotes', () => {
   });
 });
 
-describe('formatPenaltyHint', () => {
-  it('splits must and important penalties in the hint text', () => {
-    const hint = formatPenaltyHint({
-      matchScore: 61,
-      unmet: [
-        { item: 'Java', tier: 'must' },
-        { item: 'SEO', tier: 'important' }
-      ]
+describe('matchScoreDisplayText', () => {
+  it('shows experience match only when a gate lowers the decision score', () => {
+    const text = matchScoreDisplayText({
+      score: 42,
+      matchScore: 90,
+      level: '不建议推进',
+      advanceReason: 'gate'
     });
-    assert.match(hint, /匹配度 61/);
-    assert.match(hint, /必须 5/);
-    assert.match(hint, /重要 3/);
+    assert.equal(text, '经历匹配 90');
+  });
+
+  it('hides duplicate match score when gates pass', () => {
+    assert.equal(matchScoreDisplayText({
+      score: 72,
+      matchScore: 72,
+      level: '可推进',
+      advanceReason: 'ok'
+    }), '');
+  });
+
+  it('hides the match score for match-based rejection', () => {
+    assert.equal(matchScoreDisplayText({
+      score: 32,
+      matchScore: 32,
+      level: '不建议推进',
+      advanceReason: 'match'
+    }), '');
+  });
+
+  it('hides the match score for failed scoring', () => {
+    const failed = composeFinalScore(scoreErrorResult('429 请求过于频繁'), WEIGHTS, [], []);
+    assert.equal(failed.level, '错误');
+    assert.equal(matchScoreDisplayText(failed), '');
+  });
+});
+
+describe('scoreFailureMessage', () => {
+  it('surfaces the underlying error text for failed scoring', () => {
+    const failed = composeFinalScore(scoreErrorResult('429 请求过于频繁'), WEIGHTS, [], []);
+    assert.equal(scoreFailureMessage(failed), '429 请求过于频繁');
+  });
+
+  it('returns empty for a normal score', () => {
+    const ok = composeFinalScore({ matchScore: 72 }, WEIGHTS, [], []);
+    assert.equal(scoreFailureMessage(ok), '');
   });
 });
 
@@ -276,6 +472,6 @@ describe('mustHaveExtractionGuide', () => {
     assert.match(g, /mustHaves/);
     assert.match(g, /真诚|态度|品格/);
     assert.match(g, /niceToHaves/);
-    assert.match(g, /最多\s*6|不超过\s*6/);
+    assert.match(g, /最多 5 条/);
   });
 });

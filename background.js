@@ -274,6 +274,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     case 'resultsUpdated':
     case 'mokaActionComplete':
     case 'mokaContentReady':
+    case 'pageJobChanged':
       // 转发到侧栏（侧栏未打开时忽略错误）
       chrome.runtime.sendMessage({ ...request }).catch(() => {});
       sendResponse({ received: true });
@@ -461,8 +462,8 @@ async function handleAnalyzeJob({ jobJD, jobType }) {
 }
 
 /**
- * 对单个候选人做「分维度」评估（带缓存）。
- * 返回原始分维度结果，最终综合分由 content 侧按用户权重本地计算。
+ * 对单个候选人做门槛核对与岗位匹配评估（带缓存）。
+ * 返回匹配分与手写门槛结果，最终综合分由 content 侧合成。
  * profile: content 侧拼好的候选人完整画像文本
  * config.jobSpec: 上一步 JD 解读结果
  */
@@ -490,14 +491,23 @@ async function handleScoreCandidate({ profile, config }) {
   const systemPrompt =
     '你是资深招聘专家，擅长客观评估候选人与岗位的匹配度。'
     + '严格只输出一个 JSON 对象，禁止输出任何思考过程、前言、分析说明或 markdown。'
-    + '每个维度的 reason 控制在 40 字以内，highlights/concerns 每条不超过 30 字。';
+    + '门槛 reason 控制在 40 字以内，highlights/concerns 每条不超过 30 字。';
   const userPrompt = buildDimensionPrompt(
     profile, jobSpec, config.jobType, config.jobJD, hardText, feedbackContext, config.weights
   );
 
   // 推理型模型会先输出思考，需给足 token，避免 JSON 被截断
   const content = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: 4000, temperature: 0 });
-  const raw = parseDimensionResponse(content);
+  const parsed = parseDimensionResponse(content);
+  const expectedGates = []
+    .concat(jobSpec.languages || [])
+    .concat(jobSpec.customGates || []);
+  const raw = parsed.parseError
+    ? parsed
+    : MokaScore.ensureBonusKeywordResults(
+        MokaScore.ensureHandwrittenGateResults(parsed, expectedGates),
+        jobSpec.bonusKeywords || jobSpec.niceToHaves || []
+      );
 
   // 解析失败不写缓存，避免把错误结果固化，下一轮可重试
   if (!raw.parseError) rememberScore(cacheKey, raw);
@@ -682,17 +692,19 @@ ${jobJD || '（未提供 JD）'}
 ${DIM_DESC}
 
 要求：
-1. summary：一句话概括该岗位主要在做什么。
+1. summary：恰好两句话，连贯可读。
+   - 第一句：概括该岗位主要在做什么（场景与产出）。
+   - 第二句：概括做好这份工作需要具备的关键能力（如英语沟通、PS/AI 等工具、业务经验方向）；用「需要具备…」或「要求…」起句均可，举 2–4 个要点收成一句，不要另起清单。
 2. responsibilities：列出 3-6 条核心职责。
 3. mustHaves：按 JD 写「必须/需/要求」的硬门槛，最多 6 条。
 4. importantHaves：JD 写「优先/熟悉/有相关更好」的重要项，最多 6 条。
 ${MokaScore.mustHaveExtractionGuide()}
-5. niceToHaves：加分项，最多 6 条。
+5. niceToHaves：加分项，最多 5 条。
 6. resumeKeywords：按重要性列出最多 6 个可在简历中检索的关键词（技能/工具/岗位缩写，如 HRBP、Excel）。
 7. suggestedWeights：给出四个维度的建议权重（整数、合计恰好 100），要体现该岗位最看重什么（例如强执行/经验型岗位 experience 权重更高；校招/实习岗 potential 与 education 权重更高）。
 只返回以下 JSON，不要输出多余文字：
 {
-  "summary": "...",
+  "summary": "第一句做什么。第二句需要具备的能力。",
   "responsibilities": ["..."],
   "mustHaves": ["..."],
   "importantHaves": ["..."],
@@ -709,10 +721,18 @@ function renderSpec(spec) {
   const lines = [];
   if (spec.summary) lines.push('岗位概述：' + spec.summary);
   if (Array.isArray(spec.responsibilities) && spec.responsibilities.length) {
-    lines.push('核心职责：\n- ' + spec.responsibilities.join('\n- '));
+    lines.push('核心职责（要做什么）：\n- ' + spec.responsibilities.join('\n- '));
   }
-  const checklist = MokaScore.renderRequirementChecklist(spec);
-  if (checklist) lines.push(checklist);
+  if (Array.isArray(spec.coreSkills) && spec.coreSkills.length) {
+    lines.push('核心技能：\n- ' + spec.coreSkills.join('\n- '));
+  }
+  if (Array.isArray(spec.candidateTraits) && spec.candidateTraits.length) {
+    lines.push('候选人素质：\n- ' + spec.candidateTraits.join('\n- '));
+  }
+  const focus = Array.isArray(spec.focusKeywords) ? spec.focusKeywords : spec.importantHaves;
+  const bonus = Array.isArray(spec.bonusKeywords) ? spec.bonusKeywords : spec.niceToHaves;
+  if (Array.isArray(focus) && focus.length) lines.push('重点看：\n- ' + focus.join('\n- '));
+  if (Array.isArray(bonus) && bonus.length) lines.push('加分看：\n- ' + bonus.join('\n- '));
   return lines.join('\n\n') || '（无岗位画像，请依据 JD 常识判断）';
 }
 
@@ -723,41 +743,39 @@ function buildDimensionPrompt(profile, spec, jobType, jobJD, hardText, feedbackC
   const hasSpec = spec && (spec.summary || (spec.responsibilities && spec.responsibilities.length)
     || (spec.mustHaves && spec.mustHaves.length) || (spec.importantHaves && spec.importantHaves.length));
   const jobBlock = hasSpec ? renderSpec(spec) : (jobJD || '（无岗位信息）');
-  const hardBlock = MokaScore.hardConditionsPromptBlock(hardText);
-  const hardSection = hardBlock ? `\n${hardBlock}\n` : '';
   const feedbackBlock = MokaFeedback.feedbackPromptBlock(feedbackContext);
   const feedbackSection = feedbackBlock ? `\n${feedbackBlock}\n` : '';
-  const weightsBlock = weights ? MokaScore.weightsPromptBlock(weights) : '';
-  const weightsSection = weightsBlock ? `\n${weightsBlock}\n` : '';
+  const handwrittenGates = []
+    .concat((spec && spec.languages) || [])
+    .concat((spec && spec.customGates) || []);
+  const focusKeywords = (spec && (spec.focusKeywords || spec.importantHaves)) || [];
+  const bonusKeywords = (spec && (spec.bonusKeywords || spec.niceToHaves)) || [];
+  const scoringRules = MokaScore.matchScoringPromptBlock(
+    jobType,
+    handwrittenGates,
+    focusKeywords,
+    bonusKeywords
+  );
 
-  return `请基于岗位信息，对候选人做「分维度」评估。
+  return `请先根据简历归纳经历证据，再对照岗位与重点看评估匹配，并逐条核对手写硬性门槛。禁止跳过经历阅读直接打分。
 
 【候选人完整信息】
 ${profile || '（无候选人信息）'}
 
 【岗位信息】
 ${jobBlock}
-${hardSection}${feedbackSection}${weightsSection}【职位类型】
+${feedbackSection}【职位类型】
 ${JOB_TYPE_TEXT[jobType] || JOB_TYPE_TEXT['full-time']}
 
-请对以下四个维度分别打分（0-100 整数），并给出简短理由，尽量引用候选人简历中的具体经历/项目作为证据：
-${DIM_DESC}
+${scoringRules}
 
-同时对「必须 / 重要 / 加分」各级要求逐条判定是否满足（met: true/false）：只在简历中有明确或等价证据时才判 true；相邻/可迁移能力可判 true 并在 note 说明。mustHaveResults 每项须含 tier（must / important / nice）。未满足的必须/重要项会按条扣综合分（−5 / −3），加分项不扣分，不要因此把四维一律打成 0。
-
-评分注意：
-1. 仅依据上方候选人信息判断，逐条阅读每段经历（含实习、项目）的具体描述；列出的经历若职能不同，按相邻/擦边计，不要当成对口。
-2. 专业名称不完全对口时，不要把 education 打到 20 以下，更不要因此把四个维度一起压低。
-3. ${MokaScore.dimensionScoringNotes(jobType).replace(/\n/g, ' ')}
+仅依据候选人信息判断，逐条阅读每段经历（含实习、项目）的具体描述；尽量在理由中引用具体证据。
 只返回以下 JSON，不要输出多余文字：
 {
-  "dimensions": {
-    "experience": {"score": 0, "reason": "..."},
-    "skill": {"score": 0, "reason": "..."},
-    "education": {"score": 0, "reason": "..."},
-    "potential": {"score": 0, "reason": "..."}
-  },
-  "mustHaveResults": [{"item": "要求项", "tier": "must", "met": true, "note": "证据/说明"}],
+  "experienceEvidence": ["实习证据1"],
+  "matchScore": 0,
+  "handwrittenGateResults": [{"item": "日语 N1", "met": false, "reason": "简历未提及日语能力"}],
+  "bonusKeywordResults": [{"item": "作品集", "met": true, "reason": "简历附有可核对作品集"}],
   "highlights": ["亮点1", "亮点2"],
   "concerns": ["主要差距1", "主要差距2"]
 }`;
@@ -826,16 +844,19 @@ function parseJDAnalysis(content) {
   }
   if (!best) {
     return {
-      summary: '', responsibilities: [], mustHaves: [], importantHaves: [], niceToHaves: [],
+      summary: '', responsibilities: [], coreSkills: [], candidateTraits: [],
+      mustHaves: [], importantHaves: [], niceToHaves: [],
       resumeKeywords: [], suggestedWeights: { ...DEFAULT_WEIGHTS }, parseError: true
     };
   }
   return {
     summary: best.summary ? String(best.summary) : '',
     responsibilities: arrOf(best.responsibilities, 8),
+    coreSkills: arrOf(best.coreSkills, 6),
+    candidateTraits: arrOf(best.candidateTraits, 6),
     mustHaves: arrOf(best.mustHaves, 6),
     importantHaves: arrOf(best.importantHaves, 6),
-    niceToHaves: arrOf(best.niceToHaves, 10),
+    niceToHaves: arrOf(best.niceToHaves, 5),
     resumeKeywords: arrOf(best.resumeKeywords, 6),
     suggestedWeights: normalizeWeights(best.suggestedWeights)
   };
@@ -850,12 +871,12 @@ function parseDimensionResponse(content) {
   let best = null;
   for (const c of objs) {
     const p = tryParseJson(c);
-    if (p && p.dimensions) { best = p; break; }
+    if (p && (p.matchScore != null || p.dimensions)) { best = p; break; }
   }
   // 兜底 1：JSON 被截断（花括号未闭合）→ 尝试修复后再解析
   if (!best) {
     const repaired = tryParseJson(repairTruncatedJson(text));
-    if (repaired && repaired.dimensions) best = repaired;
+    if (repaired && (repaired.matchScore != null || repaired.dimensions)) best = repaired;
   }
   // 兜底 2：仍失败 → 用正则宽松抽取各维度分数/理由（能救多少救多少）
   if (!best) {
@@ -869,32 +890,19 @@ function parseDimensionResponse(content) {
     fail.concerns = ['无法解析模型返回，原文片段: ' + text.slice(0, 80)];
     return fail;
   }
-  const dim = (k) => {
-    const o = (best.dimensions && best.dimensions[k]) || {};
-    return { score: clampScore(o.score), reason: o.reason ? String(o.reason) : '' };
-  };
-  const mustHaveResults = Array.isArray(best.mustHaveResults)
-    ? best.mustHaveResults
-        .map((r) => ({
-          item: String((r && r.item) || ''),
-          tier: MokaScore.normalizeTier(r && r.tier),
-          met: !!(r && r.met),
-          note: r && r.note ? String(r.note) : ''
-        }))
-        .filter((r) => r.item)
-        .slice(0, 12)
-    : [];
-  return {
-    dimensions: {
+  if (best.dimensions) {
+    const dim = (k) => {
+      const o = (best.dimensions && best.dimensions[k]) || {};
+      return { score: clampScore(o.score), reason: o.reason ? String(o.reason) : '' };
+    };
+    best.dimensions = {
       experience: dim('experience'),
       skill: dim('skill'),
       education: dim('education'),
       potential: dim('potential')
-    },
-    mustHaveResults,
-    highlights: arrOf(best.highlights),
-    concerns: arrOf(best.concerns)
-  };
+    };
+  }
+  return MokaScore.normalizeModelScoreResponse(best);
 }
 
 function tryParseJson(str) {

@@ -4,6 +4,7 @@ const {
   sanitizeScreeningJob,
   isResumableJob,
   matchesPageJob,
+  screeningLooksActive,
   withStatus,
   SCREENING_JOB_KEY
 } = require('../lib/screening-job.js');
@@ -41,6 +42,31 @@ describe('isResumableJob', () => {
     assert.equal(isResumableJob({
       status: 'running', jobId: 'j', total: 10, completed: 10
     }), false);
+  });
+});
+
+describe('screeningLooksActive', () => {
+  it('treats a flag-on run with no heartbeat for 90s+ as dead', () => {
+    const now = 1_000_000;
+    // 心跳 91 秒前 → 已超过 90s 阈值 → 判死，侧栏才能重新开筛
+    assert.equal(screeningLooksActive(true, now - 91_000, now), false);
+    // 心跳 5 秒前 → 仍在跑
+    assert.equal(screeningLooksActive(true, now - 5_000, now), true);
+  });
+
+  it('treats a just-started run without heartbeat as active', () => {
+    assert.equal(screeningLooksActive(true, 0, 1_000_000), true);
+  });
+
+  it('is always false when not screening', () => {
+    assert.equal(screeningLooksActive(false, Date.now(), Date.now()), false);
+    assert.equal(screeningLooksActive(false, 0, 1_000_000), false);
+  });
+
+  it('honours a custom stale window', () => {
+    const now = 500_000;
+    assert.equal(screeningLooksActive(true, now - 20_000, now, 10_000), false);
+    assert.equal(screeningLooksActive(true, now - 5_000, now, 10_000), true);
   });
 });
 

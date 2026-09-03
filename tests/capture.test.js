@@ -5,7 +5,8 @@ const {
   mergeCapture,
   unwrapDetailJson,
   extractSceneToken,
-  detailBelongsTo
+  detailBelongsTo,
+  buildSearchPageBody
 } = require('../lib/capture.js');
 
 const ORIGIN = 'https://app.mokahr.com';
@@ -84,6 +85,54 @@ describe('detailBelongsTo', () => {
 
   it('rejects a payload with no comparable ids', () => {
     assert.equal(detailBelongsTo({ id: 1 }, { name: 'x' }), false);
+  });
+});
+
+describe('buildSearchPageBody', () => {
+  // Moka 列表接口靠 base64 的 lastCursor 翻页。捕获到的请求体里可能残留
+  // 页面上次翻页的游标，若原样重放，第一页就会从中间开始。
+  const CAPTURED = {
+    pipelineId: 123,
+    stageId: '17',
+    jobIds: [456],
+    sortKey: 'movedAt',
+    limit: '30',
+    lastCursor: 'STALE_CURSOR_FROM_PAGE'
+  };
+
+  it('drops the stale cursor so the first page starts from the top', () => {
+    const body = buildSearchPageBody(CAPTURED, 50, null);
+    assert.equal('lastCursor' in body, false);
+    assert.equal('offsetInfo' in body, false);
+    assert.equal(body.limit, 50);
+    assert.equal(body.pipelineId, 123);
+    assert.deepEqual(body.jobIds, [456]);
+    assert.equal(body.sortKey, 'movedAt');
+  });
+
+  it('sends the server cursor verbatim for the next page', () => {
+    const body = buildSearchPageBody(CAPTURED, 50, 'eyJhcHBsaWNhdGlvbklkIjo4MzUwODc3MjZ9');
+    assert.equal(body.lastCursor, 'eyJhcHBsaWNhdGlvbklkIjo4MzUwODc3MjZ9');
+    assert.equal(body.limit, 50);
+  });
+
+  it('drops legacy offsetInfo and firstCursor paging fields', () => {
+    const body = buildSearchPageBody(
+      { pipelineId: 1, offsetInfo: { includeThis: false }, firstCursor: 'abc', cursor: 'def' },
+      50,
+      null
+    );
+    assert.equal('offsetInfo' in body, false);
+    assert.equal('firstCursor' in body, false);
+    assert.equal('cursor' in body, false);
+    assert.equal(body.pipelineId, 1);
+  });
+
+  it('does not mutate the captured body', () => {
+    const original = { pipelineId: 9, lastCursor: 'STALE' };
+    buildSearchPageBody(original, 50, 'NEW');
+    assert.equal(original.lastCursor, 'STALE');
+    assert.equal(original.limit, undefined);
   });
 });
 

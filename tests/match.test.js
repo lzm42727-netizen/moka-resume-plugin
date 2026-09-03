@@ -18,13 +18,17 @@ const {
   dedupeMustHavesAgainstHard,
   evidenceColumnsFromScore,
   buildEvidenceColumns,
+  niceBonusTagsFromScore,
+  bonusScoreDisplay,
   extractDegreeFromText,
   extractExperienceFromText,
   extractSchoolsFromText,
   extractGenderFromText,
   extractAgeRangesFromText,
   extractInternshipFromText,
-  extractHardAutofillFromText
+  extractHardAutofillFromText,
+  splitMustHavesForHard,
+  graduationRiskHint
 } = require('../lib/match.js');
 
 describe('parseChipList', () => {
@@ -55,7 +59,7 @@ describe('itemMatchesFilter', () => {
   const item = {
     app: { name: '张三' },
     hard: { passed: false, missing: ['学历'] },
-    score: { score: 70, level: '值得推荐' }
+    score: { score: 70, level: '可推进' }
   };
 
   it('filters by name query', () => {
@@ -67,7 +71,7 @@ describe('itemMatchesFilter', () => {
     assert.equal(itemMatchesFilter(item, { tab: 'recommend' }), true);
     assert.equal(itemMatchesFilter(item, { tab: 'hardfail' }), true);
     assert.equal(itemMatchesFilter(item, { tab: 'error' }), false);
-    const ok = { app: { name: '王五' }, score: { score: 70, level: '值得推荐' }, hard: { passed: true } };
+    const ok = { app: { name: '王五' }, score: { score: 70, level: '可推进' }, hard: { passed: true } };
     assert.equal(itemMatchesFilter(ok, { tab: 'recommend' }), true);
     const bad = { app: { name: '李四' }, score: { score: 0, level: '错误' }, hard: { passed: true } };
     assert.equal(itemMatchesFilter(bad, { tab: 'error' }), true);
@@ -108,7 +112,8 @@ describe('toResultView', () => {
       keywords: { hit: ['SEO'], miss: ['Excel'] },
       score: {
         score: 88,
-        level: '强烈推荐',
+        level: '优先推进',
+        advanceReason: 'ok',
         dims: { skill: { score: 90, reason: '熟 SEO' } },
         suggestions: ['约面'],
         unmet: [],
@@ -130,20 +135,34 @@ describe('toResultView', () => {
       keywords: { hit: ['SEO'], miss: ['Excel'] },
       score: {
         score: 88,
-        level: '强烈推荐',
+        level: '优先推进',
+        error: '',
+        advanceReason: 'ok',
         dims: { skill: { score: 90, reason: '熟 SEO' } },
         suggestions: ['约面'],
         highlights: [],
         concerns: [],
+        experienceEvidence: [],
         unmet: [],
         waivedUnmet: [],
         unmetNice: [],
+        metNice: [],
         penalty: 0,
+        mustPenalty: 0,
+        importantPenalty: 0,
+        bonus: 0,
+        bonusKeywordResults: [],
+        bonusPoints: 0,
+        bonusApplied: 0,
+        bonusMetCount: 0,
+        bonusTotalCount: 0,
+        bonusPromoted: false,
         baseScore: 88,
         matchScore: 88
       },
       stage: 'score',
-      rescoring: true
+      rescoring: true,
+      graduationRisk: null
     });
     assert.equal('profile' in view, false);
     assert.equal('jobJD' in view, false);
@@ -159,14 +178,89 @@ describe('toResultView', () => {
     assert.equal(view.stage, null);
     assert.equal(view.rescoring, false);
   });
+
+  it('keeps bonus scoring fields needed to explain the decision score', () => {
+    const view = toResultView({
+      app: { id: 'a1' },
+      score: {
+        score: 81,
+        matchScore: 78,
+        level: '优先推进',
+        bonusKeywordResults: [{ item: '作品集', met: true, reason: '附有作品集' }],
+        bonusPoints: 3,
+        bonusApplied: 3,
+        bonusMetCount: 1,
+        bonusTotalCount: 1,
+        bonusPromoted: true
+      }
+    });
+    assert.equal(view.score.bonusApplied, 3);
+    assert.equal(view.score.bonusPromoted, true);
+    assert.deepEqual(view.score.bonusKeywordResults, [
+      { item: '作品集', met: true, reason: '附有作品集' }
+    ]);
+  });
+});
+
+describe('bonusScoreDisplay', () => {
+  it('shows met count but not points when a gate blocks the candidate', () => {
+    assert.equal(bonusScoreDisplay({
+      level: '不建议推进',
+      score: 42,
+      matchScore: 90,
+      advanceReason: 'gate',
+      bonusMetCount: 2,
+      bonusTotalCount: 2,
+      bonusApplied: 0
+    }), '经历匹配 90 · 加分看 2/2（未计入）');
+  });
+
+  it('shows met count but does not rescue match score below 50', () => {
+    assert.equal(bonusScoreDisplay({
+      level: '不建议推进',
+      score: 45,
+      matchScore: 45,
+      advanceReason: 'match',
+      bonusMetCount: 3,
+      bonusTotalCount: 3,
+      bonusApplied: 0
+    }), '加分看 3/3（未计入，匹配不足 50）');
+  });
+
+  it('explains points applied to an eligible candidate', () => {
+    assert.equal(bonusScoreDisplay({
+      level: '优先推进',
+      score: 81,
+      matchScore: 78,
+      bonusMetCount: 1,
+      bonusTotalCount: 3,
+      bonusApplied: 3
+    }), '经历匹配 78 · 加分 +3');
+  });
+
+  it('shows zero met items when bonus keywords were configured', () => {
+    assert.equal(bonusScoreDisplay({
+      level: '可推进',
+      score: 78,
+      matchScore: 78,
+      bonusMetCount: 0,
+      bonusTotalCount: 3,
+      bonusApplied: 0
+    }), '加分看 0/3');
+  });
+
+  it('hides bonus details for errors or no configured bonus keywords', () => {
+    assert.equal(bonusScoreDisplay({ level: '错误', bonusTotalCount: 3 }), '');
+    assert.equal(bonusScoreDisplay({ level: '可推进', bonusTotalCount: 0 }), '');
+  });
 });
 
 describe('summarizeResultViews', () => {
   it('counts scored / recommend / hardfail / error independently of order', () => {
     const views = [
-      { score: { score: 88, level: '强烈推荐' }, structuredHardPassed: true },
-      { score: { score: 90, level: '强烈推荐' }, structuredHardPassed: false },
-      { score: { score: 40, level: '一般' }, structuredHardPassed: false },
+      { score: { score: 88, level: '优先推进' }, structuredHardPassed: true },
+      { score: { score: 90, level: '优先推进' }, structuredHardPassed: false },
+      { score: { score: 40, level: '不建议推进' }, structuredHardPassed: false },
       { score: { score: 0, level: '错误' }, structuredHardPassed: true },
       { score: null, structuredHardPassed: true }
     ];
@@ -197,7 +291,7 @@ describe('viewMatchesFilter', () => {
     name: '张三',
     hardPassed: false,
     structuredHardPassed: false,
-    score: { score: 70, level: '值得推荐' }
+    score: { score: 70, level: '可推进' }
   };
 
   it('filters by name, recommend, hardfail and error', () => {
@@ -206,12 +300,12 @@ describe('viewMatchesFilter', () => {
     assert.equal(viewMatchesFilter(view, { tab: 'recommend' }), true);
     assert.equal(viewMatchesFilter(view, { tab: 'hardfail' }), true);
     assert.equal(viewMatchesFilter(view, { tab: 'error' }), false);
-    const passed = { name: '王五', hardPassed: true, score: { score: 70, level: '值得推荐' } };
+    const passed = { name: '王五', hardPassed: true, score: { score: 70, level: '可推进' } };
     assert.equal(viewMatchesFilter(passed, { tab: 'recommend' }), true);
   });
 
   it('hides decided candidates from the default pending tab', () => {
-    const pending = { name: '待处理', feedback: null, score: { score: 60, level: '一般' } };
+    const pending = { name: '待处理', feedback: null, score: { score: 60, level: '可推进' } };
     const eliminated = {
       name: '已淘汰',
       feedback: 'eliminate',
@@ -228,13 +322,13 @@ describe('viewMatchesFilter', () => {
       name: '同步中',
       feedback: 'eliminate',
       feedbackSync: 'pending',
-      score: { score: 70, level: '值得推荐' }
+      score: { score: 70, level: '可推进' }
     };
     const failed = {
       name: '失败',
       feedback: 'recommend',
       feedbackSync: 'failed',
-      score: { score: 70, level: '值得推荐' }
+      score: { score: 70, level: '可推进' }
     };
     assert.equal(viewMatchesFilter(syncing, { tab: 'all' }), false);
     assert.equal(viewMatchesFilter(syncing, { tab: 'feedback' }), true);
@@ -243,9 +337,9 @@ describe('viewMatchesFilter', () => {
   });
 
   it('filters by feedback tab', () => {
-    const tagged = { name: '李四', feedback: 'recommend', score: { score: 40, level: '一般' } };
-    const legacy = { name: '张三', feedback: 'positive', score: { score: 50, level: '一般' } };
-    const untagged = { name: '王五', feedback: null, score: { score: 80, level: '强烈推荐' } };
+    const tagged = { name: '李四', feedback: 'recommend', score: { score: 40, level: '不建议推进' } };
+    const legacy = { name: '张三', feedback: 'positive', score: { score: 50, level: '可推进' } };
+    const untagged = { name: '王五', feedback: null, score: { score: 80, level: '优先推进' } };
     assert.equal(viewMatchesFilter(tagged, { tab: 'feedback' }), true);
     assert.equal(viewMatchesFilter(legacy, { tab: 'feedback' }), true);
     assert.equal(viewMatchesFilter(untagged, { tab: 'feedback' }), false);
@@ -264,12 +358,11 @@ describe('candidateOpenPath', () => {
 });
 
 describe('scoreColor', () => {
-  it('uses the same four bands as the result cards', () => {
-    assert.equal(scoreColor(75), '#52c41a');
+  it('uses the three advancement tier bands', () => {
+    assert.equal(scoreColor(80), '#52c41a');
+    assert.equal(scoreColor(79), '#1890ff');
     assert.equal(scoreColor(50), '#1890ff');
-    assert.equal(scoreColor(45), '#13c2c2');
-    assert.equal(scoreColor(35), '#fa8c16');
-    assert.equal(scoreColor(34), '#ff4d4f');
+    assert.equal(scoreColor(49), '#ff4d4f');
   });
 });
 
@@ -347,18 +440,18 @@ describe('buildEvidenceColumns', () => {
     assert.deepEqual(cols.right, []);
   });
 
-  it('lists unmet must-haves on the right as ignore-able rows', () => {
+  it('lists unmet gates with their evidence and no score override action', () => {
     const cols = buildEvidenceColumns({
       highlights: [],
       concerns: ['党员身份未明确，无法满足硬性门槛'],
-      unmet: [{ item: '党员', note: '简历未写明', tier: 'must' }],
+      unmet: [{ item: '党员', reason: '简历未写明', source: 'handwritten' }],
       waivedUnmet: []
     });
     assert.equal(cols.right.length, 1);
     assert.equal(cols.right[0].kind, 'unmet');
     assert.equal(cols.right[0].item, '党员');
-    assert.equal(cols.right[0].action, 'ignore');
-    assert.equal(cols.right[0].text, '缺「党员」（必须，简历未写明）');
+    assert.equal(cols.right[0].action, null);
+    assert.equal(cols.right[0].text, '未过门槛「党员」（简历未写明）');
   });
 
   it('keeps a concern that does not overlap an unmet item', () => {
@@ -373,17 +466,45 @@ describe('buildEvidenceColumns', () => {
     assert.equal(cols.right[1].action, null);
   });
 
-  it('appends waived items with restore', () => {
+  it('does not revive legacy waived gate rows', () => {
     const cols = buildEvidenceColumns({
       highlights: [],
       concerns: [],
       unmet: [],
       waivedUnmet: [{ item: '党员' }]
     });
-    assert.equal(cols.right[0].kind, 'waived');
-    assert.equal(cols.right[0].item, '党员');
-    assert.equal(cols.right[0].action, 'restore');
-    assert.equal(cols.right[0].text, '已忽略「党员」');
+    assert.deepEqual(cols.right, []);
+  });
+
+  it('fills the left column from experience evidence when highlights are empty', () => {
+    const cols = buildEvidenceColumns({
+      highlights: [],
+      experienceEvidence: ['澳启教育：海外用户访谈'],
+      concerns: [],
+      unmet: []
+    });
+    assert.deepEqual(cols.left, ['澳启教育：海外用户访谈']);
+  });
+
+  it('appends experience evidence without dropping existing highlights', () => {
+    const cols = buildEvidenceColumns({
+      highlights: ['有增长实习'],
+      experienceEvidence: ['澳启教育：小红书内容优化', '有增长实习'],
+      concerns: [],
+      unmet: []
+    });
+    assert.deepEqual(cols.left, ['有增长实习', '澳启教育：小红书内容优化']);
+  });
+
+  it('does not put unmet nice into the未体现 column', () => {
+    const cols = buildEvidenceColumns({
+      highlights: [],
+      concerns: [],
+      unmet: [],
+      waivedUnmet: [],
+      unmetNice: [{ item: '作品集', note: '未展示' }]
+    });
+    assert.deepEqual(cols.right, []);
   });
 
   it('splits legacy suggestion prefixes when highlights are absent', () => {
@@ -395,6 +516,16 @@ describe('buildEvidenceColumns', () => {
     assert.deepEqual(cols.left, ['有项目']);
     assert.equal(cols.right[0].kind, 'concern');
     assert.equal(cols.right[0].text, '经验短');
+  });
+});
+
+describe('niceBonusTagsFromScore', () => {
+  it('lists met and unmet nice labels for name-row tags', () => {
+    const tags = niceBonusTagsFromScore({
+      metNice: [{ item: '作品集' }],
+      unmetNice: [{ item: '英语六级' }, { item: '  ' }]
+    });
+    assert.deepEqual(tags, { met: ['作品集'], unmet: ['英语六级'] });
   });
 });
 
@@ -509,6 +640,17 @@ describe('extractInternshipFromText', () => {
 });
 
 describe('extractHardAutofillFromText', () => {
+  it('extracts language and professional gates without duplicating degree', () => {
+    const af = extractHardAutofillFromText(
+      '本科及以上学历；日语 N1 及以上；设计类相关专业；会使用 Photoshop'
+    );
+    assert.equal(af.degree, '本科');
+    assert.deepEqual(af.languages, ['日语N1及以上']);
+    assert.ok(af.customGates.includes('设计类相关专业'));
+    assert.ok(af.customGates.includes('会使用 Photoshop'));
+    assert.ok(!af.customGates.some((x) => /本科/.test(x)));
+  });
+
   it('fills every hard-requirement slot from a full JD snippet', () => {
     const af = extractHardAutofillFromText(
       '学历本科及以上；211院校；3-5年经验；性别：女；年龄25-30岁；需具备实习经验；熟悉 SEO 与 Excel'
@@ -521,5 +663,79 @@ describe('extractHardAutofillFromText', () => {
     assert.equal(af.internship, 'required');
     assert.ok(af.resumeKeywords.includes('SEO'));
     assert.ok(af.resumeKeywords.includes('Excel'));
+  });
+});
+
+describe('splitMustHavesForHard', () => {
+  it('keeps non-structured JD must-haves as handwritten gates', () => {
+    const split = splitMustHavesForHard(
+      ['本科及以上', '日语 N1', '设计类相关专业', '一周到岗 5 天'],
+      { degree: '本科' }
+    );
+    assert.deepEqual(split.languages, ['日语N1']);
+    assert.deepEqual(split.customGates, ['设计类相关专业', '一周到岗 5 天']);
+  });
+});
+
+describe('graduationRiskHint', () => {
+  const NOW = new Date(2026, 8, 3);
+
+  it('flags intern graduation within six months', () => {
+    const hint = graduationRiskHint(
+      [{ school: 'Edinburgh', endDate: '2026.12' }],
+      { jobType: 'intern', now: NOW }
+    );
+    assert.deepEqual(hint, {
+      endLabel: '2026.12',
+      text: '毕业 2026.12，距今不足半年'
+    });
+  });
+
+  it('does not flag exactly six months out', () => {
+    assert.equal(graduationRiskHint(
+      [{ endDate: '2027-03-03' }],
+      { jobType: 'intern', now: NOW }
+    ), null);
+  });
+
+  it('does not flag already graduated', () => {
+    assert.equal(graduationRiskHint(
+      [{ endDate: '2026-08-01' }],
+      { jobType: 'intern', now: NOW }
+    ), null);
+  });
+
+  it('does not flag full-time jobs', () => {
+    assert.equal(graduationRiskHint(
+      [{ endDate: '2026.12' }],
+      { jobType: 'full-time', now: NOW }
+    ), null);
+  });
+
+  it('skips missing or ongoing end dates', () => {
+    assert.equal(graduationRiskHint(
+      [{ endDate: '' }, { end: '至今' }],
+      { jobType: 'intern', now: NOW }
+    ), null);
+  });
+
+  it('uses the latest education end date', () => {
+    const hint = graduationRiskHint(
+      [{ endDate: '2025.7' }, { endDate: '2026-12' }],
+      { jobType: 'intern', now: NOW }
+    );
+    assert.equal(hint.endLabel, '2026.12');
+  });
+
+  it('passes graduationRisk through toResultView without changing score', () => {
+    const risk = { endLabel: '2026.12', text: '毕业 2026.12，距今不足半年' };
+    const view = toResultView({
+      app: { id: 1, name: '黄芯怡' },
+      graduationRisk: risk,
+      score: { score: 73, level: '可推进', matchScore: 73 }
+    });
+    assert.deepEqual(view.graduationRisk, risk);
+    assert.equal(view.score.score, 73);
+    assert.equal(view.score.level, '可推进');
   });
 });

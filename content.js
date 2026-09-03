@@ -31,6 +31,17 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = MOKA_TIMEOUT_MS) 
 }
 
 let isScreening = false;
+let screeningEpoch = 0;
+let screeningHeartbeat = 0; // 最近一次筛选活动时间；用于识别「卡死的旧任务」
+
+function touchScreeningHeartbeat() {
+  screeningHeartbeat = Date.now();
+}
+
+/** 真正可信的「筛选进行中」：既要标志位为真，也要近期有活动 */
+function screeningLooksActive() {
+  return MokaScreeningJob.screeningLooksActive(isScreening, screeningHeartbeat, Date.now());
+}
 let results = []; // { app, profile, jobJD, rawScore, waivedMustHaves, score, hard, keywords, stage }
 let sortTimer = null;
 let activeWeights = null; // 本轮归一化权重，供忽略自增硬性后重排
@@ -43,6 +54,8 @@ let lastUiStatus = '';
 let lastBanner = null; // { type: 'need-click' | 'ready' } | null
 let lastListUrl = '';
 let mokaActionBusy = false;
+/** 从写入 pending 到 clear 之前为 true，防止换岗监听在跳转详情页时打断推荐/淘汰 */
+let mokaActionActive = false;
 
 // 捕获到的 Moka 真实请求模板（来自 inject.js）
 let capturedRequest = null;        // 列表搜索请求
@@ -59,6 +72,8 @@ window.addEventListener('message', (event) => {
   if (data.type === 'search-request') {
     capturedRequest = data.payload;
     persistCapture();
+    // 开筛分页会触发大量 search-request，避免刷换岗通知打断筛选
+    if (!isScreening) maybeNotifyPageJobChanged('search-capture');
   } else if (data.type === 'detail-request') {
     const first = !capturedDetailRequest;
     capturedDetailRequest = data.payload;
@@ -82,22 +97,29 @@ function persistCapture() {
 
 function restoreCapture() {
   return new Promise((resolve) => {
+    const done = () => resolve();
     try {
       chrome.storage.local.get(MokaCapture.CAPTURE_STORAGE_KEY, (result) => {
-        if (chrome.runtime.lastError) {
-          resolve();
-          return;
+        try {
+          if (chrome.runtime.lastError) {
+            done();
+            return;
+          }
+          const stored = result && result[MokaCapture.CAPTURE_STORAGE_KEY];
+          const merged = MokaCapture.mergeCapture(
+            { search: capturedRequest, detail: capturedDetailRequest },
+            stored
+          );
+          capturedRequest = merged.search;
+          capturedDetailRequest = merged.detail;
+        } catch (e) {
+          console.warn('[Moka 筛选] restoreCapture:', e);
         }
-        const stored = result && result[MokaCapture.CAPTURE_STORAGE_KEY];
-        const merged = MokaCapture.mergeCapture(
-          { search: capturedRequest, detail: capturedDetailRequest },
-          stored
-        );
-        capturedRequest = merged.search;
-        capturedDetailRequest = merged.detail;
-        resolve();
+        done();
       });
-    } catch (e) { resolve(); }
+    } catch (e) {
+      done();
+    }
   });
 }
 
@@ -164,8 +186,8 @@ try {
   window.postMessage({ source: 'moka-content', type: 'get-detail-request' }, '*');
 } catch (e) { /* ignore */ }
 
-init();
-
+// init() 放在文件末尾调用：这里的 let/const 模块级变量必须全部初始化完成，
+// 否则 init 里同步调用的函数会命中 TDZ，整个顶层脚本中断（后半段声明全部失效）
 function init() {
   console.log('[Moka 筛选] Content script 已加载');
   const leftover = document.getElementById('moka-panel');
@@ -211,13 +233,31 @@ function init() {
         }));
       return true; // 异步
     } else if (request.action === 'startScreening') {
-      if (isScreening) {
-        sendResponse({ ok: false, error: '正在筛选中' });
-        return true;
+      try {
+        // 只有「近期仍在活动」的任务才拦截；卡死的旧任务一律允许接管
+        if (screeningLooksActive() && !request.force) {
+          sendResponse({ ok: false, error: '正在筛选中' });
+          return false;
+        }
+        const epoch = ++screeningEpoch;
+        isScreening = true;
+        touchScreeningHeartbeat();
+        performScreening(request, epoch).catch((err) => {
+          console.error('[Moka 筛选] performScreening 异常:', err);
+        }).finally(() => {
+          if (epoch === screeningEpoch) {
+            isScreening = false;
+            publishResults(undefined, undefined, { flush: true });
+          }
+        });
+        sendResponse({ ok: true });
+      } catch (err) {
+        // 绝不能让消息通道无响应关闭，否则侧栏只会看到「无法连接页面」
+        isScreening = false;
+        console.error('[Moka 筛选] startScreening 失败:', err);
+        sendResponse({ ok: false, error: (err && err.message) || '启动筛选失败' });
       }
-      isScreening = true;
-      performScreening(request).finally(() => { isScreening = false; publishResults(undefined, undefined, { flush: true }); });
-      sendResponse({ ok: true });
+      return false;
     } else if (request.action === 'resumeScreening') {
       if (isScreening) {
         sendResponse({ ok: false, error: '正在筛选中' });
@@ -237,9 +277,12 @@ function init() {
         .catch(() => sendResponse({ job: null }));
       return true;
     } else if (request.action === 'stopScreening') {
+      screeningEpoch += 1;
       isScreening = false;
+      screeningHeartbeat = 0;
       finishScreeningJob('stopped');
       sendResponse({ ok: true });
+      return false;
     } else if (request.action === 'screeningKeepalivePing') {
       sendResponse({ ok: true, screening: isScreening });
       if (isScreening) checkScreeningJobMismatch();
@@ -294,6 +337,7 @@ function init() {
     offerResumeIfNeeded().catch(() => {});
   });
   resumePendingMokaAction().catch((e) => console.warn('[Moka 筛选] resume pending action:', e));
+  startPageContextWatch();
   notifyContentReady();
 }
 
@@ -304,6 +348,58 @@ function notifyContentReady() {
       url: location.href
     }).catch(() => {});
   } catch (e) { /* ignore */ }
+}
+
+/* ---------------- 页面职位变化（SPA 换岗） ---------------- */
+
+let lastPageContextKey = '';
+let pageContextWatchTimer = null;
+let pageJobNotifyTimer = null;
+
+function pageContextKey() {
+  const ctx = parsePageContext();
+  const pipelineId = (ctx && ctx.pipelineId) || lastKnownPipelineId || '';
+  const jobId = pageJobIdFromContext();
+  if (!pipelineId && !jobId) return 'path:' + location.pathname + location.search;
+  // 只用 pipeline + jobId；title 变化不应触发整表重置
+  return [String(pipelineId), String(jobId)].join('|');
+}
+
+function notifyPageJobChanged(reason) {
+  const pageJobId = pageJobIdFromContext();
+  try {
+    chrome.runtime.sendMessage({
+      action: 'pageJobChanged',
+      pageJobId,
+      jobName: resolveJobDisplayName(pageJobId) || lastKnownJobName || '',
+      url: location.href,
+      reason: reason || 'url'
+    }).catch(() => {});
+  } catch (e) { /* ignore */ }
+  alignResultsForPageJob().catch(() => {});
+}
+
+function maybeNotifyPageJobChanged(reason) {
+  // 筛选 / 推荐·淘汰自动化进行中：URL 变化是预期跳转，不能当成换岗
+  if (isScreening || mokaActionActive || mokaActionBusy) return;
+  const key = pageContextKey();
+  if (key === lastPageContextKey) return;
+  const hadPrev = !!lastPageContextKey;
+  lastPageContextKey = key;
+  if (!hadPrev) return; // 首次种子，不刷侧栏
+  clearTimeout(pageJobNotifyTimer);
+  pageJobNotifyTimer = setTimeout(() => {
+    pageJobNotifyTimer = null;
+    notifyPageJobChanged(reason);
+  }, 120);
+}
+
+function startPageContextWatch() {
+  lastPageContextKey = pageContextKey();
+  window.addEventListener('popstate', () => maybeNotifyPageJobChanged('popstate'));
+  // 不用 patch history：isolated world 补丁不可靠，且可能干扰页面；靠 poll 即可
+  if (pageContextWatchTimer) clearInterval(pageContextWatchTimer);
+  pageContextWatchTimer = setInterval(() => maybeNotifyPageJobChanged('poll'), 1500);
 }
 
 /* ---------------- 页面上下文 ---------------- */
@@ -343,6 +439,12 @@ function resolveJobDisplayName(jobId) {
 
 function getCurrentJobs() {
   const ctx = parsePageContext();
+  const pageJobId = pageJobIdFromContext();
+  if (pageJobId) {
+    const name = resolveJobDisplayName(pageJobId) || `职位 ${pageJobId.slice(0, 8)}`;
+    if (name) lastKnownJobName = name;
+    return [{ id: pageJobId, name }];
+  }
   if (ctx && ctx.jobIds.length > 0) {
     const name = resolveJobDisplayName(ctx.jobIds[0]) || `职位 ${ctx.jobIds[0].slice(0, 8)}`;
     if (name) lastKnownJobName = name;
@@ -392,7 +494,7 @@ async function respondGetJobs(sendResponse) {
     if (apiName) jobs = [{ id: jobs[0].id, name: apiName }];
   }
   const ctx = parsePageContext();
-  const pageJobId = ctx && ctx.jobIds[0] ? String(ctx.jobIds[0]) : '';
+  const pageJobId = pageJobIdFromContext();
   const jobId = (lastScreenConfig && lastScreenConfig.jobId) || (jobs[0] && jobs[0].id) || '';
   const jobName = (jobs[0] && jobs[0].name) || resolveJobDisplayName(jobId) || '';
   if (jobName) lastKnownJobName = jobName;
@@ -405,35 +507,7 @@ function safeDecode(s) {
 
 /* ---------------- 接口调用（原样重放 + 游标分页） ---------------- */
 
-function utf8FromBase64(b64) {
-  const bin = atob(b64);
-  try {
-    return decodeURIComponent(bin.split('').map((c) => '%' + c.charCodeAt(0).toString(16).padStart(2, '0')).join(''));
-  } catch {
-    return bin;
-  }
-}
-
-/** 把返回的 lastCursor 解码成下一页的 offsetInfo */
-function offsetInfoFromCursor(lastCursor) {
-  if (!lastCursor) return null;
-  try {
-    const decoded = JSON.parse(utf8FromBase64(lastCursor));
-    // 复用服务端给的精确定位字段，避免自行格式化 movedAt 造成时区/格式错误
-    return {
-      applicationId: decoded.applicationId,
-      matchingIndex: decoded.matchingIndex,
-      movedAt: decoded.movedAt,
-      isAlreadyNull: decoded.isAlreadyNull,
-      includeThis: false
-    };
-  } catch (e) {
-    console.warn('[Moka 筛选] 解析游标失败:', e);
-    return null;
-  }
-}
-
-async function fetchAllApplications(onProgress, maxCount = 0) {
+async function fetchAllApplications(onProgress, maxCount = 0, epoch) {
   await captureReady;
   if (!capturedRequest) {
     // 再问一次，给 inject 一点时间
@@ -449,8 +523,14 @@ async function fetchAllApplications(onProgress, maxCount = 0) {
   if (capturedRequest?.body) {
     try { baseBody = JSON.parse(capturedRequest.body); } catch (e) { baseBody = {}; }
   }
-  if (!baseBody.pipelineId) {
-    // 兜底：从 URL 粗略重建（可能缺用户态字段，结果范围以捕获为准）
+  const searchCtx = resolveSearchContext();
+  if (!baseBody.pipelineId && searchCtx.pipelineId) {
+    baseBody.pipelineId = Number(searchCtx.pipelineId) || searchCtx.pipelineId;
+  }
+  // 开筛必须跟当前页职位，避免沿用上一岗捕获 body 里的旧 jobIds
+  if (searchCtx.jobIds && searchCtx.jobIds.length) {
+    baseBody.jobIds = searchCtx.jobIds.slice();
+  } else if (!baseBody.pipelineId) {
     const ctx = parsePageContext();
     if (ctx) {
       baseBody = { ...baseBody, pipelineId: Number(ctx.pipelineId) || ctx.pipelineId, jobIds: ctx.jobIds };
@@ -464,14 +544,16 @@ async function fetchAllApplications(onProgress, maxCount = 0) {
 
   const all = [];
   const seen = new Set();
-  let offsetInfo = { includeThis: false };
+  let cursor = null;
+  const alive = () => isScreening && (epoch == null || epoch === screeningEpoch);
 
   for (let page = 0; page < MAX_PAGES; page++) {
-    if (!isScreening) break;
+    if (!alive()) break;
 
-    const body = { ...baseBody, limit, offsetInfo };
+    const body = MokaCapture.buildSearchPageBody(baseBody, limit, cursor);
 
     const resp = await fetchWithTimeout(url, { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) });
+    if (!alive()) break;
     if (!resp.ok) throw new Error(`候选人接口错误: ${resp.status}`);
 
     const json = await resp.json();
@@ -492,10 +574,9 @@ async function fetchAllApplications(onProgress, maxCount = 0) {
     // 达到目标人数即停止
     if (maxCount > 0 && all.length >= maxCount) break;
 
-    const next = offsetInfoFromCursor(data.lastCursor);
     // 停止条件：没有更多 / 本页无新增 / 拿不到下一页游标
-    if (!data.hasMore || added === 0 || !next) break;
-    offsetInfo = next;
+    if (!data.hasMore || added === 0 || !data.lastCursor) break;
+    cursor = data.lastCursor;
   }
 
   return maxCount > 0 ? all.slice(0, maxCount) : all;
@@ -533,7 +614,12 @@ async function getJobSpec(jobType) {
     if (cached) jobJD = buildJobJD(cached.app);
   }
   if (!jobJD) return null;
-  return analyzeJobViaBackground(jobJD, type);
+  const spec = await analyzeJobViaBackground(jobJD, type);
+  // 解析失败的空壳不能当成功往上传：侧栏会显示空理解，还会把清单整表覆盖成空
+  if (!MokaPersist.jobSpecIsUsable(spec)) {
+    throw new Error('模型这次没解读出岗位信息（返回为空或无法解析），请稍后重试或换个模型');
+  }
+  return spec;
 }
 
 /** 从 URL / 内存 / 捕获请求拼出列表查询上下文 */
@@ -588,7 +674,8 @@ async function fetchOneApplication() {
     return null;
   }
 
-  const body = { ...baseBody, limit: 1, offsetInfo: { includeThis: false } };
+  // 必须清掉捕获体里的残留游标，否则取到的是列表中间那个人，JD 预填会用错人
+  const body = MokaCapture.buildSearchPageBody(baseBody, 1, null);
   try {
     const resp = await fetchWithTimeout(url, {
       method: 'POST',
@@ -675,7 +762,7 @@ function evaluateHardConditions(app, hc, jobType) {
   if (hc.degree) {
     const need = DEGREE_RANK[hc.degree] || 0;
     const have = DEGREE_RANK[app.highestDegree] || 0;
-    if (have && have < need) missing.push(`学历需${hc.degree}及以上`);
+    if (!have || have < need) missing.push(`学历需${hc.degree}及以上`);
   }
 
   // 院校（任一即可）
@@ -697,8 +784,8 @@ function evaluateHardConditions(app, hc, jobType) {
   }
 
   // 性别
-  if (hc.gender && app.gender) {
-    if (!String(app.gender).includes(hc.gender)) missing.push(`性别需${hc.gender}`);
+  if (hc.gender) {
+    if (!app.gender || !String(app.gender).includes(hc.gender)) missing.push(`性别需${hc.gender}`);
   }
 
   // 实习经验（仅实习生职位生效）：本地判定「是否有实习/工作经历」，相关性交给 AI
@@ -709,12 +796,10 @@ function evaluateHardConditions(app, hc, jobType) {
 
   // 年龄（多选区间 OR；仅在候选人有年龄信息时判定）
   const age = Number(app.age);
-  if (Number.isFinite(age) && age > 0) {
-    const ranges = normalizeAgeRanges(hc);
-    if (ranges.length) {
-      const ok = ranges.some((r) => ageInRange(age, r));
-      if (!ok) missing.push(`年龄需 ${ranges.map((r) => r.label).join('/')}`);
-    }
+  const ranges = normalizeAgeRanges(hc);
+  if (ranges.length) {
+    const ok = Number.isFinite(age) && age > 0 && ranges.some((r) => ageInRange(age, r));
+    if (!ok) missing.push(`年龄需 ${ranges.map((r) => r.label).join('/')}`);
   }
 
   return { passed: missing.length === 0, missing };
@@ -773,7 +858,8 @@ function buildHardText(hc, jobType, extraMustHaves) {
 
 function applyMergedHard(item) {
   const local = item.hardLocal || { passed: true, missing: [] };
-  const unmet = (item.score && item.score.unmet) || [];
+  const unmet = ((item.score && item.score.unmet) || [])
+    .filter((gate) => gate && gate.source === 'handwritten');
   item.hard = MokaMatch.mergeHardWithMustHaves(local, unmet);
 }
 
@@ -1233,6 +1319,7 @@ async function checkScreeningJobMismatch() {
   const pageJobId = pageJobIdFromContext();
   if (!pageJobId) return false;
   if (MokaScreeningJob.matchesPageJob(activeScreeningJob, pageJobId)) return false;
+  screeningEpoch += 1;
   isScreening = false;
   await finishScreeningJob('paused_mismatch');
   updatePanelStatus('已暂停：Moka 职位与当前筛选任务不一致，请切回原职位后在侧栏确认是否继续');
@@ -1283,13 +1370,16 @@ async function discardScreeningJob() {
 async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
   const options = opts || {};
   const onlyPending = !!options.onlyPending;
+  const epoch = options.epoch;
   const total = results.length;
   let completed = countScoredResults();
   let cursor = 0;
   let enrichedExp = results.filter((it) => it && it.app && (hasAnyExperience(it.app) || it.app.__resumeText)).length;
+  // 重新开筛后，上一轮 worker 必须停手，否则会往新一轮的 results 里写脏数据
+  const alive = () => isScreening && (epoch == null || epoch === screeningEpoch);
 
   async function worker() {
-    while (isScreening) {
+    while (alive()) {
       if (await checkScreeningJobMismatch()) break;
       const index = cursor++;
       if (index >= total) break;
@@ -1303,7 +1393,11 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
         item.profile = buildCandidateProfile(item.app);
         item.hardLocal = evaluateHardConditions(item.app, hc, scoreConfig.jobType);
         item.hard = item.hardLocal;
-        item.keywords = MokaMatch.matchKeywords(item.profile, keywords);
+        item.graduationRisk = MokaMatch.graduationRiskHint(item.app && item.app.educationInfo, {
+          jobType: scoreConfig.jobType,
+          now: new Date()
+        });
+        item.keywords = { hit: [], miss: [] };
         applyHardToRow(item);
         applyKeywordTags(item);
 
@@ -1421,10 +1515,16 @@ async function resumeScreeningFromJob() {
   }
 }
 
-async function performScreening(config) {
+async function performScreening(config, epoch) {
+  const mine = () => isScreening && (epoch == null || epoch === screeningEpoch);
   results = [];
+  lastScreenConfig = null;
+  activeWeights = null;
   resetResultUi();
+  updatePanelStatus('正在准备筛选… · Moka 标签请保持打开（可切去其他浏览器标签）');
+  reportProgress(0, 0, 0, '正在准备筛选…');
   await captureReady;
+  if (!mine()) return;
   if (isOnListPage()) lastListUrl = location.href;
 
   try {
@@ -1433,10 +1533,13 @@ async function performScreening(config) {
       (maxCount ? `正在拉取候选人列表（最多 ${maxCount} 位）...` : '正在拉取候选人列表（全部）...')
       + ' · Moka 标签请保持打开（可切去其他浏览器标签）'
     );
+    reportProgress(0, 0, 0, maxCount ? `正在拉取候选人（最多 ${maxCount} 位）…` : '正在拉取候选人列表…');
     const apps = await fetchAllApplications((count) => {
+      if (!mine()) return;
       updatePanelStatus(`正在拉取候选人... 已获取 ${count} 位`);
       reportProgress(0, count, 0, `拉取中，已获取 ${count} 位`);
-    }, maxCount);
+    }, maxCount, epoch);
+    if (!mine()) return;
 
     if (apps.length === 0) {
       updatePanelStatus('未找到候选人（请确认在候选人列表页，并刷新一次）');
@@ -1465,35 +1568,43 @@ async function performScreening(config) {
       showDetailBanner();
       const why = lastProbeReason ? `（${lastProbeReason}）` : '';
       for (let i = 0; i < 12 && !capturedDetailRequest; i++) {
-        if (!isScreening) break;
+        if (!mine()) break;
         updatePanelStatus(`自动识别未成功${why}，等待点开候选人…（${12 - i}s，可忽略）`);
         await sleep(1000);
         if (!capturedDetailRequest && apps[0]) await probeDetailRequest(apps[0]);
       }
     }
 
-    // 先解读 JD（缓存）：拿到统一的岗位画像，作为所有候选人的评分尺子
+    if (!mine()) return;
+    // 结构化门槛本地判定；语言/专业及其他交给模型逐条判定。
     let jobSpec = config.jobSpec || null;
-    const manualMust = MokaMatch.dedupeMustHavesAgainstHard(
-      (config.jobSpec && config.jobSpec.mustHaves) || [],
-      hc
-    );
-    if (!jobSpec || (!jobSpec.summary && !jobSpec.importantHaves && !jobSpec.mustHaves)) {
-      updatePanelStatus('正在解读 JD...');
-      jobSpec = await analyzeJobViaBackground(jobJD, config.jobType);
-    }
-    if (jobSpec) {
-      const aiMust = Array.isArray(jobSpec.mustHaves) ? jobSpec.mustHaves.slice() : [];
-      const mergedMust = manualMust.slice();
-      aiMust.forEach((m) => {
-        const t = String(m || '').trim();
-        if (t && mergedMust.indexOf(t) === -1) mergedMust.push(t);
+    const languages = Array.isArray(jobSpec && jobSpec.languages)
+      ? jobSpec.languages.slice(0, 6)
+      : (Array.isArray(hc && hc.languages) ? hc.languages.slice(0, 6) : []);
+    const customGates = Array.isArray(jobSpec && jobSpec.customGates)
+      ? jobSpec.customGates.slice(0, 6)
+      : (Array.isArray(hc && hc.customGates) ? hc.customGates.slice(0, 6) : []);
+    if (!jobSpec) {
+      jobSpec = {
+        languages,
+        customGates,
+        focusKeywords: [],
+        bonusKeywords: []
+      };
+    } else {
+      jobSpec = Object.assign({}, jobSpec, {
+        languages,
+        customGates,
+        focusKeywords: Array.isArray(jobSpec.focusKeywords)
+          ? jobSpec.focusKeywords.slice(0, 6)
+          : (Array.isArray(jobSpec.importantHaves) ? jobSpec.importantHaves.slice(0, 6) : []),
+        bonusKeywords: Array.isArray(jobSpec.bonusKeywords)
+          ? jobSpec.bonusKeywords.slice(0, 5)
+          : (Array.isArray(jobSpec.niceToHaves) ? jobSpec.niceToHaves.slice(0, 5) : []),
+        mustHaves: []
       });
-      jobSpec = Object.assign({}, jobSpec, { mustHaves: mergedMust.slice(0, 6) });
-    } else if (manualMust.length) {
-      jobSpec = { mustHaves: manualMust };
     }
-    const hardText = buildHardText(hc, config.jobType, manualMust);
+    const hardText = '';
     const feedbackBundle = await loadFeedbackBundle(config.jobId);
     const ctx = parsePageContext();
     const jobName = String(config.jobName || '').trim()
@@ -1559,12 +1670,13 @@ async function performScreening(config) {
     reportProgress(0, total, 0, `共 ${total} 位，开始评分...`);
 
     const { completed, enrichedExp } = await scoreResultsBatch(
-      scoreConfig, weights, hc, keywords, { onlyPending: false }
+      scoreConfig, weights, hc, keywords, { onlyPending: false, epoch }
     );
+    if (!mine()) return;
     sortRows();
     persistLastScreening();
 
-    if (isScreening) {
+    if (mine()) {
       await finishScreeningJob('done', { completed: total, total });
       reportProgress(total, total, 100, '筛选完成！');
       const hint = enrichedExp === 0 && !capturedDetailRequest
@@ -1615,8 +1727,22 @@ function loadFeedbackBundle(jobId) {
   });
 }
 
+// background 是 MV3 Service Worker，可能在请求途中被回收导致回调永不触发；
+// 没有超时会让 worker 永久挂起，进而 isScreening 永远为真、侧栏无法再开筛。
+const SCORE_RESPONSE_TIMEOUT_MS = 120 * 1000;
+
 function scoreViaBackground(profile, config) {
   return new Promise((resolve) => {
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      done({ dimensions: null, error: '评分超时（后台无响应），请重试' });
+    }, SCORE_RESPONSE_TIMEOUT_MS);
     chrome.runtime.sendMessage(
       {
         action: 'scoreCandidate',
@@ -1633,11 +1759,11 @@ function scoreViaBackground(profile, config) {
       },
       (response) => {
         if (chrome.runtime.lastError) {
-          resolve({ dimensions: null, error: chrome.runtime.lastError.message });
+          done({ dimensions: null, error: chrome.runtime.lastError.message });
         } else if (response && response.ok) {
-          resolve(response.score);
+          done(response.score);
         } else {
-          resolve({ dimensions: null, error: (response && response.error) || '评分失败' });
+          done({ dimensions: null, error: (response && response.error) || '评分失败' });
         }
       }
     );
@@ -1935,7 +2061,15 @@ function restoreFromLatestScreeningKey(requiredJobId) {
 
 function pageJobIdFromContext() {
   const ctx = parsePageContext();
-  return ctx && ctx.jobIds[0] ? String(ctx.jobIds[0]) : '';
+  // URL 有 jobIds 时以 URL 为准，避免旧搜索捕获把职位 ID 拉回上一岗
+  if (ctx && ctx.jobIds[0]) return String(ctx.jobIds[0]);
+  if (capturedRequest) {
+    try {
+      const body = JSON.parse(capturedRequest.body || '{}');
+      if (body.jobIds && body.jobIds[0]) return String(body.jobIds[0]);
+    } catch (e) { /* ignore */ }
+  }
+  return '';
 }
 
 function resultsBelongToPageJob(pageJobId) {
@@ -1946,6 +2080,7 @@ function resultsBelongToPageJob(pageJobId) {
 }
 
 async function alignResultsForPageJob() {
+  if (isScreening || mokaActionActive || mokaActionBusy) return;
   const pageJobId = pageJobIdFromContext();
   const pipelineId = (parsePageContext() && parsePageContext().pipelineId) || lastKnownPipelineId || '';
   if (pageJobId && !resultsBelongToPageJob(pageJobId)) {
@@ -2063,30 +2198,57 @@ async function bootstrapResultsIfEmpty() {
   if (restored) publishResults(undefined, undefined, { flush: true });
 }
 
+function clearPendingMokaActionLocal() {
+  mokaActionActive = false;
+  return clearPendingMokaAction();
+}
+
 async function resumePendingMokaAction() {
   const pending = await loadPendingMokaAction();
   if (!pending) return { ok: false, skipped: true, reason: 'no-pending' };
 
-  if (Date.now() - (pending.ts || 0) > 120000) {
-    await clearPendingMokaAction();
+  if (MokaActions.pendingActionState(pending, Date.now()) === 'stale') {
+    await clearPendingMokaActionLocal();
     await restoreResultsSilently(pending.pipelineId);
-    publishResults(undefined, undefined, { flush: true });
+    publishResults('❌ Moka 操作超时，请手动操作或重试', undefined, { flush: true });
+    notifyMokaActionComplete({
+      ok: false,
+      error: 'Moka 操作超时，请手动操作或重试',
+      appId: pending.appId,
+      type: pending.action
+    });
     return { ok: false, error: '操作超时' };
-  }
-
-  if (pending.phase === 'executing') {
-    if (Date.now() - (pending.ts || 0) < 45000) {
-      return { ok: false, skipped: true, reason: 'executing' };
-    }
-    pending.phase = 'candidate';
-    pending.ts = Date.now();
-    await savePendingMokaAction(pending);
   }
 
   if (mokaActionBusy) return { ok: false, skipped: true, reason: 'busy' };
   mokaActionBusy = true;
+  mokaActionActive = true;
 
   try {
+    if (pending.phase === 'executing') {
+      // 页面重载后 phase 可能仍为 executing；同页 busy 才跳过，否则继续点按钮
+      if (!isOnCandidatePage(pending.appId)) {
+        pending.phase = 'candidate';
+        pending.ts = Date.now();
+        await savePendingMokaAction(pending);
+        scheduleMokaNavigation(() => {
+          location.href = candidateUrlFor(pending.appId, pending.listUrl);
+        });
+        return { ok: true, navigating: 'candidate' };
+      }
+      await publishWithResults(mokaActionStatusText(pending.action), undefined, pending.pipelineId);
+      await waitForDomReady();
+      await MokaActions.sleep(2000);
+      await runMokaActionOnPage(pending.action);
+      pending.phase = 'list';
+      pending.ts = Date.now();
+      await savePendingMokaAction(pending);
+      scheduleMokaNavigation(() => {
+        location.href = pending.listUrl;
+      });
+      return { ok: true, phase: 'list-navigate' };
+    }
+
     if (pending.phase === 'candidate') {
       if (!isOnCandidatePage(pending.appId)) {
         scheduleMokaNavigation(() => {
@@ -2099,7 +2261,7 @@ async function resumePendingMokaAction() {
       await savePendingMokaAction(pending);
       await publishWithResults(mokaActionStatusText(pending.action), undefined, pending.pipelineId);
       await waitForDomReady();
-      await MokaActions.sleep(1500);
+      await MokaActions.sleep(2000);
       await runMokaActionOnPage(pending.action);
       pending.phase = 'list';
       pending.ts = Date.now();
@@ -2118,7 +2280,7 @@ async function resumePendingMokaAction() {
         return { ok: true, navigating: 'list' };
       }
       const done = Object.assign({}, pending);
-      await clearPendingMokaAction();
+      await clearPendingMokaActionLocal();
       await restoreResultsSilently(done.pipelineId);
       publishResults('Moka 操作完成', undefined, { flush: true });
       notifyMokaActionComplete({
@@ -2131,7 +2293,7 @@ async function resumePendingMokaAction() {
   } catch (err) {
     const msg = (err && err.message) || 'Moka 操作失败';
     const failed = Object.assign({}, pending);
-    await clearPendingMokaAction();
+    await clearPendingMokaActionLocal();
     if (failed.listUrl && !isOnListPage()) {
       scheduleMokaNavigation(() => { location.href = failed.listUrl; });
     }
@@ -2154,8 +2316,12 @@ async function handleMokaAction(appId, type) {
   if (mokaActionBusy) return { ok: false, error: '上一位候选人操作尚未完成，请稍候' };
   if (isScreening) return { ok: false, error: '筛选进行中，请稍后再操作' };
   const existing = await loadPendingMokaAction();
-  if (existing) {
+  const existingState = MokaActions.pendingActionState(existing, Date.now());
+  if (existingState === 'active') {
     return { ok: false, error: '上一位候选人操作尚未完成，请稍候' };
+  }
+  if (existingState === 'stale') {
+    await clearPendingMokaActionLocal();
   }
   const action = String(type || '').trim();
   if (action !== 'recommend' && action !== 'eliminate') {
@@ -2183,6 +2349,7 @@ async function handleMokaAction(appId, type) {
       nonce: String(Date.now()) + '-' + Math.random().toString(36).slice(2, 8)
     };
     await savePendingMokaAction(pending);
+    mokaActionActive = true;
     await publishWithResults(mokaActionStatusText(action), undefined, pipelineId);
 
     scheduleMokaNavigation(() => {
@@ -2197,8 +2364,9 @@ async function handleMokaAction(appId, type) {
     return { ok: true, pending: true, type: action, appId: id };
   } catch (err) {
     mokaActionBusy = false;
+    mokaActionActive = false;
     const msg = (err && err.message) || 'Moka 操作失败';
-    await clearPendingMokaAction();
+    await clearPendingMokaActionLocal();
     await restoreResultsSilently();
     publishResults('❌ ' + msg, undefined, { flush: true });
     return { ok: false, error: msg };
@@ -2294,7 +2462,11 @@ async function rescoreItem(item) {
     item.profile = buildCandidateProfile(item.app);
     item.hardLocal = evaluateHardConditions(item.app, cfg.hc, cfg.jobType);
     item.hard = item.hardLocal;
-    item.keywords = MokaMatch.matchKeywords(item.profile, cfg.keywords || []);
+    item.graduationRisk = MokaMatch.graduationRiskHint(item.app && item.app.educationInfo, {
+      jobType: cfg.jobType,
+      now: new Date()
+    });
+    item.keywords = { hit: [], miss: [] };
     applyHardToRow(item);
     applyKeywordTags(item);
     setRowStage(item.app.id, 'score');
@@ -2322,6 +2494,7 @@ async function rescoreItem(item) {
 }
 
 function reportProgress(current, total, percentage, message) {
+  if (isScreening) touchScreeningHeartbeat();
   chrome.runtime.sendMessage({ action: 'updateProgress', current, total, percentage, message }).catch(() => {});
 }
 
@@ -2341,7 +2514,8 @@ function buildResultsSnapshot() {
     action: 'resultsUpdated',
     status: lastUiStatus,
     banner: lastBanner,
-    screening: isScreening,
+    // 上报「可信的进行中」：卡死的旧任务不再让侧栏按钮一直禁用
+    screening: screeningLooksActive(),
     jobId: resultJobId,
     jobName: resolveJobDisplayName(resultJobId) || lastKnownJobName || '',
     pageJobId,
@@ -2354,6 +2528,7 @@ function buildResultsSnapshot() {
 
 let publishTimer = null;
 function publishResults(statusText, banner, opts) {
+  if (isScreening) touchScreeningHeartbeat();
   if (statusText !== undefined) lastUiStatus = statusText;
   if (banner !== undefined) lastBanner = banner;
   const send = () => {
@@ -2451,5 +2626,11 @@ function markDetailBannerReady() {
 }
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { evaluateHardConditions };
+}
+
+init();
 
 console.log('[Moka 筛选] Content script 初始化完成');

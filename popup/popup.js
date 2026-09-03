@@ -12,7 +12,7 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
 });
 
 document.getElementById('reload-panel').addEventListener('click', () => {
-  refreshMokaConnection();
+  reloadSidePanel();
 });
 
 /** 解析年龄区间字符串 → { min, max, label }；50+ → max 为 null */
@@ -44,27 +44,85 @@ function readHardConditions() {
     exp: document.getElementById('cond-exp').value,
     gender: document.getElementById('cond-gender').value,
     internship: document.getElementById('cond-internship').value,
-    ageRanges
+    ageRanges,
+    languages: languageEditor.get(),
+    customGates: customGateEditor.get()
   };
 }
 
-function createChipEditor(listId, inputId) {
+function createChipEditor(listId, inputId, opts) {
   const listEl = document.getElementById(listId);
   const inputEl = document.getElementById(inputId);
+  const options = opts || {};
+  const chipMax = typeof options.max === 'number'
+    ? options.max
+    : ((window.MokaMatch && MokaMatch.CHIP_LIMIT) || 6);
+  const tierLabel = options.tierLabel || '';
   let items = [];
+  let moveTargets = []; // [{ label, tierLabel, editor }]
+
+  function closeChipMenus() {
+    document.querySelectorAll('.chip-menu').forEach((el) => el.remove());
+    document.querySelectorAll('.chip.is-menu-open').forEach((el) => el.classList.remove('is-menu-open'));
+  }
+
+  function openMoveMenu(chipEl, idx) {
+    closeChipMenus();
+    if (!moveTargets.length) return;
+    chipEl.classList.add('is-menu-open');
+    const menu = document.createElement('div');
+    menu.className = 'chip-menu';
+    const title = document.createElement('div');
+    title.className = 'chip-menu-title';
+    title.textContent = '移到';
+    menu.appendChild(title);
+    moveTargets.forEach((t) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'chip-menu-item';
+      btn.textContent = t.tierLabel;
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        closeChipMenus();
+        moveItemTo(idx, t.editor, t.tierLabel);
+      });
+      menu.appendChild(btn);
+    });
+    chipEl.appendChild(menu);
+  }
 
   function render() {
+    closeChipMenus();
     listEl.innerHTML = '';
     items.forEach((text, idx) => {
       const chip = document.createElement('span');
-      chip.className = 'chip';
-      chip.appendChild(document.createTextNode(text));
+      chip.className = 'chip' + (moveTargets.length ? ' chip-movable' : '');
+      chip.title = moveTargets.length ? '点击挪到其他栏' : '';
+      const label = document.createElement('span');
+      label.className = 'chip-text';
+      label.textContent = text;
+      chip.appendChild(label);
+
+      if (moveTargets.length) {
+        chip.addEventListener('click', (e) => {
+          if (e.target.closest('.chip-x') || e.target.closest('.chip-menu')) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (chip.classList.contains('is-menu-open')) closeChipMenus();
+          else openMoveMenu(chip, idx);
+        });
+      }
+
       const x = document.createElement('button');
       x.type = 'button';
       x.className = 'chip-x';
       x.textContent = '×';
       x.title = '删除';
-      x.addEventListener('click', () => {
+      x.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        closeChipMenus();
         items.splice(idx, 1);
         render();
         notifyChipChange();
@@ -79,16 +137,40 @@ function createChipEditor(listId, inputId) {
     if (typeof onChange === 'function') onChange();
   }
 
+  function tryAddOne(text) {
+    const t = String(text || '').trim();
+    if (!t) return { ok: false, reason: 'empty' };
+    if (items.length >= chipMax) return { ok: false, reason: 'full' };
+    if (items.some((x) => x.toLowerCase() === t.toLowerCase())) return { ok: false, reason: 'dup' };
+    items.push(t);
+    render();
+    notifyChipChange();
+    return { ok: true };
+  }
+
+  function moveItemTo(idx, targetEditor, targetLabel) {
+    if (idx < 0 || idx >= items.length || !targetEditor) return;
+    const text = items[idx];
+    const added = targetEditor.tryAddOne(text);
+    if (!added.ok) {
+      if (added.reason === 'full') {
+        showDockToast('「' + targetLabel + '」已满，请先删一项再挪', 'warn');
+      } else if (added.reason === 'dup') {
+        showDockToast('「' + targetLabel + '」里已有相同项', 'warn');
+      }
+      return;
+    }
+    items.splice(idx, 1);
+    render();
+    notifyChipChange();
+    showDockToast('已移到「' + targetLabel + '」', 'ok');
+  }
+
   function addFromString(str) {
     const parsed = (window.MokaMatch ? MokaMatch.parseChipList(str) : String(str || '').split(/[,，、;；\n]+/).map((s) => s.trim()).filter(Boolean));
     const before = items.length;
-    parsed.forEach((t) => {
-      const CHIP_MAX = (window.MokaMatch && MokaMatch.CHIP_LIMIT) || 6;
-      if (items.length >= CHIP_MAX) return;
-      if (!items.some((x) => x.toLowerCase() === t.toLowerCase())) items.push(t);
-    });
-    render();
-    if (items.length !== before) notifyChipChange();
+    parsed.forEach((t) => { tryAddOne(t); });
+    if (items.length === before) render();
   }
 
   inputEl.addEventListener('keydown', (e) => {
@@ -110,12 +192,35 @@ function createChipEditor(listId, inputId) {
       items = [];
       addFromString(Array.isArray(arr) ? arr.join(',') : String(arr || ''));
     },
-    onChange: (fn) => { onChange = fn; }
+    onChange: (fn) => { onChange = fn; },
+    tryAddOne,
+    setMoveTargets: (targets) => {
+      moveTargets = Array.isArray(targets) ? targets : [];
+      render();
+    },
+    tierLabel,
+    closeChipMenus
   };
 }
 
-const keywordEditor = createChipEditor('keyword-chips', 'keyword-input');
-const mustHaveEditor = createChipEditor('must-chips', 'must-input');
+const languageEditor = createChipEditor('lang-chips', 'lang-input', { max: 6, tierLabel: '语言' });
+const customGateEditor = createChipEditor('gate-chips', 'gate-input', { max: 6, tierLabel: '专业及其他' });
+const importantEditor = createChipEditor('important-chips', 'important-input', { max: 6, tierLabel: '重点看' });
+const niceEditor = createChipEditor('nice-chips', 'nice-input', { max: 5, tierLabel: '加分看' });
+
+importantEditor.setMoveTargets([
+  { label: '加分看', tierLabel: '加分看', editor: niceEditor }
+]);
+niceEditor.setMoveTargets([
+  { label: '重点看', tierLabel: '重点看', editor: importantEditor }
+]);
+
+document.addEventListener('click', () => {
+  languageEditor.closeChipMenus();
+  customGateEditor.closeChipMenus();
+  importantEditor.closeChipMenus();
+  niceEditor.closeChipMenus();
+});
 
 // ---- 评分维度权重 ----
 const WEIGHT_KEYS = ['experience', 'skill', 'education', 'potential'];
@@ -124,7 +229,10 @@ let lastJobSpec = null; // 缓存最近一次 JD 解读结果
 
 function readWeights() {
   const w = {};
-  WEIGHT_KEYS.forEach((k) => { w[k] = parseInt(document.getElementById('w-' + k).value, 10) || 0; });
+  WEIGHT_KEYS.forEach((k) => {
+    const el = document.getElementById('w-' + k);
+    w[k] = el ? (parseInt(el.value, 10) || 0) : DEFAULT_WEIGHTS[k];
+  });
   return w;
 }
 
@@ -132,14 +240,16 @@ function updateWeightLabels() {
   const w = readWeights();
   const sum = WEIGHT_KEYS.reduce((a, k) => a + w[k], 0) || 1;
   WEIGHT_KEYS.forEach((k) => {
-    document.getElementById('w-' + k + '-val').textContent = Math.round((w[k] / sum) * 100) + '%';
+    const el = document.getElementById('w-' + k + '-val');
+    if (el) el.textContent = Math.round((w[k] / sum) * 100) + '%';
   });
 }
 
 function setWeights(w) {
   const src = w || DEFAULT_WEIGHTS;
   WEIGHT_KEYS.forEach((k) => {
-    if (typeof src[k] === 'number') document.getElementById('w-' + k).value = src[k];
+    const el = document.getElementById('w-' + k);
+    if (el && typeof src[k] === 'number') el.value = src[k];
   });
   updateWeightLabels();
 }
@@ -157,30 +267,36 @@ function resetJobPresetForm(opts) {
     exp: '',
     gender: '',
     internship: '',
-    ageRangeValues: []
+    ageRangeValues: [],
+    languages: [],
+    customGates: []
   });
-  mustHaveEditor.set([]);
-  keywordEditor.set([]);
+  languageEditor.set([]);
+  customGateEditor.set([]);
+  importantEditor.set([]);
+  niceEditor.set([]);
   setWeights(DEFAULT_WEIGHTS);
   lastJobSpec = null;
-  const box = document.getElementById('jd-understanding');
-  if (box) {
-    box.classList.add('hidden');
-    box.innerHTML = '';
-  }
+  setJobUnderstandingText('', '进入本岗后将自动生成岗位理解摘要（首次会解读 JD）');
   applyingPreset = false;
 }
 
 function resolveTargetJobFromResponse(response, jobs) {
   const pageJob = jobs[0];
+  // 优先 URL 上的 pageJobId；其次列表识别到的 jobs[0]；最后才回退上次筛选/侧栏记忆
   const pageJobId = response.pageJobId
-    || (pageJob && pageJob.id !== 'current' ? String(pageJob.id) : '');
+    ? String(response.pageJobId)
+    : (pageJob && pageJob.id && pageJob.id !== 'current' ? String(pageJob.id) : '');
   const memoryJobId = response.jobId ? String(response.jobId) : '';
   const targetJobId = pageJobId || memoryJobId || activePresetJobId || '';
-  let label = activePresetJobLabel;
-  if (pageJob && pageJobId && String(pageJob.id) === pageJobId) label = pageJob.name || label;
-  else if (pageJob && targetJobId && String(pageJob.id) === targetJobId) label = pageJob.name || label;
-  if (!label && response.jobName) label = response.jobName;
+  let label = '';
+  if (pageJob && targetJobId && String(pageJob.id) === String(targetJobId)) {
+    label = pageJob.name || '';
+  }
+  if (!label && response.jobName && targetJobId && (!memoryJobId || memoryJobId === targetJobId)) {
+    label = response.jobName;
+  }
+  if (!label) label = activePresetJobLabel;
   return { targetJobId, label, pageJobId, pageJob };
 }
 
@@ -205,11 +321,13 @@ function reconcileJobTypeWithLabel(label) {
 }
 
 async function switchJobPreset(prevJobId, targetJobId, label) {
-  if (prevJobId && targetJobId && prevJobId !== targetJobId) {
+  if (prevJobId && targetJobId && String(prevJobId) !== String(targetJobId)) {
     await saveJobPresetFor(prevJobId);
     resultState.items = [];
     resultState.status = '';
     resultState.banner = null;
+    lastJobSpec = null;
+    resetJobPresetForm({ internSuggested: /实习/.test(label || '') });
   }
   if (targetJobId) {
     syncActiveJobFromSnapshot(targetJobId, label);
@@ -218,23 +336,23 @@ async function switchJobPreset(prevJobId, targetJobId, label) {
   const restored = await restoreCurrentJobPreset();
   const fixedType = reconcileJobTypeWithLabel(label || activePresetJobLabel);
   if (!restored && jobTypeSuggestedByLabel(label || activePresetJobLabel) === 'intern') {
-    // 无缓存时 reconcile 已设实习生；确保可见性
     applyJobTypeVisibility();
   }
   if (fixedType && restored) {
-    // 纠正了错误类型后写回本岗配置，避免下次再恢复成正式员工
     scheduleSaveJobPreset();
   }
-  if (prevJobId && targetJobId && prevJobId !== targetJobId) {
+  // 与 v1.6.2 一致：进岗只在无理解时补一次，绝不在 loadJobs 路径上阻塞打 JD
+  // （清单纠错请点「按 JD 刷新」，会整表重写）
+  await ensureJobUnderstandingOnEnter();
+  if (prevJobId && targetJobId && String(prevJobId) !== String(targetJobId)) {
     await pullResults();
   }
   return restored;
 }
 
 WEIGHT_KEYS.forEach((k) => {
-  document.getElementById('w-' + k).addEventListener('input', () => {
+  document.getElementById('w-' + k)?.addEventListener('input', () => {
     updateWeightLabels();
-    scheduleSaveJobPreset();
   });
 });
 
@@ -243,7 +361,11 @@ let savePresetTimer = null;
 let jobSelectBound = false;
 let activePresetJobId = '';
 let activePresetJobLabel = '';
+/** 表单当前装着哪个岗位的配置；仅本次侧栏会话有效，不持久化 */
+let presetFormJobId = '';
 let lastKnownPageJobId = '';
+let loadJobsInFlight = null;
+let startingScreen = false;
 const ACTIVE_JOB_STORAGE_KEY = 'mokaActivePresetJobId';
 const ACTIVE_JOB_LABEL_KEY = 'mokaActivePresetJobLabel';
 
@@ -340,13 +462,28 @@ function showDockToast(text, tone) {
 function collectJobPreset() {
   const hard = readHardConditions();
   const ageRangeValues = Array.from(document.querySelectorAll('#cond-age input[type="checkbox"]:checked')).map((c) => c.value);
+  const requirements = {
+    must: [],
+    important: importantEditor.get(),
+    nice: niceEditor.get()
+  };
+  const jobUnderstanding = readJobUnderstandingText();
+  const specFields = MokaPersist.requirementsToJobSpecFields(requirements, hard);
+  const jobSpec = lastJobSpec
+    ? Object.assign({}, lastJobSpec, specFields)
+    : Object.assign({}, specFields);
+  // 招聘官编辑后的理解全文进入评分上下文
+  if (jobUnderstanding) jobSpec.summary = jobUnderstanding;
   return MokaPersist.sanitizeJobPreset({
     jobType: document.querySelector('input[name="job-type"]:checked').value,
     hard: Object.assign({}, hard, { ageRangeValues }),
     weights: readWeights(),
-    mustHaves: mustHaveEditor.get(),
-    keywords: keywordEditor.get(),
-    jobSpec: lastJobSpec
+    requirements,
+    focusKeywords: requirements.important,
+    bonusKeywords: requirements.nice,
+    jobUnderstanding,
+    keywords: [],
+    jobSpec
   });
 }
 
@@ -358,6 +495,92 @@ function writeHardConditions(hard) {
   document.getElementById('cond-internship').value = hard.internship || '';
   setCheckboxGroup('cond-school', hard.schools);
   setCheckboxGroup('cond-age', hard.ageRangeValues || []);
+  languageEditor.set(hard.languages || []);
+  customGateEditor.set(hard.customGates || []);
+}
+
+function readJobUnderstandingText() {
+  const box = document.getElementById('jd-understanding');
+  if (!box || box.classList.contains('hidden')) return '';
+  const dutyEl = box.querySelector('.jd-summary');
+  const skillEl = box.querySelector('.jd-skills');
+  const duty = dutyEl
+    ? String(dutyEl.textContent || '').replace(/^岗位理解[：:]\s*/, '').trim()
+    : '';
+  const skills = skillEl
+    ? String(skillEl.textContent || '').trim()
+    : '';
+  if (window.MokaPersist && MokaPersist.composeJobUnderstandingText) {
+    return MokaPersist.composeJobUnderstandingText({ duty, skill: skills });
+  }
+  return duty + (skills ? (duty && !/[。！？]$/.test(duty) ? '。' : '') + skills : '');
+}
+
+function setJobUnderstandingParts(duty, skills, noteText) {
+  const box = document.getElementById('jd-understanding');
+  const note = document.getElementById('understanding-note');
+  let d = String(duty || '').trim().replace(/^岗位理解[：:]\s*/, '');
+  let sk = String(skills || '').trim();
+  if (!sk && /(?:需要|要求|须)具备/.test(d) && window.MokaPersist && MokaPersist.parseJobUnderstandingText) {
+    const p = MokaPersist.parseJobUnderstandingText(d);
+    d = p.duty || d;
+    sk = p.skill || '';
+  }
+  if (!box) return;
+  if (!d && !sk) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+  } else {
+    box.classList.remove('hidden');
+    box.innerHTML = '';
+    if (d) {
+      const s = document.createElement('div');
+      s.className = 'jd-summary';
+      s.textContent = '岗位理解：' + d;
+      box.appendChild(s);
+    }
+    if (sk) {
+      const k = document.createElement('div');
+      k.className = 'jd-skills';
+      k.textContent = sk.indexOf('需要具备') === 0 || sk.indexOf('要求具备') === 0
+        ? sk
+        : ('需要具备：' + sk.replace(/^需要具备[：:]?\s*/, ''));
+      box.appendChild(k);
+    }
+  }
+  if (note && noteText != null) {
+    note.textContent = noteText;
+    note.style.color = '#8c8c8c';
+  }
+}
+
+function setJobUnderstandingText(text, noteText) {
+  if (window.MokaPersist && MokaPersist.parseJobUnderstandingText) {
+    const p = MokaPersist.parseJobUnderstandingText(text);
+    setJobUnderstandingParts(p.duty, p.skill, noteText);
+    return;
+  }
+  setJobUnderstandingParts(text, '', noteText);
+}
+
+function hasJobUnderstandingContent() {
+  return !!readJobUnderstandingText();
+}
+
+/** 用 JD 画像刷新理解区：职责摘要 + 由清单拼出的「需要具备」 */
+function applyJobUnderstandingFromSpec(spec, noteText) {
+  if (window.MokaPersist && MokaPersist.formatJobUnderstandingParts) {
+    const parts = MokaPersist.formatJobUnderstandingParts(spec);
+    setJobUnderstandingParts(parts.duty, parts.skills, noteText);
+    return;
+  }
+  setJobUnderstandingText(String((spec && spec.summary) || ''), noteText);
+}
+
+function applyRequirementsToEditors(requirements, hard) {
+  const req = MokaPersist.normalizeRequirements({ requirements: requirements || {} });
+  importantEditor.set(req.important || []);
+  niceEditor.set(req.nice || []);
 }
 
 function applyJobPreset(preset) {
@@ -367,10 +590,19 @@ function applyJobPreset(preset) {
   if (type) type.checked = true;
   applyJobTypeVisibility();
   writeHardConditions(preset.hard);
-  mustHaveEditor.set(MokaMatch.dedupeMustHavesAgainstHard(preset.mustHaves || [], preset.hard || {}));
-  keywordEditor.set(preset.keywords);
+  // 只认本岗存档的 jobSpec，绝不用上一岗残留的 lastJobSpec
+  lastJobSpec = preset.jobSpec || null;
+  let req = preset.requirements || { must: preset.mustHaves || [], important: [], nice: [] };
+  if ((!req.important || !req.important.length || !req.nice || !req.nice.length) && preset.jobSpec) {
+    req = MokaPersist.fillRequirementsFromJobSpec(req, preset.jobSpec);
+  }
+  applyRequirementsToEditors(req, preset.hard);
   setWeights(preset.weights);
-  if (preset.jobSpec) lastJobSpec = preset.jobSpec;
+  if (preset.jobSpec && window.MokaPersist && MokaPersist.formatJobUnderstandingParts) {
+    applyJobUnderstandingFromSpec(preset.jobSpec, '已恢复本岗理解');
+  } else {
+    setJobUnderstandingText(String(preset.jobUnderstanding || '').trim(), '已恢复本岗理解');
+  }
   applyingPreset = false;
   return true;
 }
@@ -393,7 +625,8 @@ function saveCurrentJobPreset() {
   return saveJobPresetFor(currentJobId() || effectiveJobId());
 }
 
-async function saveJobPresetFromButton() {
+async function saveJobPresetFromButton(opts) {
+  const options = opts || {};
   const jobId = currentJobId() || effectiveJobId();
   if (!jobId) {
     setPresetNote('请先选择职位后再保存筛选条件', '#fa8c16');
@@ -405,8 +638,10 @@ async function saveJobPresetFromButton() {
   try {
     const ok = await saveJobPresetFor(jobId);
     if (ok) {
-      setPresetNote('已保存当前筛选条件，下次进入本岗将自动填充', '#52c41a');
-      showDockToast('保存成功，下次进入本岗将自动填充', 'ok');
+      const okNote = options.okNote || '已保存当前筛选条件，下次进入本岗将自动填充';
+      const okToast = options.okToast || '保存成功，下次进入本岗将自动填充';
+      setPresetNote(okNote, '#52c41a');
+      showDockToast(okToast, 'ok');
     } else {
       setPresetNote('保存失败，请稍后重试', '#fa8c16');
       showDockToast('保存失败，请稍后重试', 'warn');
@@ -426,15 +661,60 @@ function restoreCurrentJobPreset() {
   const key = MokaPersist.JOB_PRESET_STORAGE_KEY;
   return chrome.storage.local.get(key).then((res) => {
     const preset = MokaPersist.getJobPreset(res[key], jobId);
+    presetFormJobId = String(jobId);
     if (!preset) {
       resetJobPresetForm({ internSuggested: /实习/.test(activePresetJobLabel || '') });
-      setPresetNote('本岗尚未保存配置。设好后会自动记住，不用每次再点预填。', '#8c8c8c');
+      setPresetNote('本岗尚未保存配置。首次会自动生成理解并保存。', '#8c8c8c');
       return false;
     }
     applyJobPreset(preset);
     setPresetNote('已自动填充本岗配置', '#52c41a');
+    // 空栏补全已在 applyJobPreset 内仅用本岗 preset.jobSpec 完成，此处不再用全局 lastJobSpec
+    if (hasJobUnderstandingContent()) {
+      setJobUnderstandingText(
+        readJobUnderstandingText(),
+        '已恢复本岗理解'
+      );
+    }
     return true;
   });
+}
+
+/**
+ * 进入本岗：已有理解则不动；否则解读 JD 写入摘要 + 空栏要求，并自动落盘（下次免刷新）
+ */
+async function ensureJobUnderstandingOnEnter() {
+  if (!currentJobId() && !effectiveJobId()) return false;
+  if (hasJobUnderstandingContent()) return false;
+  // 存档里已有 jobSpec.summary 时，先渲染摘要，仍不必打 AI
+  if (lastJobSpec && (lastJobSpec.summary || lastJobSpec.responsibilities || lastJobSpec.importantHaves)) {
+    applyingPreset = true;
+    try {
+      applyJobUnderstandingFromSpec(lastJobSpec, '已从本岗存档恢复岗位理解');
+      const built = MokaPersist.buildRequirementsFromJobSpec
+        ? MokaPersist.buildRequirementsFromJobSpec(lastJobSpec)
+        : MokaPersist.fillRequirementsFromJobSpec({ must: [], important: [], nice: [] }, lastJobSpec);
+      applyRequirementsToEditors(built, readHardConditions());
+    } finally {
+      applyingPreset = false;
+    }
+    if (hasJobUnderstandingContent()) {
+      await saveJobPresetFor(currentJobId() || effectiveJobId());
+      return true;
+    }
+  }
+  const ok = await refreshUnderstandingAndRequirements({
+    silentNote: '正在生成本岗理解…',
+    doneNote: '已自动生成本岗理解并保存，下次进入直接恢复',
+    autoSave: true,
+    replaceRequirements: true
+  });
+  return !!ok;
+}
+
+/** 迁移场景：重要/加分空且无理解时，由 ensureJobUnderstandingOnEnter 统一处理 */
+function maybeFillEmptyRequirementsFromJd() {
+  // 保留空实现以免旧调用报错；逻辑已并入 ensureJobUnderstandingOnEnter
 }
 
 function scheduleSaveJobPreset() {
@@ -443,13 +723,11 @@ function scheduleSaveJobPreset() {
   savePresetTimer = setTimeout(() => { saveCurrentJobPreset(); }, 400);
 }
 
-keywordEditor.onChange(scheduleSaveJobPreset);
-mustHaveEditor.onChange(scheduleSaveJobPreset);
+// 方案 D：表单改动不自动落盘，只认「保存当前筛选条件」与开筛前落盘
 
-// 读取当前 JD → 生成岗位画像 + 建议权重，预填滑块
+// 仅生成建议权重（岗位理解已上移到「岗位理解」区）
 async function loadJobSpec() {
   const note = document.getElementById('weight-note');
-  const box = document.getElementById('jd-understanding');
   const btn = document.getElementById('suggest-weights');
   const apiKey = document.getElementById('api-key').value;
   if (!apiKey) {
@@ -482,20 +760,118 @@ async function loadJobSpec() {
     }
     lastJobSpec = spec;
     setWeights(spec.suggestedWeights);
-    saveCurrentJobPreset();
-
-    if (spec.summary) {
-      box.classList.remove('hidden');
-      box.innerHTML = '';
-      const s = document.createElement('div');
-      s.className = 'jd-summary';
-      s.textContent = '岗位理解：' + spec.summary;
-      box.appendChild(s);
-    }
-    note.textContent = '（已按 JD 生成建议权重，可再手动调整）';
+    if (!readJobUnderstandingText()) applyJobUnderstandingFromSpec(spec);
+    note.textContent = '（已按 JD 生成建议权重，可再手动调整；未点保存则开筛时会自动保存）';
     note.style.color = '#52c41a';
   });
 }
+
+/** 刷新岗位理解 + 预填必须/重要/加分；opts.autoSave 时落盘以便下次免刷新 */
+function refreshUnderstandingAndRequirements(opts) {
+  const options = opts || {};
+  const note = document.getElementById('understanding-note');
+  const btn = document.getElementById('refresh-job-understanding');
+  const apiKey = document.getElementById('api-key').value;
+  if (!apiKey) {
+    if (note) {
+      note.textContent = '请先在设置里配置 API Key';
+      note.style.color = '#fa8c16';
+    }
+    return Promise.resolve(false);
+  }
+  return getMokaTab().then((tab) => {
+    if (!isMokaTab(tab)) {
+      if (note) {
+        note.textContent = '请在 Moka 候选人列表页操作';
+        note.style.color = '#fa8c16';
+      }
+      return false;
+    }
+    if (note) {
+      note.textContent = options.silentNote || '正在解读 JD…';
+      note.style.color = '#1890ff';
+    }
+    if (btn) btn.disabled = true;
+    const jobType = document.querySelector('input[name="job-type"]:checked').value;
+    return new Promise((resolve) => {
+      chrome.tabs.sendMessage(tab.id, { action: 'getJobSpec', jobType }, (response) => {
+        if (btn) btn.disabled = false;
+        if (chrome.runtime.lastError || !response || !response.spec) {
+          if (note) {
+            note.textContent = '未能解读 JD：' + ((response && response.error) || chrome.runtime.lastError && chrome.runtime.lastError.message || '请重试');
+            note.style.color = '#fa8c16';
+          }
+          resolve(false);
+          return;
+        }
+        const spec = response.spec;
+        // 空壳 spec 会把语言/门槛/重点看/加分看整表覆盖成空并落盘，这里必须先拦住
+        if (window.MokaPersist && !MokaPersist.jobSpecIsUsable(spec)) {
+          if (note) {
+            note.textContent = '未能解读 JD：模型这次没返回岗位信息，请稍后重试；原有配置未改动';
+            note.style.color = '#fa8c16';
+          }
+          resolve(false);
+          return;
+        }
+        lastJobSpec = spec;
+        const hard = readHardConditions();
+        applyingPreset = true;
+        try {
+          const replace = options.replaceRequirements !== false;
+          if (replace && Array.isArray(spec.mustHaves)) {
+            const split = MokaMatch.splitMustHavesForHard(spec.mustHaves, hard);
+            languageEditor.set(split.languages || []);
+            customGateEditor.set(split.customGates || []);
+          }
+          const built = replace && MokaPersist.buildRequirementsFromJobSpec
+            ? MokaPersist.buildRequirementsFromJobSpec(spec)
+            : MokaPersist.fillRequirementsFromJobSpec(
+              {
+                must: [],
+                important: importantEditor.get(),
+                nice: niceEditor.get()
+              },
+              spec
+            );
+          applyRequirementsToEditors(built, hard);
+        } finally {
+          applyingPreset = false;
+        }
+        applyJobUnderstandingFromSpec(
+          spec,
+          options.doneNote || (options.replaceRequirements === false
+            ? '已写入岗位理解并预填空栏要求'
+            : '已按 JD 更新岗位理解与要求清单')
+        );
+        // 兜底：理解区没渲染出内容时不能报「已生成」，否则用户只看到一句绿字
+        if (!hasJobUnderstandingContent()) {
+          if (note) {
+            note.textContent = '已解读 JD，但没能生成岗位理解摘要，请点「按 JD 刷新」重试';
+            note.style.color = '#fa8c16';
+          }
+          resolve(false);
+          return;
+        }
+        if (note) note.style.color = '#52c41a';
+        const finish = () => resolve(true);
+        if (options.autoSave) {
+          saveJobPresetFor(currentJobId() || effectiveJobId()).then(finish).catch(finish);
+        } else {
+          finish();
+        }
+      });
+    });
+  });
+}
+
+document.getElementById('refresh-job-understanding')?.addEventListener('click', () => {
+  refreshUnderstandingAndRequirements({
+    doneNote: '已按 JD 重写理解与要求清单并保存',
+    autoSave: true,
+    replaceRequirements: true
+  });
+});
 
 // API 提供商切换时联动默认 Endpoint 占位
 document.getElementById('api-provider').addEventListener('change', (e) => {
@@ -741,7 +1117,37 @@ function refreshMokaConnection() {
   return refreshResultsAndJobContext();
 }
 
+/**
+ * 「点击刷新」：整页重载侧栏，等价于关掉再打开。
+ * 软刷新在表单已装着同一岗位时几乎不做事，页面状态错乱时救不回来。
+ * 重载会丢掉未保存的表单改动，所以先尽力落盘本岗配置（无有效岗位时跳过）。
+ */
+function reloadSidePanel() {
+  const btn = document.getElementById('reload-panel');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '刷新中…';
+  }
+  const done = () => { location.reload(); };
+  try {
+    const jobId = currentJobId() || effectiveJobId();
+    if (!jobId) {
+      done();
+      return;
+    }
+    // 落盘卡住时不能把刷新也一起卡死
+    Promise.race([saveJobPresetFor(jobId), sleep(800)]).then(done, done);
+  } catch (e) {
+    done();
+  }
+}
+
 async function refreshResultsAndJobContext() {
+  // 开筛 / 推荐·淘汰进行中：只拉结果，禁止 loadJobs 抢消息或触发换岗同步
+  if (resultState.screening || startingScreen || isMokaActionLocked()) {
+    await pullResults();
+    return;
+  }
   await pullResults();
   await loadJobs();
   await refreshCalibrationButton();
@@ -768,6 +1174,8 @@ if (chrome.tabs && chrome.tabs.onActivated) {
 
 // 加载职位列表（带非 Moka 页面容错）
 async function loadJobs() {
+  if (loadJobsInFlight) return loadJobsInFlight;
+  loadJobsInFlight = (async () => {
   const jobSelect = document.getElementById('job-select');
   const tab = await getMokaTab();
 
@@ -776,10 +1184,13 @@ async function loadJobs() {
     return;
   }
 
-  jobSelect.innerHTML = '<option value="">正在连接 Moka 页面…</option>';
+  // 保留当前选中项，避免「正在连接」清空导致开筛读到空职位
+  const prevSelected = jobSelect.value || activePresetJobId || '';
   const response = await sendToMoka({ action: 'getJobs' }, { retries: 15, delayMs: 300 });
   if (!response) {
-    jobSelect.innerHTML = '<option value="">无法连接页面，请刷新 Moka 后重试</option>';
+    if (!jobSelect.options.length || (jobSelect.options.length === 1 && !jobSelect.options[0].value)) {
+      jobSelect.innerHTML = '<option value="">无法连接页面，请刷新 Moka 后重试</option>';
+    }
     return;
   }
   const jobs = response.jobs || [];
@@ -788,6 +1199,7 @@ async function loadJobs() {
       ensureJobSelectOption(activePresetJobId, activePresetJobLabel);
       jobSelect.value = activePresetJobId;
       await restoreCurrentJobPreset();
+      await ensureJobUnderstandingOnEnter();
       return;
     }
     jobSelect.innerHTML = '<option value="">请打开候选人列表页（含 pipelineId）</option>';
@@ -800,10 +1212,20 @@ async function loadJobs() {
     option.textContent = job.name;
     jobSelect.appendChild(option);
   });
-  const prevJobId = activePresetJobId || currentJobId() || '';
+  const prevJobId = activePresetJobId || prevSelected || '';
   const { targetJobId, label, pageJobId } = resolveTargetJobFromResponse(response, jobs);
   if (pageJobId) lastKnownPageJobId = pageJobId;
-  await switchJobPreset(prevJobId, targetJobId, label);
+  // 表单里已经是这个岗位时只同步下拉，避免刷新风暴反复 restore 覆盖正在编辑的内容；
+  // 但表单尚未装过它（例如刚打开侧栏）就必须读存档，否则保存过的条件带不出来
+  const formHoldsTargetJob = !!targetJobId && !!window.MokaPersist
+    && !MokaPersist.needsPresetReload(targetJobId, presetFormJobId);
+  if (formHoldsTargetJob) {
+    if (label) activePresetJobLabel = String(label);
+    ensureJobSelectOption(targetJobId, label || activePresetJobLabel);
+    jobSelect.value = targetJobId;
+  } else {
+    await switchJobPreset(prevJobId, targetJobId, label);
+  }
   refreshCalibrationButton();
 
   if (!jobSelectBound) {
@@ -819,6 +1241,10 @@ async function loadJobs() {
       });
     });
   }
+  })().finally(() => {
+    loadJobsInFlight = null;
+  });
+  return loadJobsInFlight;
 }
 
 // 根据职位类型显示/隐藏 经验要求 / 实习经验
@@ -866,18 +1292,30 @@ function applyHardAutofill(af, { fromButton }) {
     setCheckboxGroup('cond-age', af.ageRangeValues);
     bits.push(af.ageRangeValues.join('、'));
   }
-  if (Array.isArray(af.resumeKeywords) && af.resumeKeywords.length) {
-    keywordEditor.set(af.resumeKeywords);
-    bits.push('关键词 ' + af.resumeKeywords.length + ' 个');
+  if (Array.isArray(af.languages) && af.languages.length && (fromButton || !languageEditor.get().length)) {
+    languageEditor.set(af.languages);
+    bits.push('语言 ' + languageEditor.get().length + ' 项');
   }
-  const localMust = Array.isArray(af.majors) ? af.majors : [];
-  if (localMust.length && (fromButton || mustHaveEditor.get().length === 0)) {
-    mustHaveEditor.set(MokaMatch.dedupeMustHavesAgainstHard(localMust, readHardConditions()));
-    if (mustHaveEditor.get().length) bits.push('其他必备');
+  if (Array.isArray(af.customGates) && af.customGates.length && (fromButton || !customGateEditor.get().length)) {
+    customGateEditor.set(af.customGates);
+    bits.push('专业及其他 ' + customGateEditor.get().length + ' 项');
+  }
+  // 本地抽到的技能词：仅在重点看仍空时并入
+  if (Array.isArray(af.resumeKeywords) && af.resumeKeywords.length && !importantEditor.get().length) {
+    const next = [];
+    af.resumeKeywords.forEach((k) => {
+      const t = String(k || '').trim();
+      if (t && next.indexOf(t) === -1) next.push(t);
+    });
+    if (next.length) {
+      importantEditor.set(next.slice(0, 6));
+      bits.push('重点看 ' + importantEditor.get().length + ' 项');
+    }
   }
   return bits;
 }
 
+/** 硬性「按 JD 预填」顺带补模型识别到的手写门槛。 */
 function fillMustHavesFromJobSpec(onDone) {
   const apiKey = document.getElementById('api-key').value;
   if (!apiKey) {
@@ -901,13 +1339,38 @@ function fillMustHavesFromJobSpec(onDone) {
         return;
       }
       lastJobSpec = spec;
-      if (Array.isArray(spec.mustHaves)) {
-        mustHaveEditor.set(MokaMatch.dedupeMustHavesAgainstHard(spec.mustHaves, readHardConditions()));
+      applyingPreset = true;
+      try {
+        if (Array.isArray(spec.mustHaves)) {
+          const split = MokaMatch.splitMustHavesForHard(spec.mustHaves, readHardConditions());
+          if (split.languages && split.languages.length) {
+            languageEditor.set(languageEditor.get().concat(split.languages).slice(0, 6));
+          }
+          if (split.customGates && split.customGates.length) {
+            customGateEditor.set(customGateEditor.get().concat(split.customGates).slice(0, 6));
+          }
+        }
+        if (!importantEditor.get().length || !niceEditor.get().length) {
+          const filled = MokaPersist.fillRequirementsFromJobSpec({
+            must: [],
+            important: importantEditor.get(),
+            nice: niceEditor.get()
+          }, spec);
+          applyRequirementsToEditors(filled, readHardConditions());
+        }
+        if (!readJobUnderstandingText()) {
+          applyJobUnderstandingFromSpec(spec, '硬性已预填；理解/重要/加分可再点上方刷新或手改');
+        } else {
+          const note = document.getElementById('understanding-note');
+          if (note) {
+            note.textContent = '硬性已预填；重要/加分空栏已尽量从 JD 补，可再改后保存';
+            note.style.color = '#8c8c8c';
+          }
+        }
+      } finally {
+        applyingPreset = false;
       }
-      if (Array.isArray(spec.resumeKeywords) && spec.resumeKeywords.length) {
-        keywordEditor.set(spec.resumeKeywords);
-      }
-      onDone(mustHaveEditor.get().length > 0);
+      onDone(languageEditor.get().length > 0 || customGateEditor.get().length > 0);
     });
   });
 }
@@ -943,18 +1406,24 @@ async function loadJobContext(opts) {
       return;
     }
 
-    const bits = applyHardAutofill(af, { fromButton });
+    applyingPreset = true;
+    let bits;
+    try {
+      bits = applyHardAutofill(af, { fromButton });
+    } finally {
+      applyingPreset = false;
+    }
     const finish = (mustFromAi) => {
       if (btn) btn.disabled = false;
-      if (mustFromAi && bits.indexOf('其他必备') === -1) bits.push('其他必备');
+      if (mustFromAi && bits.indexOf('必须') === -1) bits.push('必须');
       if (bits.length) {
-        note.textContent = '已识别：' + bits.join(' · ') + '，可再改';
+        note.textContent = '已识别：' + bits.join(' · ') + '，可再改（未点保存则开筛时会自动保存）';
         note.style.color = '#52c41a';
       } else {
         note.textContent = '该 JD 未写明硬性条件，请手动设置';
         note.style.color = '#fa8c16';
       }
-      saveCurrentJobPreset();
+      // 预填不自动落盘（与方案 D §4 一致）；开筛前会落盘
     };
 
     if (fromButton) fillMustHavesFromJobSpec(finish);
@@ -968,54 +1437,130 @@ document.getElementById('autofill-hard').addEventListener('click', () => {
 
 // 开始筛选
 document.getElementById('start-screening').addEventListener('click', async () => {
-  const selectedJob = document.getElementById('job-select').value;
+  // 只挡住「正在发送的这一下」；任何异常都会在看门狗里解锁，绝不永久吞掉点击
+  if (startingScreen) return;
+  const selectedJob = document.getElementById('job-select').value || activePresetJobId || '';
   const jobSelect = document.getElementById('job-select');
-  const selectedLabel = jobSelect.options[jobSelect.selectedIndex]
-    ? jobSelect.options[jobSelect.selectedIndex].textContent
-    : '';
+  let selectedLabel = '';
+  if (jobSelect && jobSelect.selectedIndex >= 0 && jobSelect.options[jobSelect.selectedIndex]) {
+    selectedLabel = jobSelect.options[jobSelect.selectedIndex].textContent || '';
+  }
+  if (!selectedLabel) selectedLabel = activePresetJobLabel || '';
   if (!selectedJob) {
     alert('❌ 请选择职位');
     return;
   }
 
-  const tab = await getMokaTab();
+  let tab = null;
+  try {
+    tab = await getMokaTab();
+  } catch (e) {
+    alert('❌ 读取 Moka 标签失败：' + ((e && e.message) || '请重试'));
+    return;
+  }
   if (!isMokaTab(tab)) {
     alert('❌ 请在 Moka 候选人管理页面使用');
     return;
   }
 
-  const hardConditions = readHardConditions();
-  const weights = readWeights();
-  const jobType = document.querySelector('input[name="job-type"]:checked').value;
-  const maxCount = Number(document.getElementById('max-count')?.value || 0);
-  const keywords = keywordEditor.get();
-  const mustHaves = MokaMatch.dedupeMustHavesAgainstHard(mustHaveEditor.get(), hardConditions);
-  mustHaveEditor.set(mustHaves);
-  const jobSpec = lastJobSpec
-    ? { ...lastJobSpec, mustHaves }
-    : (mustHaves.length ? { mustHaves } : null);
+  beginStartingScreen();
+  // 先给反馈，避免「点了没反应」；真正失败再回滚
+  resultState.screening = true;
+  setScreeningUi(true);
+  hideResumeBanner();
+  setResultHint('正在启动筛选…', { tip: true, tone: 'info' });
+  switchTab('results');
+  document.getElementById('progress-container')?.classList.remove('hidden');
+  const progressText = document.getElementById('progress-text');
+  if (progressText) progressText.textContent = '正在启动…';
 
-  saveCurrentJobPreset();
+  try {
+    const hardConditions = readHardConditions();
+    const weights = readWeights();
+    const jobType = document.querySelector('input[name="job-type"]:checked').value;
+    const maxCount = Number(document.getElementById('max-count')?.value || 0);
+    const requirements = {
+      must: [],
+      important: importantEditor.get(),
+      nice: niceEditor.get()
+    };
+    const specFields = MokaPersist.requirementsToJobSpecFields(requirements, hardConditions);
+    const jobSpec = lastJobSpec
+      ? Object.assign({}, lastJobSpec, specFields)
+      : Object.assign({}, specFields);
 
-  chrome.tabs.sendMessage(
-    tab.id,
-    { action: 'startScreening', jobId: selectedJob, jobName: selectedLabel, jobType, hardConditions, weights, maxCount, jobSpec, keywords },
-    () => {
-      if (chrome.runtime.lastError) {
-        alert('❌ 无法连接页面，请刷新 Moka 后重试');
-        return;
+    // 与 v1.6.2 一致：落盘不阻塞开筛消息
+    saveJobPresetFor(selectedJob).catch(() => {});
+
+    chrome.tabs.sendMessage(
+      tab.id,
+      {
+        action: 'startScreening',
+        jobId: selectedJob,
+        jobName: selectedLabel,
+        jobType,
+        hardConditions,
+        weights,
+        maxCount,
+        jobSpec,
+        keywords: [],
+        force: true
+      },
+      (resp) => {
+        endStartingScreen();
+        if (chrome.runtime.lastError) {
+          resultState.screening = false;
+          setScreeningUi(false);
+          alert('❌ 无法连接页面，请刷新 Moka 后重试\n' + (chrome.runtime.lastError.message || ''));
+          return;
+        }
+        if (resp && resp.ok === false) {
+          resultState.screening = false;
+          setScreeningUi(false);
+          alert('❌ ' + (resp.error || '无法开始筛选，请刷新 Moka 后重试'));
+          return;
+        }
+        syncActiveJobFromSnapshot(selectedJob, selectedLabel);
+        setResultHint('筛选已开始', { tip: true, tone: 'info' });
       }
-      syncActiveJobFromSnapshot(selectedJob, selectedLabel);
-      setScreeningUi(true);
-      hideResumeBanner();
-      setResultHint('筛选已开始', { tip: true, tone: 'info' });
-      switchTab('results');
-    }
-  );
+    );
+  } catch (e) {
+    endStartingScreen();
+    resultState.screening = false;
+    setScreeningUi(false);
+    alert('❌ 开始筛选失败：' + ((e && e.message) || '请重试'));
+  }
 });
 
+const START_SCREEN_WATCHDOG_MS = 10000;
+let startingScreenTimer = null;
+
+function beginStartingScreen() {
+  startingScreen = true;
+  clearTimeout(startingScreenTimer);
+  // content script 未响应时也必须解锁，否则之后每次点击都会被 startingScreen 挡掉
+  startingScreenTimer = setTimeout(() => {
+    startingScreenTimer = null;
+    if (!startingScreen) return;
+    startingScreen = false;
+    if (!resultState.screening) setScreeningUi(false);
+    setResultHint('未收到页面响应，请刷新 Moka 后重试', { tone: 'warn' });
+  }, START_SCREEN_WATCHDOG_MS);
+}
+
+function endStartingScreen() {
+  startingScreen = false;
+  clearTimeout(startingScreenTimer);
+  startingScreenTimer = null;
+}
+
 function setScreeningUi(active) {
-  document.getElementById('start-screening').disabled = !!active;
+  const startBtn = document.getElementById('start-screening');
+  if (startBtn) {
+    // 只在发送消息的瞬间禁用；已在筛选时按钮改为「重新开始筛选」，保证用户永远有出口
+    startBtn.disabled = !!startingScreen;
+    startBtn.textContent = active ? '重新开始筛选' : '开始筛选';
+  }
   const stopBtn = document.getElementById('stop-screening');
   if (stopBtn) stopBtn.disabled = !active;
   const progress = document.getElementById('progress-container');
@@ -1057,8 +1602,10 @@ chrome.runtime.onMessage.addListener((request) => {
   } else if (request.action === 'mokaActionComplete') {
     refreshResultsAndJobContext();
   } else if (request.action === 'mokaContentReady') {
-    scheduleMokaRefresh();
+    if (!resultState.screening && !isMokaActionLocked()) scheduleMokaRefresh();
     pollScreeningJobOffer();
+  } else if (request.action === 'pageJobChanged') {
+    if (!resultState.screening && !isMokaActionLocked()) scheduleMokaRefresh();
   }
 });
 
@@ -1147,7 +1694,7 @@ document.getElementById('discard-screening')?.addEventListener('click', async ()
   await refreshResultsAndJobContext();
 });
 
-document.getElementById('suggest-weights').addEventListener('click', () => {
+document.getElementById('suggest-weights')?.addEventListener('click', () => {
   loadJobSpec();
 });
 
@@ -1187,6 +1734,9 @@ function buildSuggestionCard(sug, opts) {
   const options = opts || {};
   const item = document.createElement('div');
   item.className = 'mp-cal-item' + (options.isAdd ? ' is-add' : '');
+  const addKind = options.isAdd || '';
+  const editableTypes = { addGate: 1, addFocus: 1, addBonus: 1 };
+  const actionTypes = { addGate: 1, addFocus: 1, addBonus: 1, relaxGate: 1, dropBonus: 1 };
 
   const title = document.createElement('div');
   title.className = 'mp-cal-item-title';
@@ -1201,16 +1751,20 @@ function buildSuggestionCard(sug, opts) {
   }
 
   let field = null;
-  if (sug.type === 'mustHave' || options.isAdd) {
+  if (editableTypes[sug.type] || addKind) {
     field = document.createElement('textarea');
     field.className = 'mp-cal-item-field';
     field.rows = 2;
-    field.placeholder = '必备项文案，可修改后再保存';
+    field.placeholder = addKind === 'focus' || sug.type === 'addFocus'
+      ? '重点看文案，可修改后再保存'
+      : addKind === 'bonus' || sug.type === 'addBonus'
+        ? '加分看文案，可修改后再保存'
+        : '门槛文案，可修改后再保存';
     field.value = sug.editableValue || '';
     item.appendChild(field);
   }
 
-  if (sug.type === 'weight' || sug.type === 'mustHave' || options.isAdd) {
+  if (actionTypes[sug.type] || addKind) {
     const actions = document.createElement('div');
     actions.className = 'mp-cal-item-actions';
     const btn = document.createElement('button');
@@ -1218,17 +1772,20 @@ function buildSuggestionCard(sug, opts) {
     btn.className = 'btn btn-primary btn-sm';
     btn.textContent = '采纳并保存';
     btn.addEventListener('click', () => {
-      if (sug.type === 'mustHave' || options.isAdd) {
+      if (editableTypes[sug.type] || addKind) {
         const value = field ? field.value.trim() : '';
         if (!value) {
-          showDockToast('请先填写必备项文案', 'warn');
+          showDockToast('请先填写文案', 'warn');
           if (field) field.focus();
           return;
         }
-        applyCalibrationSuggestion({
-          type: 'mustHave',
-          apply: { mustHave: value }
-        });
+        const type = addKind === 'focus' ? 'addFocus' : addKind === 'gate' ? 'addGate' : sug.type;
+        const apply = type === 'addFocus'
+          ? { focusKeyword: value }
+          : type === 'addBonus'
+            ? { bonusKeyword: value }
+            : { customGate: value };
+        applyCalibrationSuggestion({ type, apply });
         return;
       }
       applyCalibrationSuggestion(sug);
@@ -1268,17 +1825,18 @@ function renderCalibrationPanel() {
   }
 
   const report = MokaCalibrate.buildCalibrationReport(feedbackRecord, jobId, {
-    weights: readWeights()
+    focusKeywords: importantEditor.get(),
+    bonusKeywords: niceEditor.get()
   });
 
   appendCalMetric(metricsEl, report.total, '已决策');
   appendCalMetric(metricsEl, report.recommend, '已推荐');
   appendCalMetric(metricsEl, report.eliminate, '已淘汰');
-  appendCalMetric(metricsEl, report.agree, '与 AI 一致', 'ok');
-  appendCalMetric(metricsEl, report.overRecommend, 'AI 推你却淘汰', report.overRecommend ? 'warn' : '');
-  appendCalMetric(metricsEl, report.underRecommend, '你推 AI 未推', report.underRecommend ? 'warn' : '');
+  appendCalMetric(metricsEl, report.agree, '与插件一致', 'ok');
+  appendCalMetric(metricsEl, report.overRecommend, '插件推你却淘汰', report.overRecommend ? 'warn' : '');
+  appendCalMetric(metricsEl, report.underRecommend, '你推插件未推', report.underRecommend ? 'warn' : '');
 
-  const signals = (report.topConcerns || []).slice(0, 3);
+  const signals = (report.topSignals || report.topConcerns || []).slice(0, 3);
   if (signals.length) {
     if (signalsWrap) signalsWrap.classList.remove('hidden');
     signals.forEach((s) => {
@@ -1295,16 +1853,23 @@ function renderCalibrationPanel() {
     signalsWrap.classList.add('hidden');
   }
 
-  const actionable = (report.suggestions || []).filter((s) => s.type === 'weight' || s.type === 'mustHave');
+  const actionableTypes = { addGate: 1, relaxGate: 1, addFocus: 1, dropBonus: 1, addBonus: 1 };
+  const actionable = (report.suggestions || []).filter((s) => actionableTypes[s.type]);
   const infos = (report.suggestions || []).filter((s) => s.type === 'info');
   actionable.forEach((sug) => listEl.appendChild(buildSuggestionCard(sug)));
   infos.forEach((sug) => listEl.appendChild(buildSuggestionCard(sug)));
   listEl.appendChild(buildSuggestionCard({
-    type: 'mustHave',
-    title: '自行新增必备项',
-    detail: '不依赖系统建议，直接写入本岗必备项。',
+    type: 'addGate',
+    title: '自行新增专业及其他门槛',
+    detail: '不依赖系统建议，直接写入本岗手写门槛。',
     editableValue: ''
-  }, { isAdd: true }));
+  }, { isAdd: 'gate' }));
+  listEl.appendChild(buildSuggestionCard({
+    type: 'addFocus',
+    title: '自行新增重点看',
+    detail: '把反复看走眼的经历写进重点看，下次按相邻经历判断，不靠字面命中。',
+    editableValue: ''
+  }, { isAdd: 'focus' }));
 
   panel.classList.remove('hidden');
   const tab = document.getElementById('results-tab');
@@ -1312,22 +1877,59 @@ function renderCalibrationPanel() {
   switchTab('results');
 }
 
+function normalizeCalLabel(raw) {
+  if (window.MokaCalibrate && MokaCalibrate.normalizeMustHaveLabel) {
+    return MokaCalibrate.normalizeMustHaveLabel(raw) || String(raw || '').trim();
+  }
+  return String(raw || '').trim();
+}
+
+function addChipUnique(editor, item, max, fullMsg) {
+  const cur = editor.get();
+  if (cur.includes(item)) return true;
+  if (cur.length >= max) {
+    showDockToast(fullMsg, 'warn');
+    return false;
+  }
+  editor.set(cur.concat([item]));
+  return true;
+}
+
+function removeChipByLabel(editor, label) {
+  const want = normalizeCalLabel(label);
+  editor.set(editor.get().filter((x) => normalizeCalLabel(x) !== want && x !== label));
+}
+
 async function applyCalibrationSuggestion(sug) {
   if (!sug || !sug.apply) return;
-  if (sug.type === 'weight' && sug.apply.weights) {
-    setWeights(sug.apply.weights);
-    updateWeightLabels();
-  } else if (sug.type === 'mustHave' && sug.apply.mustHave) {
-    const cur = mustHaveEditor.get();
-    let item = String(sug.apply.mustHave).trim();
-    if (window.MokaCalibrate && MokaCalibrate.normalizeMustHaveLabel) {
-      item = MokaCalibrate.normalizeMustHaveLabel(item) || item;
-    }
+  const type = sug.type;
+  if (type === 'addGate' && sug.apply.customGate) {
+    const item = normalizeCalLabel(sug.apply.customGate);
     if (!item) {
-      showDockToast('必备项文案无效', 'warn');
+      showDockToast('门槛文案无效', 'warn');
       return;
     }
-    if (!cur.includes(item)) mustHaveEditor.set(cur.concat([item]));
+    if (!addChipUnique(customGateEditor, item, 6, '专业及其他已满 6 项')) return;
+  } else if (type === 'relaxGate' && sug.apply.removeGate) {
+    const item = String(sug.apply.removeGate).trim();
+    removeChipByLabel(customGateEditor, item);
+    removeChipByLabel(languageEditor, item);
+  } else if (type === 'addFocus' && sug.apply.focusKeyword) {
+    const item = String(sug.apply.focusKeyword).trim();
+    if (!item) {
+      showDockToast('重点看文案无效', 'warn');
+      return;
+    }
+    if (!addChipUnique(importantEditor, item, 6, '重点看已满，请先删一条再采纳')) return;
+  } else if (type === 'dropBonus' && sug.apply.removeBonus) {
+    removeChipByLabel(niceEditor, String(sug.apply.removeBonus).trim());
+  } else if (type === 'addBonus' && sug.apply.bonusKeyword) {
+    const item = String(sug.apply.bonusKeyword).trim();
+    if (!item) {
+      showDockToast('加分看文案无效', 'warn');
+      return;
+    }
+    if (!addChipUnique(niceEditor, item, 5, '加分看已满 5 项')) return;
   } else {
     return;
   }
@@ -1335,6 +1937,7 @@ async function applyCalibrationSuggestion(sug) {
   if (ok) {
     showDockToast('保存成功，下次进入本岗将自动填充', 'ok');
     setPresetNote('已按校准建议更新本岗配置，下次进入将自动填充', '#52c41a');
+    switchTab('screening');
   } else {
     showDockToast('已写入表单，但保存失败，请点底部「保存当前筛选条件」', 'warn');
   }
@@ -1352,16 +1955,7 @@ document.getElementById('close-calibration')?.addEventListener('click', () => {
 document.querySelectorAll('input[name="job-type"]').forEach((r) => {
   r.addEventListener('change', () => {
     applyJobTypeVisibility();
-    scheduleSaveJobPreset();
   });
-});
-
-['cond-degree', 'cond-exp', 'cond-gender', 'cond-internship'].forEach((id) => {
-  const el = document.getElementById(id);
-  if (el) el.addEventListener('change', scheduleSaveJobPreset);
-});
-document.querySelectorAll('#cond-school input, #cond-age input').forEach((el) => {
-  el.addEventListener('change', scheduleSaveJobPreset);
 });
 
 function syncAboutVersion() {
@@ -1530,8 +2124,15 @@ function buildFeedbackSnapshot(view) {
   return {
     score: s.score,
     baseScore: s.baseScore,
+    matchScore: s.matchScore,
     penalty: s.penalty,
     level: s.level,
+    advanceReason: s.advanceReason,
+    bonusKeywordResults: s.bonusKeywordResults || [],
+    bonusApplied: s.bonusApplied || 0,
+    bonusMetCount: s.bonusMetCount || 0,
+    bonusTotalCount: s.bonusTotalCount || 0,
+    bonusPromoted: !!s.bonusPromoted,
     dims,
     name: (view && view.name) || '',
     meta: (view && view.meta) || '',
@@ -1751,8 +2352,8 @@ async function requestMokaDecision(appId, verdict, view) {
   const v = view || findResultView(appId);
   if (!v) return;
 
-  const current = MokaFeedback.getFeedbackVerdict(feedbackRecord, jobId, appId);
-  if (current === verdict) {
+  const entry = MokaFeedback.getFeedbackEntry(feedbackRecord, jobId, appId);
+  if (MokaFeedback.mokaActionIntent(entry, verdict) === 'cancel') {
     saveCandidateFeedback(appId, null, v);
     renderResults();
     return;
@@ -1775,10 +2376,11 @@ async function requestMokaDecision(appId, verdict, view) {
       appId,
       type: verdict,
     });
-    if (resp && resp.ok === false && !resp.pending) {
+    const dispatchError = MokaActions.mokaActionDispatchError(resp);
+    if (dispatchError) {
       completePromise.cancel();
       markFeedbackSyncState(appId, 'failed');
-      markRescoreError(resp.error || 'Moka 操作失败');
+      markRescoreError(dispatchError);
       renderResults();
       return;
     }
@@ -1811,7 +2413,10 @@ function applySnapshot(snap, opts) {
   if (hadItems && incoming.length === 0 && inMokaAction) {
     resultState.status = snap.status || resultState.status;
     if (snap.banner !== undefined) resultState.banner = snap.banner;
-    resultState.screening = !!snap.screening;
+    if (!startingScreen) {
+      resultState.screening = !!snap.screening;
+      setScreeningUi(resultState.screening);
+    }
     renderResults();
     return;
   }
@@ -1833,6 +2438,11 @@ function applySnapshot(snap, opts) {
     resultState.banner = snap.banner;
   } else if (!incoming.length && pageJobId) {
     resultState.banner = null;
+  }
+  // 开筛瞬间 content 可能仍回报 screening=false，勿把按钮打回可点
+  if (startingScreen && !snap.screening) {
+    renderResults();
+    return;
   }
   resultState.screening = !!snap.screening;
   setScreeningUi(resultState.screening);
@@ -2015,7 +2625,7 @@ function buildEvidenceSplit(appId, cols) {
 function createResultRow(view) {
   const row = document.createElement('div');
   row.className = 'mp-row'
-    + (view.structuredHardPassed === false ? ' failed' : '')
+    + (view.hardPassed === false ? ' failed' : '')
     + (view.stage || view.rescoring ? ' scoring' : '');
 
   const scoreEl = document.createElement('div');
@@ -2065,6 +2675,14 @@ function createResultRow(view) {
   meta.textContent = view.meta || '';
   info.appendChild(meta);
 
+  if (view.graduationRisk && view.graduationRisk.text) {
+    const risk = document.createElement('div');
+    risk.className = 'mp-grad-risk';
+    risk.textContent = view.graduationRisk.text;
+    risk.title = '实习岗档期风险，不影响分数';
+    info.appendChild(risk);
+  }
+
   if ((view.stage && ROW_STAGE[view.stage]) || view.rescoring) {
     const stage = document.createElement('div');
     stage.className = 'mp-stage';
@@ -2079,7 +2697,7 @@ function createResultRow(view) {
     row.appendChild(bar);
   }
 
-  if (view.hardMissing && view.hardMissing.length) {
+  if (!view.score && view.hardMissing && view.hardMissing.length) {
     const tags = document.createElement('div');
     tags.className = 'mp-tags';
     view.hardMissing.forEach((miss) => {
@@ -2092,20 +2710,23 @@ function createResultRow(view) {
     if (tags.childNodes.length) info.appendChild(tags);
   }
 
-  const kw = view.keywords;
-  if (kw && (kw.hit.length || kw.miss.length)) {
+  // 加分：名字下方强提醒（已具备 / 未体现）
+  const niceTags = view.score && MokaMatch.niceBonusTagsFromScore
+    ? MokaMatch.niceBonusTagsFromScore(view.score)
+    : { met: [], unmet: [] };
+  if (niceTags.met.length || niceTags.unmet.length) {
     const wrap = document.createElement('div');
     wrap.className = 'mp-tags';
-    kw.miss.forEach((k) => {
+    niceTags.met.forEach((k) => {
       const tag = document.createElement('span');
-      tag.className = 'mp-tag-warn';
-      tag.textContent = '未提及 ' + k;
+      tag.className = 'mp-tag-nice-hit';
+      tag.textContent = '加分已具备 ' + k;
       wrap.appendChild(tag);
     });
-    kw.hit.slice(0, 4).forEach((k) => {
+    niceTags.unmet.forEach((k) => {
       const tag = document.createElement('span');
-      tag.className = 'mp-tag-hit';
-      tag.textContent = k;
+      tag.className = 'mp-tag-nice-miss';
+      tag.textContent = '加分未体现 ' + k;
       wrap.appendChild(tag);
     });
     info.appendChild(wrap);
@@ -2117,11 +2738,21 @@ function createResultRow(view) {
     level.className = 'mp-level';
     level.style.color = MokaMatch.scoreColor(s.score);
     level.appendChild(document.createTextNode(s.level || ''));
-    const penaltyHint = MokaScore.formatPenaltyHint(s);
-    if (penaltyHint) {
+    if (s.bonusPromoted) {
+      const promoted = document.createElement('span');
+      promoted.className = 'mp-bonus-promoted';
+      promoted.textContent = '加分晋级';
+      promoted.title = '经历匹配原本为可推进，加分后进入优先推进';
+      level.appendChild(promoted);
+    }
+    const bonusScoreText = MokaMatch.bonusScoreDisplay
+      ? MokaMatch.bonusScoreDisplay(s)
+      : '';
+    const scoreDetailText = bonusScoreText || MokaScore.matchScoreDisplayText(s);
+    if (scoreDetailText) {
       const cut = document.createElement('span');
       cut.className = 'mp-penalty';
-      cut.textContent = penaltyHint;
+      cut.textContent = scoreDetailText;
       level.appendChild(cut);
     }
     if (s.level === '错误') {
@@ -2139,6 +2770,38 @@ function createResultRow(view) {
       level.appendChild(retry);
     }
     info.appendChild(level);
+
+    const failMsg = MokaScore.scoreFailureMessage(s);
+    if (failMsg) {
+      const err = document.createElement('div');
+      err.className = 'mp-error-reason';
+      err.textContent = failMsg;
+      err.title = failMsg;
+      info.appendChild(err);
+    }
+
+    if (s.level !== '错误' && (s.advanceReason === 'gate' || s.advanceReason === 'match')) {
+      const reason = document.createElement('div');
+      reason.className = 'mp-advance-reason';
+      reason.textContent = s.advanceReason === 'gate'
+        ? '未过门槛'
+        : '经历/技能匹配不足';
+      info.appendChild(reason);
+      if (s.advanceReason === 'gate' && Array.isArray(s.unmet) && s.unmet.length) {
+        const gateList = document.createElement('div');
+        gateList.className = 'mp-gate-list mp-tags';
+        s.unmet.forEach((gate) => {
+          const item = String((gate && gate.item) || '').trim();
+          if (!item) return;
+          const tag = document.createElement('span');
+          tag.className = 'mp-tag-fail';
+          tag.textContent = item;
+          if (gate.reason) tag.title = gate.reason;
+          gateList.appendChild(tag);
+        });
+        if (gateList.childNodes.length) info.appendChild(gateList);
+      }
+    }
 
     if (s.dims) {
       const dimsEl = document.createElement('div');
@@ -2221,13 +2884,13 @@ function buildFeedbackButtons(view) {
       verdict: 'recommend',
       label: '推荐给用人部门',
       busyLabel: '推荐中…',
-      title: '在 Moka 中推荐给用人部门并自动确认（再点取消本地记录）'
+      title: '在 Moka 中推荐给用人部门并自动确认（同步成功后再点撤销，未同步时再点重试）'
     },
     {
       verdict: 'eliminate',
       label: '淘汰',
       busyLabel: '淘汰中…',
-      title: '在 Moka 中淘汰（再点取消本地记录）'
+      title: '在 Moka 中淘汰（同步成功后再点撤销，未同步时再点重试）'
     }
   ].forEach(({ verdict, label, busyLabel, title }) => {
     const btn = document.createElement('button');
