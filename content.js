@@ -31,6 +31,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = MOKA_TIMEOUT_MS) 
 }
 
 let isScreening = false;
+let screeningStartedAt = 0;
 let screeningEpoch = 0;
 let screeningHeartbeat = 0; // 最近一次筛选活动时间；用于识别「卡死的旧任务」
 
@@ -203,7 +204,7 @@ function init() {
       }
       return true;
     } else if (request.action === 'getJobContext') {
-      getJobContext()
+      getJobContext(request.jobId)
         .then((autofill) => sendResponse(autofill
           ? { autofill, ok: true }
           : {
@@ -218,7 +219,7 @@ function init() {
         }));
       return true; // 异步
     } else if (request.action === 'getJobSpec') {
-      getJobSpec(request.jobType)
+      getJobSpec(request.jobType, request.jobId)
         .then((spec) => sendResponse(spec
           ? { spec, ok: true }
           : {
@@ -523,14 +524,10 @@ async function fetchAllApplications(onProgress, maxCount = 0, epoch) {
   if (capturedRequest?.body) {
     try { baseBody = JSON.parse(capturedRequest.body); } catch (e) { baseBody = {}; }
   }
-  const searchCtx = resolveSearchContext();
-  if (!baseBody.pipelineId && searchCtx.pipelineId) {
-    baseBody.pipelineId = Number(searchCtx.pipelineId) || searchCtx.pipelineId;
-  }
   // 开筛必须跟当前页职位，避免沿用上一岗捕获 body 里的旧 jobIds
-  if (searchCtx.jobIds && searchCtx.jobIds.length) {
-    baseBody.jobIds = searchCtx.jobIds.slice();
-  } else if (!baseBody.pipelineId) {
+  const searchCtx = resolveSearchContext();
+  baseBody = MokaCapture.alignSearchBodyToJob(baseBody, searchCtx);
+  if (!(searchCtx.jobIds && searchCtx.jobIds.length) && !baseBody.pipelineId) {
     const ctx = parsePageContext();
     if (ctx) {
       baseBody = { ...baseBody, pipelineId: Number(ctx.pipelineId) || ctx.pipelineId, jobIds: ctx.jobIds };
@@ -582,11 +579,35 @@ async function fetchAllApplications(onProgress, maxCount = 0, epoch) {
   return maxCount > 0 ? all.slice(0, maxCount) : all;
 }
 
+/**
+ * 侧栏点名的职位与页面当前列表是否是同一个。
+ * 页面停在别的职位时，这里抓到的 JD 属于上一个岗，绝不能拿去当本岗的理解。
+ */
+function assertPageMatchesJob(expectedJobId) {
+  const wanted = String(expectedJobId || '');
+  const pageJobId = pageJobIdFromContext();
+  if (wanted && pageJobId && String(pageJobId) !== wanted) {
+    throw new Error('页面当前停在另一个职位的候选人列表，请先在 Moka 打开所选职位的列表页再读 JD');
+  }
+  return pageJobId;
+}
+
+/** 上一轮筛选留下的 JD 缓存是否属于要解读的这个岗位 */
+function cachedJdBelongsTo(expectedJobId, pageJobId) {
+  const target = String(expectedJobId || pageJobId || '');
+  if (!target) return true; // 判不出岗位时保持旧行为，别把兜底路径堵死
+  const cfgJob = lastScreenConfig && lastScreenConfig.jobId ? String(lastScreenConfig.jobId) : '';
+  if (!cfgJob) return !expectedJobId; // 缓存不知道自己属于谁：侧栏点了名就不敢用
+  return cfgJob === target;
+}
+
 /** 轻量拉取一条候选人，用其 job 字段做硬条件预填 */
-async function getJobContext() {
+async function getJobContext(expectedJobId) {
+  const pageJobId = assertPageMatchesJob(expectedJobId);
   const app = await fetchOneApplication();
   if (app && app.job) return autofillFromJob(app.job);
-  // 兜底：本轮/上次筛选里已有候选人与 JD
+  // 兜底：本轮/上次筛选里已有候选人与 JD（仅限同一岗位）
+  if (!cachedJdBelongsTo(expectedJobId, pageJobId)) return null;
   const cached = results.find((r) => r && r.app && r.app.job) || results[0];
   if (cached && cached.app && cached.app.job) return autofillFromJob(cached.app.job);
   if (lastScreenConfig && lastScreenConfig.jobJD) {
@@ -597,27 +618,40 @@ async function getJobContext() {
   return null;
 }
 
-/** 解读当前职位 JD，返回岗位画像 + 建议权重（供 popup 预填滑块） */
-async function getJobSpec(jobType) {
+/** 解读当前职位 JD，返回岗位画像（expectedJobId 为侧栏点名的职位） */
+async function getJobSpec(jobType, expectedJobId) {
   const type = jobType || 'full-time';
+  const pageJobId = assertPageMatchesJob(expectedJobId);
   let jobJD = '';
   const app = await fetchOneApplication();
   if (app) jobJD = buildJobJD(app);
-  if (!jobJD && lastScreenConfig && lastScreenConfig.jobJD) {
-    const pageJob = pageJobIdFromContext();
-    if (!pageJob || !lastScreenConfig.jobId || String(pageJob) === String(lastScreenConfig.jobId)) {
+  if (!jobJD && cachedJdBelongsTo(expectedJobId, pageJobId)) {
+    if (lastScreenConfig && lastScreenConfig.jobJD) {
       jobJD = lastScreenConfig.jobJD;
     }
-  }
-  if (!jobJD) {
-    const cached = results.find((r) => r && r.app) || null;
-    if (cached) jobJD = buildJobJD(cached.app);
+    if (!jobJD) {
+      const cached = results.find((r) => r && r.app) || null;
+      if (cached) jobJD = buildJobJD(cached.app);
+    }
   }
   if (!jobJD) return null;
+  // JD 本身只有职位名时别去打模型：回来的必然是空壳，还会被当成模型不给力
+  if (MokaScore.jobJdLooksEmpty(jobJD)) {
+    throw new Error('这个职位在 Moka 里没写岗位描述（只有职位名），没东西可解读；请在 Moka 补全 JD，或直接手填门槛与关键词');
+  }
   const spec = await analyzeJobViaBackground(jobJD, type);
   // 解析失败的空壳不能当成功往上传：侧栏会显示空理解，还会把清单整表覆盖成空
   if (!MokaPersist.jobSpecIsUsable(spec)) {
-    throw new Error('模型这次没解读出岗位信息（返回为空或无法解析），请稍后重试或换个模型');
+    throw new Error(
+      (spec && spec.parseErrorMessage)
+        || '模型这次没解读出岗位信息（返回为空或无法解析），请稍后重试或换个模型'
+    );
+  }
+  // 盖上来源职位：侧栏据此判断存档里的理解是不是本岗的
+  const sourceJobId = String(expectedJobId || pageJobId || '');
+  if (sourceJobId) {
+    spec.sourceJobId = sourceJobId;
+    spec.sourceJobName = resolveJobDisplayName(sourceJobId) || '';
   }
   return spec;
 }
@@ -661,13 +695,9 @@ async function fetchOneApplication() {
   let baseBody = {};
   if (capturedRequest?.body) { try { baseBody = JSON.parse(capturedRequest.body); } catch (e) {} }
 
+  // 读 JD 也必须跟当前页职位：捕获体里的旧 jobIds 会把上一岗的候选人和 JD 拉回来
   const searchCtx = resolveSearchContext();
-  if (!baseBody.pipelineId && searchCtx.pipelineId) {
-    baseBody.pipelineId = Number(searchCtx.pipelineId) || searchCtx.pipelineId;
-  }
-  if ((!baseBody.jobIds || !baseBody.jobIds.length) && searchCtx.jobIds.length) {
-    baseBody.jobIds = searchCtx.jobIds;
-  }
+  baseBody = MokaCapture.alignSearchBodyToJob(baseBody, searchCtx);
   // 详情页无 pipelineId、也从未在列表捕获过时，无法拉列表
   if (!baseBody.pipelineId) {
     console.warn('[Moka 筛选] fetchOneApplication: 缺少 pipelineId，请回到候选人列表页');
@@ -863,10 +893,10 @@ function applyMergedHard(item) {
   item.hard = MokaMatch.mergeHardWithMustHaves(local, unmet);
 }
 
-function applyScoreResult(item, raw, weights) {
+function applyScoreResult(item, raw) {
   item.rawScore = raw;
   if (!item.waivedMustHaves) item.waivedMustHaves = new Set();
-  item.score = composeFinalScore(raw, weights, item.waivedMustHaves, (item.hardLocal && item.hardLocal.missing) || []);
+  item.score = composeFinalScore(raw, item.waivedMustHaves, (item.hardLocal && item.hardLocal.missing) || []);
   applyMergedHard(item);
 }
 
@@ -1372,6 +1402,7 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
   const onlyPending = !!options.onlyPending;
   const epoch = options.epoch;
   const total = results.length;
+  if (!screeningStartedAt) screeningStartedAt = Date.now();
   let completed = countScoredResults();
   let cursor = 0;
   let enrichedExp = results.filter((it) => it && it.app && (hasAnyExperience(it.app) || it.app.__resumeText)).length;
@@ -1403,13 +1434,13 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
 
         setRowStage(item.app.id, 'score');
         const raw = await scoreViaBackgroundWithRetry(item.profile, scoreConfig);
-        applyScoreResult(item, raw, weights);
+        applyScoreResult(item, raw);
       } catch (err) {
         console.error('[Moka 筛选] 候选人处理失败:', item.app && item.app.name, err);
         applyScoreResult(item, {
           dimensions: null,
           error: (err && err.message) ? err.message : '处理失败'
-        }, weights);
+        });
       } finally {
         clearRowStage(item.app.id);
       }
@@ -1424,7 +1455,18 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
         total
       });
       updatePanelStatus(`评分 ${completed}/${total} · 已补全经历 ${enrichedExp} 位 · Moka 标签请保持打开（可切去其他浏览器标签）`);
-      reportProgress(completed, total, Math.round((completed / Math.max(total, 1)) * 100), `已评分 ${completed}/${total}`);
+      reportProgress(
+        completed,
+        total,
+        Math.round((completed / Math.max(total, 1)) * 100),
+        MokaScreeningJob.formatScreeningProgress({
+          name: item.app && item.app.name,
+          current: completed,
+          total,
+          startedAt: screeningStartedAt,
+          now: Date.now()
+        })
+      );
     }
   }
 
@@ -1520,6 +1562,7 @@ async function performScreening(config, epoch) {
   results = [];
   lastScreenConfig = null;
   activeWeights = null;
+  screeningStartedAt = 0;
   resetResultUi();
   updatePanelStatus('正在准备筛选… · Moka 标签请保持打开（可切去其他浏览器标签）');
   reportProgress(0, 0, 0, '正在准备筛选…');
@@ -1752,7 +1795,6 @@ function scoreViaBackground(profile, config) {
           jobSpec: config.jobSpec,
           jobJD: config.jobJD,
           hardText: config.hardText || '',
-          weights: config.weights || null,
           feedbackContext: config.feedbackContext || '',
           feedbackRev: config.feedbackRev || 'none'
         }
@@ -1904,7 +1946,7 @@ function setMustHaveWaived(item, mustHaveItem, waived, weights) {
   if (waived) item.waivedMustHaves.add(key);
   else item.waivedMustHaves.delete(key);
   ensureHardLocal(item);
-  item.score = composeFinalScore(item.rawScore, w, item.waivedMustHaves, (item.hardLocal && item.hardLocal.missing) || []);
+  item.score = composeFinalScore(item.rawScore, item.waivedMustHaves, (item.hardLocal && item.hardLocal.missing) || []);
   applyMergedHard(item);
   activeWeights = w;
   updateRow(item);
@@ -2479,9 +2521,9 @@ async function rescoreItem(item) {
       feedbackContext: fbBundle.context,
       feedbackRev: fbBundle.rev
     });
-    applyScoreResult(item, raw, weights);
+    applyScoreResult(item, raw);
   } catch (err) {
-    applyScoreResult(item, { dimensions: null, error: (err && err.message) || '重评失败' }, weights);
+    applyScoreResult(item, { dimensions: null, error: (err && err.message) || '重评失败' });
   } finally {
     item.__rescoring = false;
     clearRowStage(item.app.id);

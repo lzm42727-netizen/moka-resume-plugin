@@ -96,6 +96,28 @@ describe('content.js 顶层加载', () => {
     assert.equal(started.ok, true);
   });
 
+  it('侧栏所选职位与页面职位不一致时，getJobSpec 拒绝解读而不是读回上一个岗的 JD', async () => {
+    // 页面停在 job-1 的列表，侧栏却选了 job-2：此时抓到的 JD 属于 job-1，
+    // 一旦解读成功就会把上一个岗的理解与门槛写进 job-2 并落盘。
+    const listener = messageListeners[0];
+    const resp = await new Promise((resolve) => {
+      listener({ action: 'getJobSpec', jobType: 'full-time', jobId: 'job-2' }, {}, resolve);
+    });
+    assert.equal(resp.ok, false);
+    assert.equal(resp.spec, null);
+    assert.match(resp.error, /职位/);
+  });
+
+  it('同一个职位不受影响，仍按正常路径去抓 JD', async () => {
+    const listener = messageListeners[0];
+    const resp = await new Promise((resolve) => {
+      listener({ action: 'getJobSpec', jobType: 'full-time', jobId: 'job-1' }, {}, resolve);
+    });
+    // 测试环境 fetch 被打桩，这里只要求它不是「串岗」这条错
+    assert.equal(resp.ok, false);
+    assert.doesNotMatch(resp.error, /另一个职位/);
+  });
+
   it('已配置的结构化门槛在简历缺少对应字段时判为未过', () => {
     const result = contentApi.evaluateHardConditions(
       { highestDegree: '', intelligentTags: [], gender: '', age: null, experience: 0 },

@@ -100,6 +100,15 @@ function rememberJd(key, value) {
   schedulePersistLlmCache();
 }
 
+/** 丢掉一条 JD 缓存（内存 + 落盘），下次重新解读 */
+function forgetJd(key) {
+  jdCache.delete(key);
+  if (jdRecord && Object.prototype.hasOwnProperty.call(jdRecord, key)) {
+    delete jdRecord[key];
+    schedulePersistLlmCache();
+  }
+}
+
 function setBoundedCache(map, key, value, limit = CACHE_LIMIT) {
   if (map.has(key)) map.delete(key);
   map.set(key, value);
@@ -441,7 +450,7 @@ function htmlToText(html) {
 }
 
 /**
- * 解读 JD，产出岗位画像 + 四维度建议权重（带缓存）
+ * 解读 JD，产出岗位画像（带缓存）
  */
 async function handleAnalyzeJob({ jobJD, jobType }) {
   const settings = await getSettings();
@@ -449,13 +458,27 @@ async function handleAnalyzeJob({ jobJD, jobType }) {
   await llmCacheReady;
 
   const cacheKey = MokaPersist.stableHash({ jobJD, jobType, model: settings.modelName, promptRev: MokaScore.PROMPT_VERSION });
-  if (jdCache.has(cacheKey)) return jdCache.get(cacheKey);
+  if (jdCache.has(cacheKey)) {
+    const cached = jdCache.get(cacheKey);
+    if (MokaPersist.jobSpecIsUsable(cached)) return cached;
+    // 旧版本会把「只有权重、没有岗位内容」的空壳也存进来，命中后每次刷新都秒失败
+    forgetJd(cacheKey);
+  }
 
   const systemPrompt =
     '你是资深招聘专家，擅长解读职位 JD 并提炼岗位画像。直接输出 JSON 结果，不要输出思考过程或多余文字。';
   const userPrompt = buildJDAnalysisPrompt(jobJD, jobType);
   const content = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: 2000, temperature: 0 });
-  const spec = parseJDAnalysis(content);
+  let spec = parseJDAnalysis(content);
+
+  // 空返回/截断多半是偶发，自己重试一次（放宽输出上限、再强调一遍只要 JSON），
+  // 比让用户看见报错再手点一遍「按 JD 刷新」强
+  if (spec.parseError) {
+    const retryPrompt = userPrompt + '\n\n只输出 JSON 对象本身，不要代码块围栏，不要任何解释。';
+    const retryContent = await callLLM(settings, systemPrompt, retryPrompt, { maxTokens: 3000, temperature: 0 });
+    const retried = parseJDAnalysis(retryContent);
+    if (!retried.parseError) spec = retried;
+  }
 
   if (!spec.parseError) rememberJd(cacheKey, spec);
   return spec;
@@ -479,11 +502,10 @@ async function handleScoreCandidate({ profile, config }) {
   const hardText = (config && config.hardText) || '';
   const feedbackContext = (config && config.feedbackContext) || '';
   const feedbackRev = (config && config.feedbackRev) || 'none';
-  const weightKey = MokaScore.normalizeWeightPercents(config.weights || {});
   await llmCacheReady;
   const cacheKey = MokaPersist.stableHash({
     profile, spec: jobSpec, jobJD: config.jobJD || '', jobType: config.jobType, hardText,
-    weights: weightKey, model: settings.modelName,
+    model: settings.modelName,
     promptRev: MokaScore.PROMPT_VERSION, feedbackRev
   });
   if (scoreCache.has(cacheKey)) return scoreCache.get(cacheKey);
@@ -493,7 +515,7 @@ async function handleScoreCandidate({ profile, config }) {
     + '严格只输出一个 JSON 对象，禁止输出任何思考过程、前言、分析说明或 markdown。'
     + '门槛 reason 控制在 40 字以内，highlights/concerns 每条不超过 30 字。';
   const userPrompt = buildDimensionPrompt(
-    profile, jobSpec, config.jobType, config.jobJD, hardText, feedbackContext, config.weights
+    profile, jobSpec, config.jobType, config.jobJD, hardText, feedbackContext
   );
 
   // 推理型模型会先输出思考，需给足 token，避免 JSON 被截断
@@ -739,7 +761,7 @@ function renderSpec(spec) {
 /**
  * 候选人「分维度」评分提示词
  */
-function buildDimensionPrompt(profile, spec, jobType, jobJD, hardText, feedbackContext, weights) {
+function buildDimensionPrompt(profile, spec, jobType, jobJD, hardText, feedbackContext) {
   const hasSpec = spec && (spec.summary || (spec.responsibilities && spec.responsibilities.length)
     || (spec.mustHaves && spec.mustHaves.length) || (spec.importantHaves && spec.importantHaves.length));
   const jobBlock = hasSpec ? renderSpec(spec) : (jobJD || '（无岗位信息）');
@@ -834,19 +856,33 @@ function normalizeWeights(w, def = DEFAULT_WEIGHTS) {
 function parseJDAnalysis(content) {
   const text = stripThink(content);
   const objs = findAllJsonObjects(text);
+  // 与侧栏同一把尺子：只回了权重、没有任何岗位内容的 JSON 不算解读成功
+  const usable = (p) => MokaPersist.jobSpecIsUsable(p);
   let best = null;
+  let parsedAnyJson = false;
   for (const c of objs) {
     const p = tryParseJson(c);
-    if (p && (p.suggestedWeights || p.summary || p.responsibilities || p.mustHaves)) {
+    if (p) parsedAnyJson = true;
+    if (usable(p)) {
       best = p;
-      if (p.suggestedWeights) break;
+      break;
     }
   }
+  // JD 输出比评分长，更容易撞上输出上限；截断的 JSON 先补齐再解析
   if (!best) {
+    const repaired = tryParseJson(repairTruncatedJson(text));
+    if (usable(repaired)) best = repaired;
+  }
+  if (!best) {
+    // JSON 本身是好的、只是没有岗位字段，别报成「不是 JSON」误导用户
+    const kind = parsedAnyJson ? 'missing-field' : MokaScore.classifyLlmJsonFailure(text, null);
     return {
       summary: '', responsibilities: [], coreSkills: [], candidateTraits: [],
       mustHaves: [], importantHaves: [], niceToHaves: [],
-      resumeKeywords: [], suggestedWeights: { ...DEFAULT_WEIGHTS }, parseError: true
+      resumeKeywords: [], suggestedWeights: { ...DEFAULT_WEIGHTS },
+      parseError: true,
+      parseFailureKind: kind,
+      parseErrorMessage: MokaScore.jdParseFailureMessage(kind)
     };
   }
   return {
@@ -886,8 +922,10 @@ function parseDimensionResponse(content) {
     }
   }
   if (!best) {
-    const fail = MokaScore.scoreErrorResult('模型返回解析失败');
-    fail.concerns = ['无法解析模型返回，原文片段: ' + text.slice(0, 80)];
+    const kind = MokaScore.classifyLlmJsonFailure(text, null);
+    const fail = MokaScore.scoreErrorResult(MokaScore.scoreParseFailureMessage(kind));
+    fail.parseFailureKind = kind;
+    fail.concerns = [fail.error, '原文片段: ' + text.slice(0, 80)];
     return fail;
   }
   if (best.dimensions) {

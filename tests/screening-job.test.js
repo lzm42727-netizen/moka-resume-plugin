@@ -6,7 +6,8 @@ const {
   matchesPageJob,
   screeningLooksActive,
   withStatus,
-  SCREENING_JOB_KEY
+  SCREENING_JOB_KEY,
+  formatScreeningProgress
 } = require('../lib/screening-job.js');
 
 describe('sanitizeScreeningJob', () => {
@@ -80,5 +81,43 @@ describe('matchesPageJob / withStatus', () => {
     const next = withStatus(job, 'awaiting_resume');
     assert.equal(next.status, 'awaiting_resume');
     assert.equal(SCREENING_JOB_KEY, 'mokaScreeningJob');
+  });
+});
+
+describe('formatScreeningProgress', () => {
+  const t0 = Date.parse('2026-09-03T11:00:00+08:00');
+
+  it('names the current candidate and elapsed minutes', () => {
+    const text = formatScreeningProgress({
+      name: '黄芯怡',
+      current: 37,
+      total: 200,
+      startedAt: t0,
+      now: t0 + 4 * 60 * 1000
+    });
+    assert.equal(text, '正在评 黄芯怡（37/200）· 已用约 4 分钟');
+  });
+
+  it('says 刚开始 when less than a minute has passed', () => {
+    const text = formatScreeningProgress({
+      name: '李四',
+      current: 1,
+      total: 10,
+      startedAt: t0,
+      now: t0 + 20 * 1000
+    });
+    assert.match(text, /刚开始/);
+    assert.match(text, /李四（1\/10）/);
+  });
+
+  it('omits the name when it is empty', () => {
+    const text = formatScreeningProgress({
+      name: '',
+      current: 5,
+      total: 10,
+      startedAt: t0,
+      now: t0 + 60 * 1000
+    });
+    assert.equal(text, '已评分 5/10 · 已用约 1 分钟');
   });
 });

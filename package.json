@@ -1,0 +1,8 @@
+{
+  "name": "moka-resume-plugin",
+  "private": true,
+  "description": "Moka 智能简历筛选助手",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  }
+}

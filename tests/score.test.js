@@ -15,10 +15,12 @@ const {
   mustHaveExtractionGuide,
   matchScoreDisplayText,
   scoreFailureMessage,
+  classifyLlmJsonFailure,
+  scoreParseFailureMessage,
+  jdParseFailureMessage,
+  jobJdLooksEmpty,
   PROMPT_VERSION
 } = require('../lib/score.js');
-
-const WEIGHTS = { experience: 0.4, skill: 0.3, education: 0.2, potential: 0.1 };
 
 function okRaw(overrides = {}) {
   return {
@@ -72,7 +74,7 @@ describe('composeFinalScore', () => {
       concerns: [],
       handwrittenGateResults: [{ item: '日语', met: false }]
     };
-    const out = composeFinalScore(raw, null, [], ['学历本科']);
+    const out = composeFinalScore(raw, [], ['学历本科']);
     assert.equal(out.score, 35);
     assert.equal(out.matchScore, 90);
     assert.equal(out.level, '不建议推进');
@@ -92,7 +94,7 @@ describe('composeFinalScore', () => {
       concerns: ['无相关实习'],
       handwrittenGateResults: []
     };
-    const out = composeFinalScore(raw, null, [], []);
+    const out = composeFinalScore(raw, [], []);
     assert.equal(out.score, 32);
     assert.equal(out.level, '不建议推进');
     assert.equal(out.advanceReason, 'match');
@@ -110,7 +112,7 @@ describe('composeFinalScore', () => {
       highlights: [],
       concerns: [],
       handwrittenGateResults: []
-    }, null, [], []);
+    }, [], []);
     assert.equal(mk(65).level, '可推进');
     assert.equal(mk(80).level, '优先推进');
   });
@@ -127,7 +129,7 @@ describe('composeFinalScore', () => {
       concerns: ['无法解析模型返回'],
       error: '模型返回解析失败'
     };
-    const result = composeFinalScore(raw, WEIGHTS, new Set());
+    const result = composeFinalScore(raw, new Set());
     assert.equal(result.level, '错误');
     assert.equal(result.score, 0);
     assert.equal(result.dims, null);
@@ -136,16 +138,16 @@ describe('composeFinalScore', () => {
 
   it('treats missing API key style result as 错误, not ~50 值得推荐', () => {
     const raw = scoreErrorResult('未配置 API Key');
-    const result = composeFinalScore(raw, WEIGHTS, new Set());
+    const result = composeFinalScore(raw, new Set());
     assert.equal(result.level, '错误');
     assert.equal(result.score, 0);
   });
 
-  it('falls back to the legacy weighted dimensions when matchScore is absent', () => {
-    // 80*0.4 + 70*0.3 + 60*0.2 + 50*0.1 = 32+21+12+5 = 70
-    const result = composeFinalScore(okRaw(), WEIGHTS, new Set());
-    assert.equal(result.score, 70);
-    assert.equal(result.baseScore, 70);
+  it('falls back to an equal-weight average of dimensions when matchScore is absent', () => {
+    // 80+70+60+50 / 4 = 65；不得再按旧招聘官权重 40/30/20/10 合成 70
+    const result = composeFinalScore(okRaw(), new Set(), []);
+    assert.equal(result.score, 65);
+    assert.equal(result.baseScore, 65);
     assert.equal(result.level, '可推进');
     assert.deepEqual(result.highlights, ['有相关项目']);
     assert.deepEqual(result.concerns, ['行业经验短']);
@@ -159,7 +161,7 @@ describe('composeFinalScore', () => {
         met: false
       }))
     });
-    const result = composeFinalScore(raw, WEIGHTS, new Set());
+    const result = composeFinalScore(raw, new Set());
     assert.equal(result.matchScore, 95);
     assert.equal(result.score, 0);
     assert.equal(result.unmet.length, 7);
@@ -174,7 +176,7 @@ describe('composeFinalScore', () => {
         { item: '会使用 Photoshop', met: false, reason: '简历无相关证据' }
       ]
     });
-    const result = composeFinalScore(raw, WEIGHTS, new Set());
+    const result = composeFinalScore(raw, new Set());
     assert.equal(result.score, 42);
     assert.deepEqual(result.unmet.map((r) => r.item), ['会使用 Photoshop']);
     assert.equal(result.unmet[0].reason, '简历无相关证据');
@@ -188,7 +190,7 @@ describe('composeFinalScore', () => {
         { item: '作品集', met: true, reason: '附有作品集' },
         { item: '海外经历', met: true, reason: '海外交换' }
       ]
-    }, WEIGHTS, [], []);
+    }, [], []);
     assert.equal(result.score, 42);
     assert.equal(result.bonusPoints, 6);
     assert.equal(result.bonusApplied, 0);
@@ -203,7 +205,7 @@ describe('composeFinalScore', () => {
         item: `加分项${i + 1}`,
         met: true
       }))
-    }, WEIGHTS, [], []);
+    }, [], []);
     assert.equal(result.score, 45);
     assert.equal(result.bonusPoints, 15);
     assert.equal(result.bonusApplied, 0);
@@ -217,7 +219,7 @@ describe('composeFinalScore', () => {
         { item: '作品集', met: true },
         { item: '海外经历', met: false }
       ]
-    }, WEIGHTS, [], []);
+    }, [], []);
     assert.equal(result.score, 53);
     assert.equal(result.bonusApplied, 3);
     assert.equal(result.level, '可推进');
@@ -227,7 +229,7 @@ describe('composeFinalScore', () => {
     const result = composeFinalScore({
       matchScore: 78,
       bonusKeywordResults: [{ item: '作品集', met: true }]
-    }, WEIGHTS, [], []);
+    }, [], []);
     assert.equal(result.score, 81);
     assert.equal(result.level, '优先推进');
     assert.equal(result.bonusPromoted, true);
@@ -241,7 +243,7 @@ describe('composeFinalScore', () => {
         item: `加分项${i + 1}`,
         met: true
       }))
-    }, WEIGHTS, [], []);
+    }, [], []);
     assert.equal(result.score, 100);
     assert.equal(result.bonusPoints, 15);
     assert.equal(result.bonusMetCount, 5);
@@ -346,7 +348,7 @@ describe('AI match scoring contract', () => {
       experienceEvidence: ['澳启教育：海外用户访谈', '', '小红书内容优化']
     });
     assert.deepEqual(withEvidence.experienceEvidence, ['澳启教育：海外用户访谈', '小红书内容优化']);
-    const composed = composeFinalScore(withEvidence, WEIGHTS, [], []);
+    const composed = composeFinalScore(withEvidence, [], []);
     assert.equal(composed.matchScore, 62);
     assert.deepEqual(composed.experienceEvidence, ['澳启教育：海外用户访谈', '小红书内容优化']);
     assert.equal(composed.level, '可推进');
@@ -360,7 +362,7 @@ describe('AI match scoring contract', () => {
     assert.equal(raw.parseError, true);
     assert.match(raw.error, /matchScore/);
     assert.equal(isScoreFailure(raw), true);
-    const composed = composeFinalScore(raw, WEIGHTS, [], []);
+    const composed = composeFinalScore(raw, [], []);
     assert.equal(composed.level, '错误');
     assert.match(scoreFailureMessage(composed), /matchScore/);
   });
@@ -448,7 +450,7 @@ describe('matchScoreDisplayText', () => {
   });
 
   it('hides the match score for failed scoring', () => {
-    const failed = composeFinalScore(scoreErrorResult('429 请求过于频繁'), WEIGHTS, [], []);
+    const failed = composeFinalScore(scoreErrorResult('429 请求过于频繁'), [], []);
     assert.equal(failed.level, '错误');
     assert.equal(matchScoreDisplayText(failed), '');
   });
@@ -456,12 +458,12 @@ describe('matchScoreDisplayText', () => {
 
 describe('scoreFailureMessage', () => {
   it('surfaces the underlying error text for failed scoring', () => {
-    const failed = composeFinalScore(scoreErrorResult('429 请求过于频繁'), WEIGHTS, [], []);
+    const failed = composeFinalScore(scoreErrorResult('429 请求过于频繁'), [], []);
     assert.equal(scoreFailureMessage(failed), '429 请求过于频繁');
   });
 
   it('returns empty for a normal score', () => {
-    const ok = composeFinalScore({ matchScore: 72 }, WEIGHTS, [], []);
+    const ok = composeFinalScore({ matchScore: 72 }, [], []);
     assert.equal(scoreFailureMessage(ok), '');
   });
 });
@@ -473,5 +475,74 @@ describe('mustHaveExtractionGuide', () => {
     assert.match(g, /真诚|态度|品格/);
     assert.match(g, /niceToHaves/);
     assert.match(g, /最多 5 条/);
+  });
+});
+
+describe('classifyLlmJsonFailure', () => {
+  it('accepts an object that already has matchScore or dimensions', () => {
+    assert.equal(classifyLlmJsonFailure('', { matchScore: 70 }), null);
+    assert.equal(classifyLlmJsonFailure('', { dimensions: { experience: { score: 60 } } }), null);
+  });
+
+  it('flags a parsed object that has neither matchScore nor dimensions', () => {
+    assert.equal(classifyLlmJsonFailure('{"highlights":[]}', { highlights: [] }), 'missing-field');
+  });
+
+  it('flags truncated JSON when braces are unclosed', () => {
+    assert.equal(classifyLlmJsonFailure('{"matchScore": 70, "highlights": [', null), 'truncated');
+  });
+
+  it('flags non-json when the model returned prose', () => {
+    assert.equal(classifyLlmJsonFailure('I cannot score this resume.', null), 'non-json');
+    assert.equal(classifyLlmJsonFailure('', null), 'non-json');
+  });
+});
+
+describe('scoreParseFailureMessage', () => {
+  it('names the three failure kinds in recruiter-facing Chinese', () => {
+    assert.match(scoreParseFailureMessage('truncated'), /截断/);
+    assert.match(scoreParseFailureMessage('missing-field'), /matchScore/);
+    assert.match(scoreParseFailureMessage('non-json'), /JSON/);
+  });
+});
+
+describe('jdParseFailureMessage', () => {
+  it('tells the recruiter what went wrong with the JD reading, not with scoring', () => {
+    assert.match(jdParseFailureMessage('truncated'), /截断/);
+    assert.match(jdParseFailureMessage('non-json'), /JSON/);
+    assert.doesNotMatch(jdParseFailureMessage('truncated'), /matchScore|重评/);
+  });
+});
+
+describe('jobJdLooksEmpty', () => {
+  // Moka 上有些职位只挂了职位名，没写岗位描述。这种 JD 送给模型只会换回一个空壳，
+  // 界面上表现为「模型没解读出岗位信息」，其实是 JD 本身没内容。
+  it('treats a title-and-department-only JD as empty', () => {
+    assert.equal(jobJdLooksEmpty('职位: 党务经理（外联方向）\n\n部门: 党群工作部'), true);
+    assert.equal(jobJdLooksEmpty('职位: 党务经理（外联方向）\n\n岗位描述与要求:\n'), true);
+    assert.equal(jobJdLooksEmpty(''), true);
+  });
+
+  it('accepts a JD that carries a real description or requirement list', () => {
+    assert.equal(jobJdLooksEmpty(
+      '职位: 党务经理\n\n部门: 党群工作部\n\n岗位描述与要求:\n'
+      + '负责党支部日常事务、组织生活会与党员发展材料整理，配合工会开展外联活动。'
+    ), false);
+    assert.equal(jobJdLooksEmpty(
+      '职位: 党务经理\n\n硬性/加分要求:\n中共党员，本科及以上学历，2 年以上党务工作经验'
+    ), false);
+  });
+});
+
+describe('legacy scoring exports', () => {
+  it('does not export weight penalties or the recruiter-weight prompt', () => {
+    const score = require('../lib/score.js');
+    assert.equal(score.penaltyForUnmet, undefined);
+    assert.equal(score.bonusForMetNice, undefined);
+    assert.equal(score.weightsPromptBlock, undefined);
+    assert.equal(score.TIER_PENALTY, undefined);
+    assert.equal(score.NICE_BONUS_PER, undefined);
+    assert.equal(score.normalizeWeightPercents, undefined);
+    assert.equal(score.normalizeWeightRatios, undefined);
   });
 });

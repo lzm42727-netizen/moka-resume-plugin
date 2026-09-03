@@ -96,6 +96,30 @@ describe('screening configuration UI', () => {
     assert.doesNotMatch(js, /reload-panel'\)[\s\S]{0,120}refreshMokaConnection\(\)/);
   });
 
+  it('binds every JD read to the job selected in the side panel', () => {
+    // 不带岗位 ID 时，content 端只能抓页面上「当前那一批」候选人的 JD，
+    // 岗位切走后拿回来的就是上一个岗的理解
+    const calls = js.match(/action: 'getJobSpec'[^}]*}/g) || [];
+    assert.ok(calls.length >= 3, '所有 getJobSpec 调用点都应存在');
+    calls.forEach((call) => assert.match(call, /jobId/));
+    assert.match(js, /action: 'getJobContext'[^}]*jobId/);
+  });
+
+  it('drops a model reply that came back after the user switched jobs', () => {
+    assert.match(js, /const targetJobId = currentJobId\(\) \|\| effectiveJobId\(\)/);
+    assert.match(js, /targetJobId[\s\S]{0,300}resolve\(false\)/);
+    assert.match(js, /saveJobPresetFor\(targetJobId\)/);
+  });
+
+  it('clears a stored understanding that belongs to another job', () => {
+    // 存档里若躺着上一个岗的理解/门槛/关键词，恢复时必须清掉并重新解读，
+    // 否则侧栏会一直显示「已自动填充本岗配置」+ 别人的岗位理解
+    assert.match(js, /jobSpecMatchesJob\(preset\.jobSpec, jobId\)/);
+    assert.match(js, /jobSpecMatchesJob\(preset\.jobSpec, jobId\)[\s\S]{0,400}resetJobPresetForm/);
+    // 老存档验不了来源，至少要提示可以重解读
+    assert.match(js, /sourceJobId[\s\S]{0,200}按 JD 刷新/);
+  });
+
   it('renders intern graduation risk away from evidence columns', () => {
     assert.match(js, /mp-grad-risk/);
     assert.match(js, /view\.graduationRisk/);
@@ -106,5 +130,24 @@ describe('screening configuration UI', () => {
   it('renders the actual unmet gate list on result cards', () => {
     assert.match(js, /mp-gate-list/);
     assert.match(js, /s\.unmet/);
+  });
+});
+
+describe('about tab copy', () => {
+  it('does not claim resume data stays local or is never uploaded', () => {
+    assert.doesNotMatch(html, /所有数据只在本地处理和保存/);
+    assert.doesNotMatch(html, /不会上传个人信息到第三方服务器/);
+  });
+
+  it('says the candidate profile is sent to the user-configured LLM', () => {
+    assert.match(html, /API Key 只保存在浏览器本地存储/);
+    assert.match(html, /候选人画像会发送到你配置的/);
+    assert.match(html, /LLM/);
+    assert.match(html, /自定义 Endpoint[\s\S]{0,80}域名/);
+  });
+
+  it('does not advertise scoring weights that the UI no longer has', () => {
+    assert.doesNotMatch(html, /权重自定义/);
+    assert.doesNotMatch(html, /选择职位和权重/);
   });
 });

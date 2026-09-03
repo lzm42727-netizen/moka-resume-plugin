@@ -22,6 +22,7 @@ const {
   formatJobUnderstandingParts,
   formatJobUnderstandingText,
   jobSpecIsUsable,
+  jobSpecMatchesJob,
   parseJobUnderstandingText,
   composeJobUnderstandingText,
   requirementsToJobSpecFields,
@@ -440,6 +441,29 @@ describe('job presets', () => {
     assert.equal(jobSpecIsUsable({ importantHaves: ['英语沟通'] }), true);
     assert.equal(jobSpecIsUsable({ resumeKeywords: ['PS'] }), true);
     assert.equal(jobSpecIsUsable({ mustHaves: ['本科及以上'] }), true);
+  });
+
+  it('flags a job understanding that was read from another job', () => {
+    // 解读 JD 时会盖上来源职位；来源与当前所选职位不一致 = 串岗，必须能被识别出来
+    assert.equal(jobSpecMatchesJob({ summary: '社媒运营', sourceJobId: 'job-a' }, 'job-b'), false);
+    assert.equal(jobSpecMatchesJob({ summary: '社媒运营', sourceJobId: 'job-a' }, 'job-a'), true);
+    assert.equal(jobSpecMatchesJob({ summary: '社媒运营', sourceJobId: 123 }, '123'), true);
+  });
+
+  it('does not call an unstamped legacy understanding a mismatch', () => {
+    // 老存档没有来源职位：判不出来就别误清招聘官已经配好的条件
+    assert.equal(jobSpecMatchesJob({ summary: '社媒运营' }, 'job-b'), true);
+    assert.equal(jobSpecMatchesJob({ summary: '社媒运营', sourceJobId: 'job-a' }, ''), true);
+    assert.equal(jobSpecMatchesJob(null, 'job-b'), true);
+  });
+
+  it('keeps the source job on the stored jobSpec so the next open can verify it', () => {
+    const clean = sanitizeJobPreset({
+      jobType: 'full-time',
+      jobSpec: { summary: '社媒运营', sourceJobId: 'job-a', sourceJobName: '党务经理（外联方向）' }
+    });
+    assert.equal(clean.jobSpec.sourceJobId, 'job-a');
+    assert.equal(clean.jobSpec.sourceJobName, '党务经理（外联方向）');
   });
 
   it('composes duty and skills into one stored string', () => {

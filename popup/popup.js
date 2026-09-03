@@ -662,13 +662,28 @@ function restoreCurrentJobPreset() {
   return chrome.storage.local.get(key).then((res) => {
     const preset = MokaPersist.getJobPreset(res[key], jobId);
     presetFormJobId = String(jobId);
-    if (!preset) {
+    // 存档里的理解若来自别的职位，连同它带出的门槛/关键词一起作废，重新按本岗 JD 解读
+    const crossJob = !!preset && MokaPersist.jobSpecMatchesJob
+      && !MokaPersist.jobSpecMatchesJob(preset.jobSpec, jobId);
+    if (!preset || crossJob) {
       resetJobPresetForm({ internSuggested: /实习/.test(activePresetJobLabel || '') });
-      setPresetNote('本岗尚未保存配置。首次会自动生成理解并保存。', '#8c8c8c');
+      setPresetNote(
+        crossJob
+          ? '存档里的理解来自其它职位，已清空，将按本岗 JD 重新解读'
+          : '本岗尚未保存配置。首次会自动生成理解并保存。',
+        crossJob ? '#fa8c16' : '#8c8c8c'
+      );
       return false;
     }
     applyJobPreset(preset);
-    setPresetNote('已自动填充本岗配置', '#52c41a');
+    // 老存档没记来源职位，验不了是不是本岗的，得让用户知道可以一键重解读
+    const unstamped = !!preset.jobSpec && !preset.jobSpec.sourceJobId;
+    setPresetNote(
+      unstamped
+        ? '已自动填充本岗配置（旧存档，理解若不是本岗请点「按 JD 刷新」）'
+        : '已自动填充本岗配置',
+      '#52c41a'
+    );
     // 空栏补全已在 applyJobPreset 内仅用本岗 preset.jobSpec 完成，此处不再用全局 lastJobSpec
     if (hasJobUnderstandingContent()) {
       setJobUnderstandingText(
@@ -743,7 +758,12 @@ async function loadJobSpec() {
   note.style.color = '#1890ff';
   if (btn) btn.disabled = true;
 
-  chrome.tabs.sendMessage(tab.id, { action: 'getJobSpec', jobType: document.querySelector('input[name="job-type"]:checked').value }, (response) => {
+  const specJobId = currentJobId() || effectiveJobId();
+  chrome.tabs.sendMessage(tab.id, {
+    action: 'getJobSpec',
+    jobType: document.querySelector('input[name="job-type"]:checked').value,
+    jobId: specJobId
+  }, (response) => {
     if (btn) btn.disabled = false;
     if (chrome.runtime.lastError) {
       note.textContent = '（未能解读 JD，可手动调整权重）';
@@ -764,6 +784,17 @@ async function loadJobSpec() {
     note.textContent = '（已按 JD 生成建议权重，可再手动调整；未点保存则开筛时会自动保存）';
     note.style.color = '#52c41a';
   });
+}
+
+/**
+ * 界面上摆着的理解若能证明来自别的职位，就整表清掉。
+ * 判不出来源（老存档没盖章）时什么都不做，别误清招聘官手配的条件。
+ */
+function clearCrossJobUnderstanding(jobId) {
+  if (!window.MokaPersist || !MokaPersist.jobSpecMatchesJob) return false;
+  if (MokaPersist.jobSpecMatchesJob(lastJobSpec, jobId)) return false;
+  resetJobPresetForm({ internSuggested: /实习/.test(activePresetJobLabel || '') });
+  return true;
 }
 
 /** 刷新岗位理解 + 预填必须/重要/加分；opts.autoSave 时落盘以便下次免刷新 */
@@ -793,12 +824,21 @@ function refreshUnderstandingAndRequirements(opts) {
     }
     if (btn) btn.disabled = true;
     const jobType = document.querySelector('input[name="job-type"]:checked').value;
+    const targetJobId = currentJobId() || effectiveJobId();
     return new Promise((resolve) => {
-      chrome.tabs.sendMessage(tab.id, { action: 'getJobSpec', jobType }, (response) => {
+      chrome.tabs.sendMessage(tab.id, { action: 'getJobSpec', jobType, jobId: targetJobId }, (response) => {
         if (btn) btn.disabled = false;
+        // 等模型回话这段时间里岗位被切走了：这份理解属于上一个岗，丢掉
+        if ((currentJobId() || effectiveJobId()) !== targetJobId) {
+          resolve(false);
+          return;
+        }
         if (chrome.runtime.lastError || !response || !response.spec) {
+          const cleared = clearCrossJobUnderstanding(targetJobId);
           if (note) {
-            note.textContent = '未能解读 JD：' + ((response && response.error) || chrome.runtime.lastError && chrome.runtime.lastError.message || '请重试');
+            note.textContent = '未能解读 JD：'
+              + ((response && response.error) || chrome.runtime.lastError && chrome.runtime.lastError.message || '请重试')
+              + (cleared ? '；已清掉界面上其它职位的理解' : '');
             note.style.color = '#fa8c16';
           }
           resolve(false);
@@ -807,8 +847,11 @@ function refreshUnderstandingAndRequirements(opts) {
         const spec = response.spec;
         // 空壳 spec 会把语言/门槛/重点看/加分看整表覆盖成空并落盘，这里必须先拦住
         if (window.MokaPersist && !MokaPersist.jobSpecIsUsable(spec)) {
+          const cleared = clearCrossJobUnderstanding(targetJobId);
           if (note) {
-            note.textContent = '未能解读 JD：模型这次没返回岗位信息，请稍后重试；原有配置未改动';
+            note.textContent = cleared
+              ? '未能解读 JD：模型这次没返回岗位信息；界面上其它职位的理解已清掉，请稍后重试'
+              : '未能解读 JD：模型这次没返回岗位信息，请稍后重试；原有配置未改动';
             note.style.color = '#fa8c16';
           }
           resolve(false);
@@ -856,7 +899,7 @@ function refreshUnderstandingAndRequirements(opts) {
         if (note) note.style.color = '#52c41a';
         const finish = () => resolve(true);
         if (options.autoSave) {
-          saveJobPresetFor(currentJobId() || effectiveJobId()).then(finish).catch(finish);
+          saveJobPresetFor(targetJobId).then(finish).catch(finish);
         } else {
           finish();
         }
@@ -1328,13 +1371,14 @@ function fillMustHavesFromJobSpec(onDone) {
       return;
     }
     const jobType = document.querySelector('input[name="job-type"]:checked').value;
-    chrome.tabs.sendMessage(tab.id, { action: 'getJobSpec', jobType }, (response) => {
+    const targetJobId = currentJobId() || effectiveJobId();
+    chrome.tabs.sendMessage(tab.id, { action: 'getJobSpec', jobType, jobId: targetJobId }, (response) => {
       if (chrome.runtime.lastError) {
         onDone(false);
         return;
       }
       const spec = response && response.spec;
-      if (!spec) {
+      if (!spec || (currentJobId() || effectiveJobId()) !== targetJobId) {
         onDone(false);
         return;
       }
@@ -1390,7 +1434,8 @@ async function loadJobContext(opts) {
   note.style.color = '#1890ff';
   if (btn) btn.disabled = true;
 
-  chrome.tabs.sendMessage(tab.id, { action: 'getJobContext' }, (response) => {
+  const contextJobId = currentJobId() || effectiveJobId();
+  chrome.tabs.sendMessage(tab.id, { action: 'getJobContext', jobId: contextJobId }, (response) => {
     if (chrome.runtime.lastError) {
       if (btn) btn.disabled = false;
       note.textContent = '未能读取 JD，请刷新 Moka 后重试';

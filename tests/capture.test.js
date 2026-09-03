@@ -6,7 +6,8 @@ const {
   unwrapDetailJson,
   extractSceneToken,
   detailBelongsTo,
-  buildSearchPageBody
+  buildSearchPageBody,
+  alignSearchBodyToJob
 } = require('../lib/capture.js');
 
 const ORIGIN = 'https://app.mokahr.com';
@@ -133,6 +134,38 @@ describe('buildSearchPageBody', () => {
     buildSearchPageBody(original, 50, 'NEW');
     assert.equal(original.lastCursor, 'STALE');
     assert.equal(original.limit, undefined);
+  });
+});
+
+describe('alignSearchBodyToJob', () => {
+  // SPA 里换职位时页面未必再发一次搜索，捕获体里的 jobIds 还是上一岗的。
+  // 原样重放会拉回上一岗的候选人，JD 解读出来的自然也是上一岗的岗位理解。
+  it('overwrites the stale captured jobIds with the job the page is on', () => {
+    const body = alignSearchBodyToJob(
+      { pipelineId: 123, jobIds: ['job-old'], sortKey: 'movedAt' },
+      { pipelineId: '123', jobIds: ['job-new'] }
+    );
+    assert.deepEqual(body.jobIds, ['job-new']);
+    assert.equal(body.sortKey, 'movedAt');
+  });
+
+  it('keeps the captured jobIds when the page context knows no job', () => {
+    const body = alignSearchBodyToJob(
+      { pipelineId: 123, jobIds: ['job-old'] },
+      { pipelineId: '', jobIds: [] }
+    );
+    assert.deepEqual(body.jobIds, ['job-old']);
+  });
+
+  it('only fills pipelineId when the captured body has none', () => {
+    assert.equal(alignSearchBodyToJob({ pipelineId: 9 }, { pipelineId: '5' }).pipelineId, 9);
+    assert.equal(alignSearchBodyToJob({}, { pipelineId: '5' }).pipelineId, 5);
+  });
+
+  it('does not mutate the captured body', () => {
+    const original = { pipelineId: 1, jobIds: ['job-old'] };
+    alignSearchBodyToJob(original, { jobIds: ['job-new'] });
+    assert.deepEqual(original.jobIds, ['job-old']);
   });
 });
 

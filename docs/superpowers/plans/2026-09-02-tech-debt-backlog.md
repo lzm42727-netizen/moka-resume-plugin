@@ -30,18 +30,18 @@
 
 ## 二、待办（按性价比排序）
 
-- [ ] **P0 关于页隐私文案对齐**（0.5 天）
-      侧栏「关于」改成与 README 一致：Key 只存本地；候选人画像会发送到用户配置的模型服务；自定义域名会申请全站 host 权限。删掉「不会上传个人信息」。
-- [ ] **P0 清理 `lib/score.js` 死路径**（1–2 天，先补测试再删）
-      删除或隔离 `TIER_PENALTY` / `penaltyForUnmet` / `bonusForMetNice` / `NICE_*` / `weightsPromptBlock`；`composeFinalScore` 不再接收 `weights`；评分缓存 key 去掉权重项。目标：改分只有一套公式可改。
-- [ ] **P1 模型 JSON 契约化**（2 天）
-      为 `matchScore` / `handwrittenGateResults` / `bonusKeywordResults` / `experienceEvidence` 写一份显式 schema 校验（手写 `assertShape` 即可），解析失败区分「缺字段 / 被截断 / 非 JSON」。比上 TypeScript 更能命中真实故障。
-- [ ] **P1 进度可读性**（0.5 天）
-      显示「正在评 XXX（37/200）· 已用约 N 分钟」；开筛前提示本轮大约会打多少次模型。
+- [x] **P0 关于页隐私文案对齐**（0.5 天）
+      侧栏「关于」改成与 README 一致：Key 只存本地；候选人画像会发送到用户配置的模型服务；自定义域名会申请 host 权限。已删除「不会上传个人信息」与过时的权重说明。
+- [x] **P0 清理 `lib/score.js` 死路径**
+      已删除 `TIER_PENALTY` / `penaltyForUnmet` / `bonusForMetNice` / `NICE_*` / `weightsPromptBlock`；`composeFinalScore` 不再接收权重；无 matchScore 时四维等权平均；评分缓存 key 不再含权重。
+- [x] **P1 模型 JSON 契约化**（进行中）
+      已增加 `classifyLlmJsonFailure`：区分截断 / 缺 matchScore / 非 JSON。JD 空壳由 `jobSpecIsUsable` 拦截。未做完整逐字段 schema。
+- [x] **P1 进度可读性**
+      评分进度改为「正在评 姓名（37/200）· 已用约 N 分钟」。未做开筛前 token 预估。
 - [ ] **P2 大文件竖切**
       先切 `content.js`（抓包重放 / 筛选循环 / 结果发布），再切 `popup.js`（配置表单 / 结果列表 / 校准）。目标是「改校准不用翻 2800 行」，不追求目录好看。
-- [ ] **P2 最小 CI**
-      一个 workflow 跑 `node --test tests/*.test.js`，不引入 ESLint 全家桶。
+- [x] **P2 最小 CI**
+      `package.json` 的 `npm test` + `.github/workflows/test.yml` 跑 `node --test tests/*.test.js`。
 
 ### 明确不做 / 后置
 

@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Moka 简历筛选插件 — 评估数据可视化</title>
+<style>
+  :root { --bg:#f6f8fb; --card:#ffffff; --ink:#1a1b2e; --sub:#5b6472; --line:#e5eaf1; --accent:#3b82f6; --good:#22a06b; --warn:#d97706; --bad:#dc2626; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--ink); padding:28px 20px 60px; }
+  .wrap { max-width:1080px; margin:0 auto; }
+  h1 { font-size:24px; font-weight:700; }
+  .sub { color:var(--sub); font-size:13px; margin-top:8px; line-height:1.7; }
+  .meta { color:var(--sub); font-size:12px; margin-top:6px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:22px 22px 14px; margin-top:22px; box-shadow:0 1px 3px rgba(20,30,60,.05); }
+  .card h2 { font-size:17px; font-weight:700; margin-bottom:4px; }
+  .card .note { color:var(--sub); font-size:12px; margin-bottom:10px; line-height:1.6; }
+  .chart { width:100%; height:360px; }
+  .chart.tall { height:420px; }
+  .legend-note { color:var(--sub); font-size:12px; margin-top:8px; line-height:1.7; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:22px; }
+  @media (max-width:760px){ .grid2{ grid-template-columns:1fr; } }
+  /* 架构图 */
+  .arch { padding:10px 4px 16px; }
+  .flow-row { display:flex; align-items:stretch; gap:0; margin-top:14px; flex-wrap:wrap; }
+  .stage { flex:1; min-width:150px; border:1px solid var(--line); border-radius:10px; background:#fbfcfe; padding:12px; position:relative; }
+  .stage .no { display:inline-block; background:var(--accent); color:#fff; font-size:11px; font-weight:700; border-radius:20px; padding:1px 9px; }
+  .stage h4 { font-size:14px; margin:8px 0 6px; }
+  .stage ul { list-style:none; font-size:12px; color:var(--sub); line-height:1.7; }
+  .stage ul li::before { content:"· "; color:var(--accent); }
+  .arrow { display:flex; align-items:center; justify-content:center; color:#9aa4b2; font-size:22px; padding:0 4px; min-width:26px; }
+  .arch-note { color:var(--sub); font-size:12px; margin-top:14px; line-height:1.7; }
+  .pill { display:inline-block; font-size:11px; border-radius:20px; padding:1px 10px; margin-left:6px; }
+  .pill.good { background:#e6f7ee; color:var(--good); }
+  .pill.warn { background:#fdf1e3; color:var(--warn); }
+  .pill.bad { background:#fdeaea; color:var(--bad); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Moka 智能简历筛选助手 · 评估数据可视化</h1>
+  <div class="sub">面向项目 v1.6.3（本地工作副本），2026-09-02 实测：233 个单元测试全通过、全部 JS 语法校验通过、扩展已在真实 Chrome 中成功加载并渲染弹出页。</div>
+  <div class="meta">数据口径：代码行数/测试覆盖来自项目源码与 <code>node --test --experimental-test-coverage</code> 实测；质量评分来自评估者基于代码审阅的打分（0–100，带主观性）。</div>
+
+  <div class="card">
+    <h2>① 代码规模分布（主要文件行数）</h2>
+    <div class="note">17,768 行总代码。三块"单体大文件"（popup.js / content.js / background.js）占了约 62%，是可拆分重构的主要对象。</div>
+    <div class="chart" id="chart-size"></div>
+  </div>
+
+  <div class="card">
+    <h2>② 单元测试行覆盖率（lib 模块 + 总体）</h2>
+    <div class="note">233 个测试全部通过；纯逻辑模块覆盖率 92–100%，但浏览器环境代码（content.js 28.8%、moka-actions.js 49.7%）缺少自动化覆盖，依赖人工验证。</div>
+    <div class="chart" id="chart-cov"></div>
+  </div>
+
+  <div class="card">
+    <h2>③ 代码质量六维评估（评估者评分）</h2>
+    <div class="note">分数为评估者对六个维度的综合判断（0–100），红色边界为 60 分基线。工程化配套（构建/lint/CI/发布）是最大短板。</div>
+    <div class="chart" id="chart-radar"></div>
+    <div class="legend-note">维度释义：模块化=分层与复用；可测试性=自动化测试覆盖；健壮性=超时/重试/归一化/防御式编程；文档=README+规格+计划；可维护性=文件规模/耦合/魔法数；工程化=构建/lint/CI/版本发布。</div>
+  </div>
+
+  <div class="card">
+    <h2>④ 功能架构与数据流（示意）</h2>
+    <div class="note">插件在 Moka 列表页捕获真实接口 → 原样重放分页拉取 → 后台调用 LLM 评分 → 侧栏展示与反馈闭环。以下为确定性架构示意。</div>
+    <div class="arch">
+      <div class="flow-row">
+        <div class="stage"><span class="no">1</span><h4>捕获</h4><ul><li>inject.js（MAIN world）劫持 fetch/XHR</li><li>捕获列表接口与详情接口模板</li><li>postMessage 传给 content</li></ul></div>
+        <div class="arrow">→</div>
+        <div class="stage"><span class="no">2</span><h4>拉取与补全</h4><ul><li>content.js 原样重放+游标分页</li><li>详情接口补全实习/项目经历</li><li>HTML 简历原件转正文兜底</li></ul></div>
+        <div class="arrow">→</div>
+        <div class="stage"><span class="no">3</span><h4>本地硬门槛</h4><ul><li>学历/院校/性别/年龄/年限本地判定</li><li>语言/专业/其他必备由 AI 核对</li><li>JD 预填（本地正则+LLM）</li></ul></div>
+        <div class="arrow">→</div>
+        <div class="stage"><span class="no">4</span><h4>AI 评分</h4><ul><li>background 统一调 LLM（3 Provider）</li><li>指数退避重试+超时+结果缓存</li><li>四维加权+门槛封顶+加分看</li></ul></div>
+        <div class="arrow">→</div>
+        <div class="stage"><span class="no">5</span><h4>侧栏与闭环</h4><ul><li>结果卡片/过滤/排序/CSV</li><li>推荐·淘汰自动操作 Moka</li><li>反馈→本岗校准→规则建议</li></ul></div>
+      </div>
+      <div class="arch-note">说明：inject.js 运行在页面 MAIN world 以捕获页面自身请求；content 负责识别与展示；background 负责外部 API 调用以规避页面 CSP；popup 为 Chrome 侧栏 UI。本图仅表达模块职责与数据流向，非精确部署拓扑。</div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+<script>
+(function () {
+  function init(id) {
+    var el = document.getElementById(id);
+    if (!el || typeof echarts === 'undefined') return null;
+    var c = echarts.init(el);
+    return c;
+  }
+  var TK = { triggerOn: 'click', renderMode: 'richText', confine: true, textStyle: { fontSize: 11, lineHeight: 15 }, padding: [6, 8] };
+
+  // ① 代码规模
+  var c1 = init('chart-size');
+  if (c1) {
+    c1.setOption({
+      backgroundColor: 'transparent',
+      title: { text: '主要文件代码行数', left: 'center', textStyle: { color: '#1a1b2e', fontSize: 15, fontWeight: 600 } },
+      tooltip: Object.assign({ trigger: 'axis', axisPointer: { type: 'shadow' } }, TK),
+      grid: { left: 110, right: 40, top: 50, bottom: 30, containLabel: true },
+      xAxis: { type: 'value', axisLabel: { color: '#5b6472', fontSize: 11 }, splitLine: { lineStyle: { color: '#eef1f6' } } },
+      yAxis: { type: 'category', data: ['popup/popup.js', 'content.js', 'background.js', 'popup/popup.css', 'lib/match.js', 'lib/persist.js', 'lib/feedback.js', 'lib/score.js', 'lib/calibrate.js', 'lib/moka-actions.js', 'inject.js', 'lib/capture.js', 'lib/screening-job.js'], axisLabel: { color: '#3a4150', fontSize: 11 } },
+      series: [{ name: '行数', type: 'bar', barWidth: 16, data: [2862, 2623, 1085, 1633, 654, 566, 553, 499, 328, 306, 170, 148, 106], itemStyle: { color: '#3b82f6', borderRadius: [0, 4, 4, 0] }, label: { show: true, position: 'right', color: '#5b6472', fontSize: 10 } }]
+    });
+  }
+
+  // ② 测试覆盖
+  var c2 = init('chart-cov');
+  if (c2) {
+    c2.setOption({
+      backgroundColor: 'transparent',
+      title: { text: '单元测试行覆盖率（%）', left: 'center', textStyle: { color: '#1a1b2e', fontSize: 15, fontWeight: 600 } },
+      tooltip: Object.assign({ trigger: 'axis', axisPointer: { type: 'shadow' }, valueFormatter: function (v) { return v + '%'; } }, TK),
+      grid: { left: 110, right: 46, top: 50, bottom: 30, containLabel: true },
+      xAxis: { type: 'value', max: 100, axisLabel: { color: '#5b6472', fontSize: 11, formatter: '{value}%' }, splitLine: { lineStyle: { color: '#eef1f6' } } },
+      yAxis: { type: 'category', data: ['lib/screening-job.js', 'lib/feedback.js', 'lib/capture.js', 'lib/match.js', 'lib/persist.js', 'lib/calibrate.js', 'lib/score.js', 'lib/moka-actions.js', 'content.js', '总体'], axisLabel: { color: '#3a4150', fontSize: 11 } },
+      series: [{
+        name: '覆盖率', type: 'bar', barWidth: 16,
+        data: [100, 99.64, 97.97, 96.48, 94.88, 94.82, 92.38, 49.67, 28.75, 75.13].map(function (v) {
+          var color = v >= 85 ? '#22a06b' : (v >= 60 ? '#d97706' : '#dc2626');
+          return { value: v, itemStyle: { color: color, borderRadius: [0, 4, 4, 0] } };
+        }),
+        label: { show: true, position: 'right', color: '#5b6472', fontSize: 10, formatter: '{c}%' }
+      }]
+    });
+  }
+
+  // ③ 质量雷达
+  var c3 = init('chart-radar');
+  if (c3) {
+    c3.setOption({
+      backgroundColor: 'transparent',
+      title: { text: '代码质量六维评分', left: 'center', textStyle: { color: '#1a1b2e', fontSize: 15, fontWeight: 600 } },
+      tooltip: Object.assign({ trigger: 'item' }, TK),
+      legend: { bottom: 0, itemWidth: 14, itemHeight: 8, textStyle: { color: '#5b6472', fontSize: 11 } },
+      radar: {
+        indicator: [
+          { name: '模块化', max: 100 }, { name: '可测试性', max: 100 }, { name: '健壮性', max: 100 },
+          { name: '文档', max: 100 }, { name: '可维护性', max: 100 }, { name: '工程化', max: 100 }
+        ],
+        radius: '62%', center: ['50%', '50%'],
+        splitArea: { areaStyle: { color: ['rgba(59,130,246,0.03)', 'rgba(59,130,246,0.06)'] } },
+        axisName: { color: '#3a4150', fontSize: 12 },
+        splitLine: { lineStyle: { color: '#e5eaf1' } }
+      },
+      series: [{
+        name: '质量评分', type: 'radar',
+        data: [{ value: [90, 85, 90, 88, 80, 60], name: '本插件评分', areaStyle: { color: 'rgba(59,130,246,0.22)' }, lineStyle: { color: '#3b82f6', width: 2 }, itemStyle: { color: '#3b82f6' } }]
+      }]
+    });
+  }
+})();
+</script>
+</body>
+</html>
