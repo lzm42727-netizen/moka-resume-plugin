@@ -159,18 +159,32 @@ describe('buildFeedbackContext', () => {
   });
 
   it('summarizes recommend and eliminate examples with decision and match scores', () => {
-    let record = putFeedback({}, 'job-1', 'a1', 'recommend', {
-      score: 68,
-      matchScore: 68,
-      level: '可推进',
-      highlights: ['有 Meta 投放经验']
-    }, 1);
-    record = putFeedback(record, 'job-1', 'a2', 'eliminate', {
-      score: 45,
-      matchScore: 45,
-      level: '不建议推进',
-      concerns: ['无对口实习']
-    }, 2);
+    let record = putFeedback(
+      {},
+      'job-1',
+      'a1',
+      'recommend',
+      {
+        score: 68,
+        matchScore: 68,
+        level: '可推进',
+        highlights: ['有 Meta 投放经验']
+      },
+      1
+    );
+    record = putFeedback(
+      record,
+      'job-1',
+      'a2',
+      'eliminate',
+      {
+        score: 45,
+        matchScore: 45,
+        level: '不建议推进',
+        concerns: ['无对口实习']
+      },
+      2
+    );
     const ctx = buildFeedbackContext(record, 'job-1');
     assert.match(ctx, /推荐给用人部门/);
     assert.match(ctx, /决策分 68/);
@@ -182,46 +196,81 @@ describe('buildFeedbackContext', () => {
   });
 
   it('prefers mismatch samples over newer agreeing ones', () => {
-    let record = putFeedback({}, 'job-1', 'agree-new', 'recommend', {
-      score: 80,
-      matchScore: 80,
-      pluginRecommend: true,
-      highlights: ['新的一致推荐']
-    }, 90);
-    record = putFeedback(record, 'job-1', 'agree-2', 'recommend', {
-      score: 79,
-      matchScore: 79,
-      pluginRecommend: true,
-      highlights: ['也是一致']
-    }, 80);
-    record = putFeedback(record, 'job-1', 'agree-3', 'recommend', {
-      score: 78,
-      matchScore: 78,
-      pluginRecommend: true,
-      highlights: ['还是一致']
-    }, 70);
-    record = putFeedback(record, 'job-1', 'under-old', 'recommend', {
-      score: 42,
-      matchScore: 42,
-      pluginRecommend: false,
-      highlights: ['当时插件未推的人']
-    }, 10);
+    let record = putFeedback(
+      {},
+      'job-1',
+      'agree-new',
+      'recommend',
+      {
+        score: 80,
+        matchScore: 80,
+        pluginRecommend: true,
+        highlights: ['新的一致推荐']
+      },
+      90
+    );
+    record = putFeedback(
+      record,
+      'job-1',
+      'agree-2',
+      'recommend',
+      {
+        score: 79,
+        matchScore: 79,
+        pluginRecommend: true,
+        highlights: ['也是一致']
+      },
+      80
+    );
+    record = putFeedback(
+      record,
+      'job-1',
+      'agree-3',
+      'recommend',
+      {
+        score: 78,
+        matchScore: 78,
+        pluginRecommend: true,
+        highlights: ['还是一致']
+      },
+      70
+    );
+    record = putFeedback(
+      record,
+      'job-1',
+      'under-old',
+      'recommend',
+      {
+        score: 42,
+        matchScore: 42,
+        pluginRecommend: false,
+        highlights: ['当时插件未推的人']
+      },
+      10
+    );
     const ctx = buildFeedbackContext(record, 'job-1');
     assert.match(ctx, /当时插件未推的人/);
     assert.match(ctx, /当时插件未推/);
   });
 
   it('mentions bonus keywords when they were configured', () => {
-    const record = putFeedback({}, 'job-1', 'a1', 'eliminate', {
-      score: 81,
-      matchScore: 78,
-      level: '优先推进',
-      bonusMetCount: 1,
-      bonusTotalCount: 2,
-      bonusPromoted: true,
-      pluginRecommend: true,
-      concerns: ['稳定性一般']
-    }, 1);
+    const record = putFeedback(
+      {},
+      'job-1',
+      'a1',
+      'eliminate',
+      {
+        score: 81,
+        matchScore: 78,
+        level: '优先推进',
+        bonusMetCount: 1,
+        bonusTotalCount: 2,
+        bonusPromoted: true,
+        pluginRecommend: true,
+        concerns: ['稳定性一般']
+      },
+      1
+    );
     const ctx = buildFeedbackContext(record, 'job-1');
     assert.match(ctx, /加分看 1\/2/);
     assert.match(ctx, /加分晋级/);
@@ -230,21 +279,35 @@ describe('buildFeedbackContext', () => {
   it('prefixes full-job aggregate stats while still listing at most 3 examples per side', () => {
     let record = {};
     for (let i = 0; i < 5; i++) {
-      record = putFeedback(record, 'job-1', 'e' + i, 'eliminate', {
-        score: 72,
-        matchScore: 72,
-        pluginRecommend: true,
-        hardMissing: ['缺「日语 N1」'],
-        concerns: ['无达人合作']
-      }, 100 + i);
+      record = putFeedback(
+        record,
+        'job-1',
+        'e' + i,
+        'eliminate',
+        {
+          score: 72,
+          matchScore: 72,
+          pluginRecommend: true,
+          hardMissing: ['缺「日语 N1」'],
+          concerns: ['无达人合作']
+        },
+        100 + i
+      );
     }
     for (let i = 0; i < 4; i++) {
-      record = putFeedback(record, 'job-1', 'r' + i, 'recommend', {
-        score: 80,
-        matchScore: 80,
-        pluginRecommend: true,
-        highlights: ['业务对口' + i]
-      }, 200 + i);
+      record = putFeedback(
+        record,
+        'job-1',
+        'r' + i,
+        'recommend',
+        {
+          score: 80,
+          matchScore: 80,
+          pluginRecommend: true,
+          highlights: ['业务对口' + i]
+        },
+        200 + i
+      );
     }
     const ctx = buildFeedbackContext(record, 'job-1');
     assert.match(ctx, /本岗已决策 9（推荐 4 · 淘汰 5）/);
@@ -305,17 +368,24 @@ describe('feedbackPromptBlock', () => {
 describe('feedback sync state', () => {
   it('tracks pending and failed Moka sync separately from synced decisions', () => {
     let record = {};
-    record = putFeedback(record, 'job1', 'a1', 'recommend', { score: 70 }, 100, { mokaSynced: false });
+    record = putFeedback(record, 'job1', 'a1', 'recommend', { score: 70 }, 100, {
+      mokaSynced: false
+    });
     let entry = getFeedbackEntry(record, 'job1', 'a1');
     assert.equal(feedbackSyncState(entry), 'pending');
     assert.equal(isSyncedFeedback(entry), false);
 
-    record = putFeedback(record, 'job1', 'a1', 'recommend', { score: 70 }, 200, { mokaSynced: true });
+    record = putFeedback(record, 'job1', 'a1', 'recommend', { score: 70 }, 200, {
+      mokaSynced: true
+    });
     entry = getFeedbackEntry(record, 'job1', 'a1');
     assert.equal(feedbackSyncState(entry), 'synced');
     assert.equal(isSyncedFeedback(entry), true);
 
-    record = putFeedback(record, 'job1', 'a2', 'eliminate', { score: 40 }, 300, { mokaSynced: false, syncFailed: true });
+    record = putFeedback(record, 'job1', 'a2', 'eliminate', { score: 40 }, 300, {
+      mokaSynced: false,
+      syncFailed: true
+    });
     entry = getFeedbackEntry(record, 'job1', 'a2');
     assert.equal(feedbackSyncState(entry), 'failed');
   });
@@ -323,19 +393,26 @@ describe('feedback sync state', () => {
 
 describe('bonus scoring feedback snapshot', () => {
   it('keeps bonus explanation fields when a decided candidate is restored from history', () => {
-    const record = putFeedback({}, 'job1', 'a1', 'recommend', {
-      score: 81,
-      baseScore: 78,
-      level: '优先推进',
-      bonusApplied: 3,
-      bonusMetCount: 1,
-      bonusTotalCount: 2,
-      bonusPromoted: true,
-      bonusKeywordResults: [
-        { item: '作品集', met: true, reason: '附有作品集' },
-        { item: '海外经历', met: false, reason: '未提及' }
-      ]
-    }, 100);
+    const record = putFeedback(
+      {},
+      'job1',
+      'a1',
+      'recommend',
+      {
+        score: 81,
+        baseScore: 78,
+        level: '优先推进',
+        bonusApplied: 3,
+        bonusMetCount: 1,
+        bonusTotalCount: 2,
+        bonusPromoted: true,
+        bonusKeywordResults: [
+          { item: '作品集', met: true, reason: '附有作品集' },
+          { item: '海外经历', met: false, reason: '未提及' }
+        ]
+      },
+      100
+    );
     const view = feedbackEntryToResultView('a1', getFeedbackEntry(record, 'job1', 'a1'));
     assert.equal(view.score.matchScore, 78);
     assert.equal(view.score.bonusApplied, 3);
@@ -363,35 +440,54 @@ describe('mokaActionIntent', () => {
   });
 
   it('同步失败后再点同一个按钮是重试，而不是把本地记录清掉', () => {
-    const record = putFeedback({}, 'job1', 'a1', 'recommend', { score: 70 }, 100, { mokaSynced: false, syncFailed: true });
+    const record = putFeedback({}, 'job1', 'a1', 'recommend', { score: 70 }, 100, {
+      mokaSynced: false,
+      syncFailed: true
+    });
     assert.equal(mokaActionIntent(getFeedbackEntry(record, 'job1', 'a1'), 'recommend'), 'retry');
   });
 
   it('仍在同步中（未收到结果）时再点也是重试', () => {
-    const record = putFeedback({}, 'job1', 'a1', 'recommend', { score: 70 }, 100, { mokaSynced: false });
+    const record = putFeedback({}, 'job1', 'a1', 'recommend', { score: 70 }, 100, {
+      mokaSynced: false
+    });
     assert.equal(mokaActionIntent(getFeedbackEntry(record, 'job1', 'a1'), 'recommend'), 'retry');
   });
 });
 
 describe('buildFeedbackContext mismatch hints', () => {
   it('notes when recommend feedback disagreed with plugin recommend flag', () => {
-    let record = putFeedback({}, 'job-1', 'a1', 'recommend', {
-      score: 42,
-      level: '一般',
-      pluginRecommend: false,
-      highlights: ['有潜力']
-    }, 1);
+    let record = putFeedback(
+      {},
+      'job-1',
+      'a1',
+      'recommend',
+      {
+        score: 42,
+        level: '一般',
+        pluginRecommend: false,
+        highlights: ['有潜力']
+      },
+      1
+    );
     const ctx = buildFeedbackContext(record, 'job-1');
     assert.match(ctx, /当时插件未推/);
   });
 
   it('notes when eliminate feedback disagreed with plugin recommend flag', () => {
-    let record = putFeedback({}, 'job-1', 'a2', 'eliminate', {
-      score: 72,
-      level: '可推进',
-      pluginRecommend: true,
-      concerns: ['行业不对口']
-    }, 1);
+    let record = putFeedback(
+      {},
+      'job-1',
+      'a2',
+      'eliminate',
+      {
+        score: 72,
+        level: '可推进',
+        pluginRecommend: true,
+        concerns: ['行业不对口']
+      },
+      1
+    );
     const ctx = buildFeedbackContext(record, 'job-1');
     assert.match(ctx, /当时插件曾推/);
   });
@@ -427,25 +523,46 @@ describe('sanitizeSnapshot', () => {
 
 describe('listDecidedResultViews', () => {
   it('merges live views with history-only feedback entries', () => {
-    let record = putFeedback({}, 'job-1', 'live-1', 'recommend', {
-      name: '在场', score: 80, level: '值得推荐'
-    }, 100);
-    record = putFeedback(record, 'job-1', 'old-2', 'eliminate', {
-      name: '历史同学', score: 40, level: '不太匹配', meta: '硕士 · 复旦'
-    }, 200);
+    let record = putFeedback(
+      {},
+      'job-1',
+      'live-1',
+      'recommend',
+      {
+        name: '在场',
+        score: 80,
+        level: '值得推荐'
+      },
+      100
+    );
+    record = putFeedback(
+      record,
+      'job-1',
+      'old-2',
+      'eliminate',
+      {
+        name: '历史同学',
+        score: 40,
+        level: '不太匹配',
+        meta: '硕士 · 复旦'
+      },
+      200
+    );
 
-    const live = [{
-      id: 'live-1',
-      name: '在场更新名',
-      meta: '本科',
-      hardPassed: true,
-      structuredHardPassed: true,
-      hardMissing: [],
-      keywords: { hit: [], miss: [] },
-      score: { score: 82, level: '值得推荐' },
-      feedback: 'recommend',
-      feedbackSync: 'synced'
-    }];
+    const live = [
+      {
+        id: 'live-1',
+        name: '在场更新名',
+        meta: '本科',
+        hardPassed: true,
+        structuredHardPassed: true,
+        hardMissing: [],
+        keywords: { hit: [], miss: [] },
+        score: { score: 82, level: '值得推荐' },
+        feedback: 'recommend',
+        feedbackSync: 'synced'
+      }
+    ];
 
     const views = listDecidedResultViews(live, record, 'job-1');
     assert.equal(views.length, 2);
@@ -459,21 +576,24 @@ describe('listDecidedResultViews', () => {
   });
 
   it('builds csv items from decided views', () => {
-    const view = feedbackEntryToResultView('9', sanitizeFeedbackEntry({
-      verdict: 'recommend',
-      savedAt: 1,
-      updatedAt: 1,
-      snapshot: {
-        name: '李四',
-        highestDegree: '硕士',
-        highestDegreeSchool: '交大',
-        score: 70,
-        level: '值得推荐',
-        dims: { skill: 75 },
-        highlights: ['稳'],
-        concerns: ['跳槽']
-      }
-    }));
+    const view = feedbackEntryToResultView(
+      '9',
+      sanitizeFeedbackEntry({
+        verdict: 'recommend',
+        savedAt: 1,
+        updatedAt: 1,
+        snapshot: {
+          name: '李四',
+          highestDegree: '硕士',
+          highestDegreeSchool: '交大',
+          score: 70,
+          level: '值得推荐',
+          dims: { skill: 75 },
+          highlights: ['稳'],
+          concerns: ['跳槽']
+        }
+      })
+    );
     const item = resultViewToCsvItem(view);
     assert.equal(item.app.name, '李四');
     assert.equal(item.app.highestDegree, '硕士');

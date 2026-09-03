@@ -2,7 +2,23 @@
   "name": "moka-resume-plugin",
   "private": true,
   "description": "Moka 智能简历筛选助手",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "syntax:check": "node scripts/syntax-check.js",
+    "check:version": "node scripts/check-version.js",
+    "lint": "eslint lib tests scripts --max-warnings=0",
+    "format:check": "prettier --check scripts tests lib/contracts.js content",
+    "format": "prettier --write scripts tests lib/contracts.js content",
+    "pack": "node scripts/pack.js",
+    "check": "npm run syntax:check && npm run check:version && npm run lint && npm test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.35.0",
+    "eslint": "^9.35.0",
+    "globals": "^16.3.0",
+    "prettier": "^3.6.2"
   }
 }

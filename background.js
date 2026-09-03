@@ -19,6 +19,7 @@ chrome.runtime.onStartup.addListener(enableSidePanelOnActionClick);
 
 // 本地私有配置（config.local.js，已 gitignore）：如存在则强制覆盖对应设置
 try { importScripts('config.local.js'); } catch (e) { /* 无本地配置时忽略 */ }
+importScripts('lib/contracts.js');
 importScripts('lib/score.js');
 importScripts('lib/persist.js');
 importScripts('lib/feedback.js');
@@ -332,7 +333,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       return false;
 
     default:
-      sendResponse({ received: true });
+      sendResponse(MokaContracts.unknownActionResponse(request && request.action));
       return false;
   }
 });

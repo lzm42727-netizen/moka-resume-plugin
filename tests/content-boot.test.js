@@ -22,7 +22,9 @@ function installStubs() {
     hash: ''
   };
   globalThis.window = {
-    addEventListener: (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); },
+    addEventListener: (type, fn) => {
+      (listeners[type] = listeners[type] || []).push(fn);
+    },
     postMessage: () => {},
     location: globalThis.location
   };
@@ -34,16 +36,25 @@ function installStubs() {
     addEventListener: () => {}
   };
   const emptyStore = {
-    get: (_keys, cb) => { if (typeof cb === 'function') cb({}); },
-    set: (_obj, cb) => { if (typeof cb === 'function') cb(); },
-    remove: (_keys, cb) => { if (typeof cb === 'function') cb(); }
+    get: (_keys, cb) => {
+      if (typeof cb === 'function') cb({});
+    },
+    set: (_obj, cb) => {
+      if (typeof cb === 'function') cb();
+    },
+    remove: (_keys, cb) => {
+      if (typeof cb === 'function') cb();
+    }
   };
   globalThis.chrome = {
     runtime: {
       lastError: null,
       onMessage: { addListener: (fn) => messageListeners.push(fn) },
       sendMessage: (_msg, cb) => {
-        if (typeof cb === 'function') { cb(undefined); return undefined; }
+        if (typeof cb === 'function') {
+          cb(undefined);
+          return undefined;
+        }
         return Promise.resolve(undefined);
       }
     },
@@ -52,7 +63,10 @@ function installStubs() {
   globalThis.sessionStorage = { length: 0, key: () => null, getItem: () => null };
   globalThis.localStorage = globalThis.sessionStorage;
   // 不真的排期，避免测试进程被 content.js 的轮询定时器挂住
-  globalThis.setInterval = (fn) => { intervals.push(fn); return intervals.length; };
+  globalThis.setInterval = (fn) => {
+    intervals.push(fn);
+    return intervals.length;
+  };
   globalThis.clearInterval = () => {};
   // 本测试只关心「顶层能否跑完」，不发真实请求
   globalThis.fetch = () => Promise.reject(new Error('stubbed fetch'));
@@ -68,6 +82,8 @@ describe('content.js 顶层加载', () => {
     require('../lib/screening-job.js');
     require('../lib/moka-actions.js');
     require('../lib/match.js');
+    require('../lib/candidate-profile.js');
+    require('../lib/contracts.js');
     contentApi = require('../content.js');
   });
 
@@ -83,14 +99,18 @@ describe('content.js 顶层加载', () => {
     // publishResults 依赖文件末尾的 publishTimer；顶层若中断，这里会抛 TDZ
     const listener = messageListeners[0];
     let replied = null;
-    listener({ action: 'ping' }, {}, (resp) => { replied = resp; });
+    listener({ action: 'ping' }, {}, (resp) => {
+      replied = resp;
+    });
     assert.deepEqual(replied, { ok: true });
 
     let started = null;
     listener(
       { action: 'startScreening', jobId: 'job-1', jobType: 'intern', weights: {}, force: true },
       {},
-      (resp) => { started = resp; }
+      (resp) => {
+        started = resp;
+      }
     );
     assert.ok(started, 'startScreening 必须同步回包，否则侧栏只会看到「无法连接页面」');
     assert.equal(started.ok, true);
@@ -128,10 +148,6 @@ describe('content.js 顶层加载', () => {
       },
       'full-time'
     );
-    assert.deepEqual(result.missing, [
-      '学历需本科及以上',
-      '性别需女',
-      '年龄需 20-25'
-    ]);
+    assert.deepEqual(result.missing, ['学历需本科及以上', '性别需女', '年龄需 20-25']);
   });
 });

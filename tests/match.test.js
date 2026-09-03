@@ -71,9 +71,17 @@ describe('itemMatchesFilter', () => {
     assert.equal(itemMatchesFilter(item, { tab: 'recommend' }), true);
     assert.equal(itemMatchesFilter(item, { tab: 'hardfail' }), true);
     assert.equal(itemMatchesFilter(item, { tab: 'error' }), false);
-    const ok = { app: { name: '王五' }, score: { score: 70, level: '可推进' }, hard: { passed: true } };
+    const ok = {
+      app: { name: '王五' },
+      score: { score: 70, level: '可推进' },
+      hard: { passed: true }
+    };
     assert.equal(itemMatchesFilter(ok, { tab: 'recommend' }), true);
-    const bad = { app: { name: '李四' }, score: { score: 0, level: '错误' }, hard: { passed: true } };
+    const bad = {
+      app: { name: '李四' },
+      score: { score: 0, level: '错误' },
+      hard: { passed: true }
+    };
     assert.equal(itemMatchesFilter(bad, { tab: 'error' }), true);
     assert.equal(itemMatchesFilter(bad, { tab: 'recommend' }), false);
   });
@@ -204,49 +212,61 @@ describe('toResultView', () => {
 
 describe('bonusScoreDisplay', () => {
   it('shows met count but not points when a gate blocks the candidate', () => {
-    assert.equal(bonusScoreDisplay({
-      level: '不建议推进',
-      score: 42,
-      matchScore: 90,
-      advanceReason: 'gate',
-      bonusMetCount: 2,
-      bonusTotalCount: 2,
-      bonusApplied: 0
-    }), '经历匹配 90 · 加分看 2/2（未计入）');
+    assert.equal(
+      bonusScoreDisplay({
+        level: '不建议推进',
+        score: 42,
+        matchScore: 90,
+        advanceReason: 'gate',
+        bonusMetCount: 2,
+        bonusTotalCount: 2,
+        bonusApplied: 0
+      }),
+      '经历匹配 90 · 加分看 2/2（未计入）'
+    );
   });
 
   it('shows met count but does not rescue match score below 50', () => {
-    assert.equal(bonusScoreDisplay({
-      level: '不建议推进',
-      score: 45,
-      matchScore: 45,
-      advanceReason: 'match',
-      bonusMetCount: 3,
-      bonusTotalCount: 3,
-      bonusApplied: 0
-    }), '加分看 3/3（未计入，匹配不足 50）');
+    assert.equal(
+      bonusScoreDisplay({
+        level: '不建议推进',
+        score: 45,
+        matchScore: 45,
+        advanceReason: 'match',
+        bonusMetCount: 3,
+        bonusTotalCount: 3,
+        bonusApplied: 0
+      }),
+      '加分看 3/3（未计入，匹配不足 50）'
+    );
   });
 
   it('explains points applied to an eligible candidate', () => {
-    assert.equal(bonusScoreDisplay({
-      level: '优先推进',
-      score: 81,
-      matchScore: 78,
-      bonusMetCount: 1,
-      bonusTotalCount: 3,
-      bonusApplied: 3
-    }), '经历匹配 78 · 加分 +3');
+    assert.equal(
+      bonusScoreDisplay({
+        level: '优先推进',
+        score: 81,
+        matchScore: 78,
+        bonusMetCount: 1,
+        bonusTotalCount: 3,
+        bonusApplied: 3
+      }),
+      '经历匹配 78 · 加分 +3'
+    );
   });
 
   it('shows zero met items when bonus keywords were configured', () => {
-    assert.equal(bonusScoreDisplay({
-      level: '可推进',
-      score: 78,
-      matchScore: 78,
-      bonusMetCount: 0,
-      bonusTotalCount: 3,
-      bonusApplied: 0
-    }), '加分看 0/3');
+    assert.equal(
+      bonusScoreDisplay({
+        level: '可推进',
+        score: 78,
+        matchScore: 78,
+        bonusMetCount: 0,
+        bonusTotalCount: 3,
+        bonusApplied: 0
+      }),
+      '加分看 0/3'
+    );
   });
 
   it('hides bonus details for errors or no configured bonus keywords', () => {
@@ -282,7 +302,10 @@ describe('sortResultViews', () => {
       { id: 'high', hardPassed: true, score: { score: 80 } },
       { id: 'pending', hardPassed: true, score: null }
     ];
-    assert.deepEqual(sortResultViews(views).map((v) => v.id), ['fail', 'high', 'low', 'pending']);
+    assert.deepEqual(
+      sortResultViews(views).map((v) => v.id),
+      ['fail', 'high', 'low', 'pending']
+    );
   });
 });
 
@@ -337,7 +360,11 @@ describe('viewMatchesFilter', () => {
   });
 
   it('filters by feedback tab', () => {
-    const tagged = { name: '李四', feedback: 'recommend', score: { score: 40, level: '不建议推进' } };
+    const tagged = {
+      name: '李四',
+      feedback: 'recommend',
+      score: { score: 40, level: '不建议推进' }
+    };
     const legacy = { name: '张三', feedback: 'positive', score: { score: 50, level: '可推进' } };
     const untagged = { name: '王五', feedback: null, score: { score: 80, level: '优先推进' } };
     assert.equal(viewMatchesFilter(tagged, { tab: 'feedback' }), true);
@@ -376,10 +403,10 @@ describe('customHardLabel', () => {
 
 describe('mergeHardWithMustHaves', () => {
   it('keeps local misses and appends unmet custom items', () => {
-    const merged = mergeHardWithMustHaves(
-      { passed: false, missing: ['学历需本科及以上'] },
-      [{ item: 'Java', note: '未见' }, { item: 'SEO' }]
-    );
+    const merged = mergeHardWithMustHaves({ passed: false, missing: ['学历需本科及以上'] }, [
+      { item: 'Java', note: '未见' },
+      { item: 'SEO' }
+    ]);
     assert.equal(merged.passed, false);
     assert.deepEqual(merged.missing, ['学历需本科及以上', '缺「Java」', '缺「SEO」']);
   });
@@ -391,10 +418,9 @@ describe('mergeHardWithMustHaves', () => {
   });
 
   it('fails only due to custom items when local hard passed', () => {
-    const merged = mergeHardWithMustHaves(
-      { passed: true, missing: [] },
-      [{ item: '内容运营经验' }]
-    );
+    const merged = mergeHardWithMustHaves({ passed: true, missing: [] }, [
+      { item: '内容运营经验' }
+    ]);
     assert.equal(merged.passed, false);
     assert.deepEqual(merged.missing, ['缺「内容运营经验」']);
   });
@@ -420,10 +446,11 @@ describe('dedupeMustHavesAgainstHard', () => {
   });
 
   it('rewrites long year chips into domain-only when structured exp is set', () => {
-    const kept = dedupeMustHavesAgainstHard(
-      ['3年以上广告设计或海外素材设计经验', 'Midjourney'],
-      { exp: '3-5', degree: '', schools: [] }
-    );
+    const kept = dedupeMustHavesAgainstHard(['3年以上广告设计或海外素材设计经验', 'Midjourney'], {
+      exp: '3-5',
+      degree: '',
+      schools: []
+    });
     assert.deepEqual(kept, ['广告设计或海外素材设计经验', 'Midjourney']);
   });
 });
@@ -461,7 +488,10 @@ describe('buildEvidenceColumns', () => {
       unmet: [{ item: 'Java' }],
       waivedUnmet: []
     });
-    assert.deepEqual(cols.right.map((r) => r.kind), ['unmet', 'concern']);
+    assert.deepEqual(
+      cols.right.map((r) => r.kind),
+      ['unmet', 'concern']
+    );
     assert.equal(cols.right[1].text, '行业经验短');
     assert.equal(cols.right[1].action, null);
   });
@@ -681,10 +711,10 @@ describe('graduationRiskHint', () => {
   const NOW = new Date(2026, 8, 3);
 
   it('flags intern graduation within six months', () => {
-    const hint = graduationRiskHint(
-      [{ school: 'Edinburgh', endDate: '2026.12' }],
-      { jobType: 'intern', now: NOW }
-    );
+    const hint = graduationRiskHint([{ school: 'Edinburgh', endDate: '2026.12' }], {
+      jobType: 'intern',
+      now: NOW
+    });
     assert.deepEqual(hint, {
       endLabel: '2026.12',
       text: '毕业 2026.12，距今不足半年'
@@ -692,38 +722,38 @@ describe('graduationRiskHint', () => {
   });
 
   it('does not flag exactly six months out', () => {
-    assert.equal(graduationRiskHint(
-      [{ endDate: '2027-03-03' }],
-      { jobType: 'intern', now: NOW }
-    ), null);
+    assert.equal(
+      graduationRiskHint([{ endDate: '2027-03-03' }], { jobType: 'intern', now: NOW }),
+      null
+    );
   });
 
   it('does not flag already graduated', () => {
-    assert.equal(graduationRiskHint(
-      [{ endDate: '2026-08-01' }],
-      { jobType: 'intern', now: NOW }
-    ), null);
+    assert.equal(
+      graduationRiskHint([{ endDate: '2026-08-01' }], { jobType: 'intern', now: NOW }),
+      null
+    );
   });
 
   it('does not flag full-time jobs', () => {
-    assert.equal(graduationRiskHint(
-      [{ endDate: '2026.12' }],
-      { jobType: 'full-time', now: NOW }
-    ), null);
+    assert.equal(
+      graduationRiskHint([{ endDate: '2026.12' }], { jobType: 'full-time', now: NOW }),
+      null
+    );
   });
 
   it('skips missing or ongoing end dates', () => {
-    assert.equal(graduationRiskHint(
-      [{ endDate: '' }, { end: '至今' }],
-      { jobType: 'intern', now: NOW }
-    ), null);
+    assert.equal(
+      graduationRiskHint([{ endDate: '' }, { end: '至今' }], { jobType: 'intern', now: NOW }),
+      null
+    );
   });
 
   it('uses the latest education end date', () => {
-    const hint = graduationRiskHint(
-      [{ endDate: '2025.7' }, { endDate: '2026-12' }],
-      { jobType: 'intern', now: NOW }
-    );
+    const hint = graduationRiskHint([{ endDate: '2025.7' }, { endDate: '2026-12' }], {
+      jobType: 'intern',
+      now: NOW
+    });
     assert.equal(hint.endLabel, '2026.12');
   });
 

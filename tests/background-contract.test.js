@@ -12,7 +12,10 @@ describe('score cache and prompt no longer hash recruiter weights', () => {
   });
 
   it('does not pass weights into the match scoring prompt', () => {
-    assert.match(bg, /buildDimensionPrompt\(\s*\n?\s*profile, jobSpec, config\.jobType, config\.jobJD, hardText, feedbackContext\s*\)/);
+    assert.match(
+      bg,
+      /buildDimensionPrompt\(\s*\n?\s*profile, jobSpec, config\.jobType, config\.jobJD, hardText, feedbackContext\s*\)/
+    );
     assert.doesNotMatch(bg, /buildDimensionPrompt\([\s\S]{0,120}config\.weights/);
   });
 });

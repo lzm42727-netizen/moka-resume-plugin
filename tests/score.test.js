@@ -52,7 +52,10 @@ describe('isRetryableScoreFailure', () => {
     assert.equal(isRetryableScoreFailure(scoreErrorResult('模型返回解析失败')), true);
     assert.equal(isRetryableScoreFailure(scoreErrorResult('未配置 API Key')), false);
     assert.equal(isRetryableScoreFailure(okRaw()), false);
-    assert.equal(isRetryableScoreFailure({ dimensions: null, error: '429 Too Many Requests' }), true);
+    assert.equal(
+      isRetryableScoreFailure({ dimensions: null, error: '429 Too Many Requests' }),
+      true
+    );
   });
 
   it('allows up to 2 automatic retries', () => {
@@ -101,18 +104,23 @@ describe('composeFinalScore', () => {
   });
 
   it('labels 可推进 and 优先推进 from composite score', () => {
-    const mk = (match) => composeFinalScore({
-      matchScore: match,
-      dimensions: {
-        experience: { score: match },
-        skill: { score: match },
-        education: { score: match },
-        potential: { score: match }
-      },
-      highlights: [],
-      concerns: [],
-      handwrittenGateResults: []
-    }, [], []);
+    const mk = (match) =>
+      composeFinalScore(
+        {
+          matchScore: match,
+          dimensions: {
+            experience: { score: match },
+            skill: { score: match },
+            education: { score: match },
+            potential: { score: match }
+          },
+          highlights: [],
+          concerns: [],
+          handwrittenGateResults: []
+        },
+        [],
+        []
+      );
     assert.equal(mk(65).level, '可推进');
     assert.equal(mk(80).level, '优先推进');
   });
@@ -178,19 +186,26 @@ describe('composeFinalScore', () => {
     });
     const result = composeFinalScore(raw, new Set());
     assert.equal(result.score, 42);
-    assert.deepEqual(result.unmet.map((r) => r.item), ['会使用 Photoshop']);
+    assert.deepEqual(
+      result.unmet.map((r) => r.item),
+      ['会使用 Photoshop']
+    );
     assert.equal(result.unmet[0].reason, '简历无相关证据');
   });
 
   it('does not apply bonus points when a hard gate fails', () => {
-    const result = composeFinalScore({
-      matchScore: 90,
-      handwrittenGateResults: [{ item: '日语 N1', met: false }],
-      bonusKeywordResults: [
-        { item: '作品集', met: true, reason: '附有作品集' },
-        { item: '海外经历', met: true, reason: '海外交换' }
-      ]
-    }, [], []);
+    const result = composeFinalScore(
+      {
+        matchScore: 90,
+        handwrittenGateResults: [{ item: '日语 N1', met: false }],
+        bonusKeywordResults: [
+          { item: '作品集', met: true, reason: '附有作品集' },
+          { item: '海外经历', met: true, reason: '海外交换' }
+        ]
+      },
+      [],
+      []
+    );
     assert.equal(result.score, 42);
     assert.equal(result.bonusPoints, 6);
     assert.equal(result.bonusApplied, 0);
@@ -199,13 +214,17 @@ describe('composeFinalScore', () => {
   });
 
   it('does not let bonus points rescue match score below 50', () => {
-    const result = composeFinalScore({
-      matchScore: 45,
-      bonusKeywordResults: Array.from({ length: 5 }, (_, i) => ({
-        item: `加分项${i + 1}`,
-        met: true
-      }))
-    }, [], []);
+    const result = composeFinalScore(
+      {
+        matchScore: 45,
+        bonusKeywordResults: Array.from({ length: 5 }, (_, i) => ({
+          item: `加分项${i + 1}`,
+          met: true
+        }))
+      },
+      [],
+      []
+    );
     assert.equal(result.score, 45);
     assert.equal(result.bonusPoints, 15);
     assert.equal(result.bonusApplied, 0);
@@ -213,23 +232,31 @@ describe('composeFinalScore', () => {
   });
 
   it('adds three points per met bonus item once match score reaches 50', () => {
-    const result = composeFinalScore({
-      matchScore: 50,
-      bonusKeywordResults: [
-        { item: '作品集', met: true },
-        { item: '海外经历', met: false }
-      ]
-    }, [], []);
+    const result = composeFinalScore(
+      {
+        matchScore: 50,
+        bonusKeywordResults: [
+          { item: '作品集', met: true },
+          { item: '海外经历', met: false }
+        ]
+      },
+      [],
+      []
+    );
     assert.equal(result.score, 53);
     assert.equal(result.bonusApplied, 3);
     assert.equal(result.level, '可推进');
   });
 
   it('allows bonus points to promote a candidate into 优先推进', () => {
-    const result = composeFinalScore({
-      matchScore: 78,
-      bonusKeywordResults: [{ item: '作品集', met: true }]
-    }, [], []);
+    const result = composeFinalScore(
+      {
+        matchScore: 78,
+        bonusKeywordResults: [{ item: '作品集', met: true }]
+      },
+      [],
+      []
+    );
     assert.equal(result.score, 81);
     assert.equal(result.level, '优先推进');
     assert.equal(result.bonusPromoted, true);
@@ -237,13 +264,17 @@ describe('composeFinalScore', () => {
   });
 
   it('caps the final score at 100 and bonus points at 15', () => {
-    const result = composeFinalScore({
-      matchScore: 96,
-      bonusKeywordResults: Array.from({ length: 7 }, (_, i) => ({
-        item: `加分项${i + 1}`,
-        met: true
-      }))
-    }, [], []);
+    const result = composeFinalScore(
+      {
+        matchScore: 96,
+        bonusKeywordResults: Array.from({ length: 7 }, (_, i) => ({
+          item: `加分项${i + 1}`,
+          met: true
+        }))
+      },
+      [],
+      []
+    );
     assert.equal(result.score, 100);
     assert.equal(result.bonusPoints, 15);
     assert.equal(result.bonusMetCount, 5);
@@ -368,11 +399,12 @@ describe('AI match scoring contract', () => {
   });
 
   it('fails any configured handwritten gate omitted by the model', () => {
-    const results = ensureHandwrittenGateResults({
-      handwrittenGateResults: [
-        { item: '日语 N1', met: true, reason: 'JLPT N1' }
-      ]
-    }, ['日语 N1', '会使用 Photoshop']);
+    const results = ensureHandwrittenGateResults(
+      {
+        handwrittenGateResults: [{ item: '日语 N1', met: true, reason: 'JLPT N1' }]
+      },
+      ['日语 N1', '会使用 Photoshop']
+    );
     assert.deepEqual(results.handwrittenGateResults, [
       { item: '日语 N1', met: true, reason: 'JLPT N1' },
       { item: '会使用 Photoshop', met: false, reason: '简历未提供可核对证据' }
@@ -380,11 +412,12 @@ describe('AI match scoring contract', () => {
   });
 
   it('treats any configured bonus keyword omitted by the model as not met', () => {
-    const result = ensureBonusKeywordResults({
-      bonusKeywordResults: [
-        { item: '作品集', met: true, reason: '附有作品集' }
-      ]
-    }, ['作品集', '海外经历']);
+    const result = ensureBonusKeywordResults(
+      {
+        bonusKeywordResults: [{ item: '作品集', met: true, reason: '附有作品集' }]
+      },
+      ['作品集', '海外经历']
+    );
     assert.deepEqual(result.bonusKeywordResults, [
       { item: '作品集', met: true, reason: '附有作品集' },
       { item: '海外经历', met: false, reason: '简历未提供可核对证据' }
@@ -432,21 +465,27 @@ describe('matchScoreDisplayText', () => {
   });
 
   it('hides duplicate match score when gates pass', () => {
-    assert.equal(matchScoreDisplayText({
-      score: 72,
-      matchScore: 72,
-      level: '可推进',
-      advanceReason: 'ok'
-    }), '');
+    assert.equal(
+      matchScoreDisplayText({
+        score: 72,
+        matchScore: 72,
+        level: '可推进',
+        advanceReason: 'ok'
+      }),
+      ''
+    );
   });
 
   it('hides the match score for match-based rejection', () => {
-    assert.equal(matchScoreDisplayText({
-      score: 32,
-      matchScore: 32,
-      level: '不建议推进',
-      advanceReason: 'match'
-    }), '');
+    assert.equal(
+      matchScoreDisplayText({
+        score: 32,
+        matchScore: 32,
+        level: '不建议推进',
+        advanceReason: 'match'
+      }),
+      ''
+    );
   });
 
   it('hides the match score for failed scoring', () => {
@@ -524,13 +563,19 @@ describe('jobJdLooksEmpty', () => {
   });
 
   it('accepts a JD that carries a real description or requirement list', () => {
-    assert.equal(jobJdLooksEmpty(
-      '职位: 党务经理\n\n部门: 党群工作部\n\n岗位描述与要求:\n'
-      + '负责党支部日常事务、组织生活会与党员发展材料整理，配合工会开展外联活动。'
-    ), false);
-    assert.equal(jobJdLooksEmpty(
-      '职位: 党务经理\n\n硬性/加分要求:\n中共党员，本科及以上学历，2 年以上党务工作经验'
-    ), false);
+    assert.equal(
+      jobJdLooksEmpty(
+        '职位: 党务经理\n\n部门: 党群工作部\n\n岗位描述与要求:\n' +
+          '负责党支部日常事务、组织生活会与党员发展材料整理，配合工会开展外联活动。'
+      ),
+      false
+    );
+    assert.equal(
+      jobJdLooksEmpty(
+        '职位: 党务经理\n\n硬性/加分要求:\n中共党员，本科及以上学历，2 年以上党务工作经验'
+      ),
+      false
+    );
   });
 });
 

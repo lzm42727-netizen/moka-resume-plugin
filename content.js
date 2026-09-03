@@ -196,6 +196,7 @@ function init() {
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'ping') {
       sendResponse({ ok: true });
+      return false;
     } else if (request.action === 'getJobs') {
       const respond = () => respondGetJobs(sendResponse);
       if (getCurrentJobs().length) respond();
@@ -307,9 +308,11 @@ function init() {
       return true;
     } else if (request.action === 'openCandidate') {
       sendResponse({ ok: openCandidate(request.appId) });
+      return false;
     } else if (request.action === 'exportCsv') {
       exportResultsCsv(request.feedbackByAppId);
       sendResponse({ ok: true });
+      return false;
     } else if (request.action === 'rescore') {
       handleRescore(request.appId)
         .then((result) => sendResponse(result))
@@ -331,7 +334,8 @@ function init() {
         .catch((err) => sendResponse({ ok: false, error: (err && err.message) || '恢复操作失败' }));
       return true;
     }
-    return true;
+    sendResponse(MokaContracts.unknownActionResponse(request && request.action));
+    return false;
   });
   captureReady.then(() => {
     bootstrapResultsIfEmpty().catch(() => {});
@@ -734,156 +738,26 @@ function autofillFromJob(job) {
       .map((s) => (s ? String(s.name || '') + '：' + String(s.value || '') : ''))
       .join('\n');
   } catch (e) { /* ignore */ }
-  const text = `${job.aiEvalRequirementInfo || ''}\n${stripHtml(job.description || '')}\n${schemaLines}`;
+  const text = `${job.aiEvalRequirementInfo || ''}\n${MokaCandidateProfile.stripHtml(job.description || '')}\n${schemaLines}`;
   const parsed = MokaMatch.extractHardAutofillFromText(text);
-  parsed.majors = extractMajorsFromText(text);
+  parsed.majors = MokaCandidateProfile.extractMajorsFromText(text);
   return parsed;
 }
 
-/** 从 JD 正文抽取专业关键词，覆盖「xxx、yyy 相关/等/类 专业」「专业：xxx」等写法 */
 function extractMajorsFromText(text) {
-  const majors = new Set();
-  const STOP = new Set(['相关', '专业', '等', '以上', '学历', '背景', '毕业', '不限', '优先', '类', '方向', '及其', '以及', '或', '和', '有']);
-  // 过滤学历/能力/动词等非专业词，避免把「本科及以上学历」「熟练」等抓进来
-  const REJECT = /(学历|本科|硕士|博士|大专|专科|以上|及以|毕业|优先|熟练|精通|熟悉|具备|掌握|能力|经验|工作|要求|负责|岗位|以下|良好|扎实|以及)/;
-
-  const collect = (str) => {
-    str.split(/[、，,/\s]+/).forEach((raw) => {
-      const t = raw.trim().replace(/(相关|类|方向|专业|优先|背景|毕业|等)+$/, '').trim();
-      if (t && t.length >= 2 && t.length <= 8 && !STOP.has(t) && !REJECT.test(t)) majors.add(t);
-    });
-  };
-
-  let m;
-  // 「专业：视觉传达、数字媒体艺术」——冒号后即为专业列表
-  const colon = /专业[:：]\s*([\u4e00-\u9fa5A-Za-z、，,/\s]{2,40})/g;
-  while ((m = colon.exec(text))) collect(m[1]);
-
-  // 「xxx、yyy 等/相关/类 专业」——并列项用顿号「、」连接（逗号是分句符，不跨句），或带 等/相关/类 修饰
-  const suffix = /([\u4e00-\u9fa5A-Za-z]{2,10}?(?:[、/][\u4e00-\u9fa5A-Za-z]{2,10})*)((?:等)?(?:相关|类)?)专业/g;
-  while ((m = suffix.exec(text))) {
-    const list = m[1];
-    const qual = m[2];
-    if (qual || /[、/]/.test(list)) collect(list);
-  }
-
-  return [...majors].slice(0, 6);
+  return MokaCandidateProfile.extractMajorsFromText(text);
 }
-
-/* ---------------- 硬性条件本地判定 ---------------- */
-
-const DEGREE_RANK = { 大专: 1, 专科: 1, 本科: 2, 学士: 2, 硕士: 3, 研究生: 3, 博士: 4 };
-
-// 院校要求 → Moka 智能标签名（满足任一即符合）
-const SCHOOL_TAGS = {
-  '211': ['211'],
-  '985': ['985'],
-  '双一流': ['双一流大学', '双一流学科'],
-  '留学生': ['海外教育背景'],
-  'QS100': ['QS50', 'QS100'],
-  'QS500': ['QS50', 'QS100', 'QS200', 'QS300', 'QS500']
-};
 
 function evaluateHardConditions(app, hc, jobType) {
-  const missing = [];
-  if (!hc) return { passed: true, missing };
-
-  // 学历
-  if (hc.degree) {
-    const need = DEGREE_RANK[hc.degree] || 0;
-    const have = DEGREE_RANK[app.highestDegree] || 0;
-    if (!have || have < need) missing.push(`学历需${hc.degree}及以上`);
-  }
-
-  // 院校（任一即可）
-  if (Array.isArray(hc.schools) && hc.schools.length) {
-    const tagNames = new Set((app.intelligentTags || []).map((t) => t.name));
-    const ok = hc.schools.some((s) => (SCHOOL_TAGS[s] || [s]).some((t) => tagNames.has(t)));
-    if (!ok) missing.push(`院校不符（需 ${hc.schools.join('/')}）`);
-  }
-
-  // 经验
-  if (hc.exp) {
-    const years = Number(app.experience) || 0;
-    let ok = true;
-    if (hc.exp === 'fresh') ok = years <= 1;
-    else if (hc.exp === '1-3') ok = years >= 1 && years < 3;
-    else if (hc.exp === '3-5') ok = years >= 3 && years <= 5;
-    else if (hc.exp === '5+') ok = years >= 5;
-    if (!ok) missing.push(`经验需 ${hc.exp === 'fresh' ? '在校/应届' : hc.exp + '年'}`);
-  }
-
-  // 性别
-  if (hc.gender) {
-    if (!app.gender || !String(app.gender).includes(hc.gender)) missing.push(`性别需${hc.gender}`);
-  }
-
-  // 实习经验（仅实习生职位生效）：本地判定「是否有实习/工作经历」，相关性交给 AI
-  if (hc.internship === 'required' && jobType === 'intern') {
-    const hasExp = hasAnyExperience(app) || Number(app.experience) > 0;
-    if (!hasExp) missing.push('缺相关实习经验');
-  }
-
-  // 年龄（多选区间 OR；仅在候选人有年龄信息时判定）
-  const age = Number(app.age);
-  const ranges = normalizeAgeRanges(hc);
-  if (ranges.length) {
-    const ok = Number.isFinite(age) && age > 0 && ranges.some((r) => ageInRange(age, r));
-    if (!ok) missing.push(`年龄需 ${ranges.map((r) => r.label).join('/')}`);
-  }
-
-  return { passed: missing.length === 0, missing };
+  return MokaCandidateProfile.evaluateHardConditions(app, hc, jobType);
 }
 
-/** 兼容 ageRanges（多选）与旧版 ageMin/ageMax（单区间） */
 function normalizeAgeRanges(hc) {
-  if (!hc) return [];
-  if (Array.isArray(hc.ageRanges) && hc.ageRanges.length) {
-    return hc.ageRanges.filter((r) => r && (r.min != null || r.max != null)).map((r) => ({
-      min: r.min != null ? Number(r.min) : null,
-      max: r.max != null ? Number(r.max) : null,
-      label: r.label || formatAgeRangeLabel(r.min, r.max)
-    }));
-  }
-  if (hc.ageMin != null || hc.ageMax != null) {
-    return [{ min: hc.ageMin != null ? Number(hc.ageMin) : null, max: hc.ageMax != null ? Number(hc.ageMax) : null,
-      label: formatAgeRangeLabel(hc.ageMin, hc.ageMax) }];
-  }
-  return [];
+  return MokaCandidateProfile.normalizeAgeRanges(hc);
 }
 
-function formatAgeRangeLabel(min, max) {
-  if (min != null && max == null) return `${min}+`;
-  if (min != null && max != null) return `${min}-${max}`;
-  if (min == null && max != null) return `≤${max}`;
-  return '不限';
-}
-
-function ageInRange(age, r) {
-  if (r.min != null && age < r.min) return false;
-  if (r.max != null && age > r.max) return false;
-  return true;
-}
-
-/** 生成给模型看的硬性条件文本 */
 function buildHardText(hc, jobType, extraMustHaves) {
-  if (!hc && !(extraMustHaves && extraMustHaves.length)) return '';
-  const parts = [];
-  if (hc) {
-    if (hc.degree) parts.push(`学历：${hc.degree}及以上`);
-    if (hc.schools && hc.schools.length) parts.push(`院校：${hc.schools.join('/')}（任一）`);
-    if (hc.exp) parts.push(`经验：${hc.exp === 'fresh' ? '在校/应届' : hc.exp + '年'}`);
-    if (hc.gender) parts.push(`性别：${hc.gender}`);
-    if (hc.internship === 'required' && jobType === 'intern') parts.push('需具备相关实习经验');
-    const ageRanges = normalizeAgeRanges(hc);
-    if (ageRanges.length) {
-      parts.push(`年龄：${ageRanges.map((r) => r.label).join('/')}（任一）`);
-    }
-  }
-  if (Array.isArray(extraMustHaves) && extraMustHaves.length) {
-    parts.push('其他必备：' + extraMustHaves.join('、') + '（未满足将扣综合分）');
-  }
-  return parts.join('；');
+  return MokaCandidateProfile.buildHardText(hc, jobType, extraMustHaves);
 }
 
 function applyMergedHard(item) {
@@ -1051,9 +925,7 @@ function mergeDetailIntoApp(app, json) {
  * 详情接口需要 scene 令牌，且经历可能由独立接口加载 —— 均由 inject.js 探测响应内容自动发现并重放。
  */
 function hasAnyExperience(app) {
-  return ['experienceInfo', 'practiceInfo', 'projectInfo'].some(
-    (k) => Array.isArray(app[k]) && app[k].length
-  );
+  return MokaCandidateProfile.hasAnyExperience(app);
 }
 
 async function enrichCandidate(app) {
@@ -1178,102 +1050,19 @@ function fetchResumeText(url) {
 /* ---------------- 画像 & JD ---------------- */
 
 function stripHtml(html) {
-  if (!html) return '';
-  const div = document.createElement('div');
-  div.innerHTML = html;
-  return (div.textContent || '').replace(/\s+\n/g, '\n').trim();
+  return MokaCandidateProfile.stripHtml(html);
 }
 
-/** 把一段经历数组格式化为「机构 职务 (起~止): 描述」文本；字段名兼容多种命名 */
 function formatExperienceList(arr) {
-  if (!Array.isArray(arr) || !arr.length) return '';
-  return arr
-    .map((e) => {
-      if (!e || typeof e !== 'object') return '';
-      const org = e.company || e.organization || e.orgName || e.employer || e.unit || e.projectName || e.school || e.name || '';
-      const title = e.title || e.position || e.role || e.jobTitle || e.projectRole || '';
-      const dept = e.department ? `[${e.department}]` : '';
-      const start = e.startDate || e.startTime || e.start || e.beginDate || e.from || '';
-      const end = e.endDate || e.endTime || e.end || e.to || '';
-      const period = (start || end) ? ` (${start}~${end})` : '';
-      const head = `${org} ${title}${dept}${period}`.replace(/\s+/g, ' ').trim();
-      const desc = e.summary || e.content || e.description || e.duty || e.workContent
-        || e.responsibility || e.responsibilities || e.detail || e.desc || e.projectDescription || '';
-      const line = desc ? `${head}: ${String(desc).trim()}` : head;
-      return line.trim();
-    })
-    .filter((s) => s && s !== ':' && s !== '()')
-    .join('\n');
+  return MokaCandidateProfile.formatExperienceList(arr);
 }
 
 function buildCandidateProfile(app) {
-  const lines = [];
-  const push = (label, value) => {
-    if (value !== undefined && value !== null && String(value).trim() !== '') {
-      lines.push(`${label}: ${String(value).trim()}`);
-    }
-  };
-
-  push('姓名', app.name);
-  push('性别', app.gender);
-  push('年龄', app.age);
-  push('最高学历', app.highestDegree);
-  if (app.highestDegreeSchool || app.highestDegreeSpeciality) {
-    push('最高学历院校/专业', `${app.highestDegreeSchool || ''} ${app.highestDegreeSpeciality || ''}`);
-  }
-
-  if (Array.isArray(app.educationInfo) && app.educationInfo.length) {
-    const edu = app.educationInfo
-      .map((e) => `${e.academicDegree || ''} ${e.school || ''} ${e.speciality || ''} (${e.startDate || ''}~${e.endDate || ''})`.trim())
-      .join('；');
-    push('教育经历', edu);
-  }
-
-  // Moka 把工作/实习/项目经历拆到不同数组，分别渲染并打标签，避免实习生经历被漏读
-  const workExp = formatExperienceList(app.experienceInfo);
-  const practiceExp = formatExperienceList(app.practiceInfo);
-  const projectExp = formatExperienceList(app.projectInfo);
-  if (workExp) push('工作经历', '\n' + workExp);
-  if (practiceExp) push('实习经历', '\n' + practiceExp);
-  if (projectExp) push('项目/校园经历', '\n' + projectExp);
-  if (!workExp && !practiceExp && !projectExp && app.experience) {
-    push('工作经验(年)', app.experience);
-  }
-
-  push('技能', app.skill && app.skill.replace(/\n/g, '，'));
-  const awardsText = Array.isArray(app.awardInfo) && app.awardInfo.length
-    ? app.awardInfo.map((a) => `${a.name || a.awardName || a.title || ''} ${a.date || a.awardDate || ''}`.trim()).filter(Boolean).join('，')
-    : (app.awards && String(app.awards).replace(/\n/g, '，'));
-  push('奖项/证书', awardsText);
-  push('自我介绍', app.personal);
-
-  if (Array.isArray(app.intelligentTags) && app.intelligentTags.length) {
-    push('标签', app.intelligentTags.map((t) => t.name).filter(Boolean).join('、'));
-  }
-
-  push('求职类型', app.commitment);
-  push('意向城市', app.location);
-  if (typeof app.matchingIndex === 'number') {
-    push('Moka匹配度', `${Math.round(app.matchingIndex * 100)}%`);
-  }
-
-  // 附件简历原件正文（主动投递/结构化经历缺失时的关键信息源）
-  if (app.__resumeText && String(app.__resumeText).trim()) {
-    push('简历原件（附件解析）', '\n' + String(app.__resumeText).trim());
-  }
-
-  return lines.join('\n');
+  return MokaCandidateProfile.buildCandidateProfile(app);
 }
 
 function buildJobJD(app) {
-  const job = app.job || {};
-  const parts = [];
-  if (job.title || app.jobTitle) parts.push(`职位: ${job.title || app.jobTitle}`);
-  if (job.departmentName) parts.push(`部门: ${job.departmentName}`);
-  const desc = stripHtml(job.description || app.jobDescription || '');
-  if (desc) parts.push(`岗位描述与要求:\n${desc}`);
-  if (job.aiEvalRequirementInfo) parts.push(`硬性/加分要求:\n${job.aiEvalRequirementInfo}`);
-  return parts.join('\n\n');
+  return MokaCandidateProfile.buildJobJD(app);
 }
 
 /* ---------------- 主流程 ---------------- */

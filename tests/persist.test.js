@@ -5,8 +5,6 @@ const {
   pruneTimedMap,
   putCacheRecord,
   csvEscape,
-  toCsv,
-  screeningItemToRow,
   screeningToCsv,
   slimScreeningItem,
   hydrateScreeningItem,
@@ -16,7 +14,6 @@ const {
   screeningPayloadMatchesJob,
   jobPresetKey,
   sanitizeJobPreset,
-  normalizeRequirements,
   fillRequirementsFromJobSpec,
   buildRequirementsFromJobSpec,
   formatJobUnderstandingParts,
@@ -81,10 +78,14 @@ describe('csv', () => {
       app: { id: 11, name: '张三', highestDegree: '本科', highestDegreeSchool: '清华' },
       hard: { passed: false, missing: ['学历需硕士及以上'] },
       score: {
-        score: 70, level: '值得推荐', penalty: 5,
+        score: 70,
+        level: '值得推荐',
+        penalty: 5,
         dims: {
-          experience: { score: 80 }, skill: { score: 70 },
-          education: { score: 60 }, potential: { score: 50 }
+          experience: { score: 80 },
+          skill: { score: 70 },
+          education: { score: 60 },
+          potential: { score: 50 }
         }
       },
       rawScore: { highlights: ['有项目'], concerns: ['经验短'] }
@@ -111,12 +112,17 @@ describe('csv', () => {
   });
 
   it('exports match score and unmet gates without legacy dimension arithmetic', () => {
-    const csv = screeningToCsv([{
-      app: { id: 33, name: '赵六' },
-      score: { score: 42, matchScore: 91, level: '不建议推进', unmet: [{ item: '日语' }] },
-      hard: { passed: false, missing: ['缺「日语」'] },
-      rawScore: {}
-    }], 'https://app.mokahr.com');
+    const csv = screeningToCsv(
+      [
+        {
+          app: { id: 33, name: '赵六' },
+          score: { score: 42, matchScore: 91, level: '不建议推进', unmet: [{ item: '日语' }] },
+          hard: { passed: false, missing: ['缺「日语」'] },
+          rawScore: {}
+        }
+      ],
+      'https://app.mokahr.com'
+    );
     assert.match(csv, /^姓名,学历,学校,决策分,经历匹配,档位,未过门槛,/);
     assert.match(csv, /赵六,,,42,91,不建议推进/);
     assert.doesNotMatch(csv, /必备项扣分|经验,技能,教育,潜力/);
@@ -246,7 +252,15 @@ describe('job presets', () => {
     const clean = sanitizeJobPreset({
       hard: {
         languages: ['日语 N1', '英语 CET6', '法语', '德语', '韩语', '西班牙语', '第七条'],
-        customGates: ['Photoshop', '设计专业', '每周五天', '到岗三个月', '作品集', '上海到岗', '第七条']
+        customGates: [
+          'Photoshop',
+          '设计专业',
+          '每周五天',
+          '到岗三个月',
+          '作品集',
+          '上海到岗',
+          '第七条'
+        ]
       }
     });
     assert.equal(clean.hard.languages.length, 6);
@@ -418,17 +432,29 @@ describe('job presets', () => {
     // 这种壳不能被当成一次成功的 JD 解读，否则会清空表单并覆盖存档。
     assert.equal(jobSpecIsUsable(null), false);
     assert.equal(jobSpecIsUsable({}), false);
-    assert.equal(jobSpecIsUsable({
-      summary: '', responsibilities: [], coreSkills: [], candidateTraits: [],
-      mustHaves: [], importantHaves: [], niceToHaves: [], resumeKeywords: [],
-      suggestedWeights: { experience: 40, skill: 30, education: 20, potential: 10 },
-      parseError: true
-    }), false);
+    assert.equal(
+      jobSpecIsUsable({
+        summary: '',
+        responsibilities: [],
+        coreSkills: [],
+        candidateTraits: [],
+        mustHaves: [],
+        importantHaves: [],
+        niceToHaves: [],
+        resumeKeywords: [],
+        suggestedWeights: { experience: 40, skill: 30, education: 20, potential: 10 },
+        parseError: true
+      }),
+      false
+    );
     // 只回权重、没有任何岗位内容，同样不算解读成功
-    assert.equal(jobSpecIsUsable({
-      summary: '',
-      suggestedWeights: { experience: 40, skill: 30, education: 20, potential: 10 }
-    }), false);
+    assert.equal(
+      jobSpecIsUsable({
+        summary: '',
+        suggestedWeights: { experience: 40, skill: 30, education: 20, potential: 10 }
+      }),
+      false
+    );
     // 空白字符不算内容
     assert.equal(jobSpecIsUsable({ summary: '   ', importantHaves: ['  '] }), false);
     // 标了 parseError 一律不可用，哪怕带了半截内容
@@ -485,13 +511,16 @@ describe('job presets', () => {
   });
 
   it('maps handwritten gates and keywords to jobSpec fields for screening', () => {
-    const fields = requirementsToJobSpecFields({
-      important: ['B'],
-      nice: ['C', 'D', 'E', 'F']
-    }, {
-      languages: ['日语 N1'],
-      customGates: ['会使用 Photoshop']
-    });
+    const fields = requirementsToJobSpecFields(
+      {
+        important: ['B'],
+        nice: ['C', 'D', 'E', 'F']
+      },
+      {
+        languages: ['日语 N1'],
+        customGates: ['会使用 Photoshop']
+      }
+    );
     assert.deepEqual(fields.languages, ['日语 N1']);
     assert.deepEqual(fields.customGates, ['会使用 Photoshop']);
     assert.deepEqual(fields.focusKeywords, ['B']);
@@ -519,7 +548,14 @@ describe('job presets', () => {
   it('round-trips a preset in the timed map and ignores empty job ids', () => {
     const preset = sanitizeJobPreset({
       jobType: 'full-time',
-      hard: { degree: '硕士', schools: [], exp: '3-5', gender: '', internship: '', ageRangeValues: [] },
+      hard: {
+        degree: '硕士',
+        schools: [],
+        exp: '3-5',
+        gender: '',
+        internship: '',
+        ageRangeValues: []
+      },
       weights: { experience: 40, skill: 30, education: 20, potential: 10 },
       mustHaves: ['Google UAC'],
       keywords: ['Ads']

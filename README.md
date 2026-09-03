@@ -118,6 +118,8 @@ Chrome 插件：在 Moka 候选人列表页批量拉取简历，核对硬性门�
 - 可用的 LLM API Key（OpenAI、Claude 或 OpenAI 兼容服务）
 - Moka 账号，并在 `https://app.mokahr.com` 的**候选人列表**页使用
 
+开发时：Node 22+，`npm ci && npm run check`。发版 zip：`npm run pack`（产物在 `dist/`）。
+
 ## 🚀 安装步骤
 
 ### 1. 克隆或下载

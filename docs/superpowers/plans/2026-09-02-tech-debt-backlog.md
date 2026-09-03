@@ -38,10 +38,11 @@
       已增加 `classifyLlmJsonFailure`：区分截断 / 缺 matchScore / 非 JSON。JD 空壳由 `jobSpecIsUsable` 拦截。未做完整逐字段 schema。
 - [x] **P1 进度可读性**
       评分进度改为「正在评 姓名（37/200）· 已用约 N 分钟」。未做开筛前 token 预估。
-- [ ] **P2 大文件竖切**
-      先切 `content.js`（抓包重放 / 筛选循环 / 结果发布），再切 `popup.js`（配置表单 / 结果列表 / 校准）。目标是「改校准不用翻 2800 行」，不追求目录好看。
 - [x] **P2 最小 CI**
       `package.json` 的 `npm test` + `.github/workflows/test.yml` 跑 `node --test tests/*.test.js`。
+- [ ] **P2 大文件竖切**（进行中）
+      已抽出 `lib/contracts.js`（消息契约）与 `lib/candidate-profile.js`（画像/JD/本地门槛）。
+      下一步：`content.js` 的抓包重放 / 结果会话 / 筛选 runner，再切 `popup.js`。
 
 ### 明确不做 / 后置
 

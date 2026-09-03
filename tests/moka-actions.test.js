@@ -45,8 +45,14 @@ describe('scoreActionMatch', () => {
   it('prefers exact 淘汰 on the right-side button over resume text hit', () => {
     const resumeHit = mockEl('曾参与末位淘汰考核', { left: 120, tagName: 'SPAN' });
     const actionBtn = mockEl('淘汰', { tagName: 'BUTTON', left: 980 });
-    const resumeScore = scoreActionMatch(resumeHit, TEXT.eliminate, { partial: true, actionPanel: true });
-    const btnScore = scoreActionMatch(actionBtn, TEXT.eliminate, { partial: false, actionPanel: true });
+    const resumeScore = scoreActionMatch(resumeHit, TEXT.eliminate, {
+      partial: true,
+      actionPanel: true
+    });
+    const btnScore = scoreActionMatch(actionBtn, TEXT.eliminate, {
+      partial: false,
+      actionPanel: true
+    });
     assert.ok(resumeScore >= 0);
     assert.ok(btnScore > resumeScore);
   });
@@ -86,10 +92,7 @@ describe('pendingActionState', () => {
 
 describe('mokaActionDispatchError', () => {
   it('内容脚本无回包时立即给出可执行提示，而不是静默等待', () => {
-    assert.equal(
-      mokaActionDispatchError(null),
-      '无法连接 Moka 页面，请刷新 Moka 标签页后重试'
-    );
+    assert.equal(mokaActionDispatchError(null), '无法连接 Moka 页面，请刷新 Moka 标签页后重试');
     assert.equal(
       mokaActionDispatchError(undefined),
       '无法连接 Moka 页面，请刷新 Moka 标签页后重试'
@@ -97,7 +100,10 @@ describe('mokaActionDispatchError', () => {
   });
 
   it('内容脚本明确失败时透传原因', () => {
-    assert.equal(mokaActionDispatchError({ ok: false, error: '筛选进行中，请稍后再操作' }), '筛选进行中，请稍后再操作');
+    assert.equal(
+      mokaActionDispatchError({ ok: false, error: '筛选进行中，请稍后再操作' }),
+      '筛选进行中，请稍后再操作'
+    );
     assert.equal(mokaActionDispatchError({ ok: false }), 'Moka 操作失败');
   });
 

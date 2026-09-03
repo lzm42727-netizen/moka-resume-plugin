@@ -31,18 +31,42 @@ describe('sanitizeScreeningJob', () => {
 
 describe('isResumableJob', () => {
   it('allows incomplete running / awaiting / paused jobs', () => {
-    assert.equal(isResumableJob({
-      status: 'running', jobId: 'j', total: 10, completed: 3
-    }), true);
-    assert.equal(isResumableJob({
-      status: 'awaiting_resume', jobId: 'j', total: 10, completed: 3
-    }), true);
-    assert.equal(isResumableJob({
-      status: 'done', jobId: 'j', total: 10, completed: 10
-    }), false);
-    assert.equal(isResumableJob({
-      status: 'running', jobId: 'j', total: 10, completed: 10
-    }), false);
+    assert.equal(
+      isResumableJob({
+        status: 'running',
+        jobId: 'j',
+        total: 10,
+        completed: 3
+      }),
+      true
+    );
+    assert.equal(
+      isResumableJob({
+        status: 'awaiting_resume',
+        jobId: 'j',
+        total: 10,
+        completed: 3
+      }),
+      true
+    );
+    assert.equal(
+      isResumableJob({
+        status: 'done',
+        jobId: 'j',
+        total: 10,
+        completed: 10
+      }),
+      false
+    );
+    assert.equal(
+      isResumableJob({
+        status: 'running',
+        jobId: 'j',
+        total: 10,
+        completed: 10
+      }),
+      false
+    );
   });
 });
 
@@ -74,7 +98,10 @@ describe('screeningLooksActive', () => {
 describe('matchesPageJob / withStatus', () => {
   it('matches page job and updates status', () => {
     const job = sanitizeScreeningJob({
-      status: 'running', jobId: '88', total: 5, completed: 1
+      status: 'running',
+      jobId: '88',
+      total: 5,
+      completed: 1
     });
     assert.equal(matchesPageJob(job, '88'), true);
     assert.equal(matchesPageJob(job, '99'), false);

@@ -82,7 +82,8 @@ describe('screening configuration UI', () => {
     assert.match(js, /hasJobUnderstandingContent\(\)[\s\S]{0,300}resolve\(false\)/);
     // 守卫必须在覆盖芯片之前
     assert.ok(
-      js.indexOf('MokaPersist.jobSpecIsUsable(spec)') < js.indexOf('languageEditor.set(split.languages'),
+      js.indexOf('MokaPersist.jobSpecIsUsable(spec)') <
+        js.indexOf('languageEditor.set(split.languages'),
       '可用性守卫必须早于 languageEditor.set，否则失败的解读仍会清空门槛'
     );
   });
