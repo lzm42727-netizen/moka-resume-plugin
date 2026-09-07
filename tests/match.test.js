@@ -340,6 +340,19 @@ describe('viewMatchesFilter', () => {
     assert.equal(viewMatchesFilter(eliminated, { tab: 'feedback' }), true);
   });
 
+  it('moves decided recommend-level candidates out of the recommend tab too', () => {
+    const pending = { name: '待推进', feedback: null, score: { score: 80, level: '优先推进' } };
+    const advanced = {
+      name: '批量推进过',
+      feedback: 'recommend',
+      feedbackSync: 'synced',
+      score: { score: 80, level: '优先推进' }
+    };
+    assert.equal(viewMatchesFilter(pending, { tab: 'recommend' }), true);
+    assert.equal(viewMatchesFilter(advanced, { tab: 'recommend' }), false);
+    assert.equal(viewMatchesFilter(advanced, { tab: 'feedback' }), true);
+  });
+
   it('also hides pending or failed Moka sync from the default tab', () => {
     const syncing = {
       name: '同步中',

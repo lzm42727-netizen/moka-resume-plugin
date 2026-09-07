@@ -507,6 +507,38 @@ body {
   font-size: 12px;
 }
 
+.mp-batch-btn {
+  flex: none;
+  border: 1px solid #d9d9d9;
+  background: #fff;
+  color: #595959;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 18px;
+}
+
+.mp-batch-btn.on {
+  border-color: var(--primary);
+  background: var(--primary-bg);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.mp-batch-text {
+  font-size: 12px;
+  color: #595959;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.mp-batch-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 6px;
+}
+
 .mp-list {
   flex: 1;
   overflow-y: auto;
@@ -523,6 +555,15 @@ body {
   margin-bottom: 6px;
   align-items: flex-start;
   position: relative;
+}
+
+.mp-row-check {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 16px;
+  cursor: pointer;
+  accent-color: var(--primary);
 }
 
 .mp-row:hover {

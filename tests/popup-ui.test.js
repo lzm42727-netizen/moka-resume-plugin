@@ -101,9 +101,15 @@ describe('screening configuration UI', () => {
     // 不带岗位 ID 时，content 端只能抓页面上「当前那一批」候选人的 JD，
     // 岗位切走后拿回来的就是上一个岗的理解
     const calls = js.match(/action: 'getJobSpec'[^}]*}/g) || [];
-    assert.ok(calls.length >= 3, '所有 getJobSpec 调用点都应存在');
+    // 硬性门槛随「按 JD 刷新」联动后，独立的预填调用点已并入主刷新流程
+    assert.ok(calls.length >= 2, '所有 getJobSpec 调用点都应存在');
     calls.forEach((call) => assert.match(call, /jobId/));
     assert.match(js, /action: 'getJobContext'[^}]*jobId/);
+    // 联动：按 JD 刷新后硬性门槛同源预设（无独立按钮）
+    assert.match(js, /function prefillHardFromJD/);
+    assert.match(js, /prefillHardFromJD\(\)\.then\(\(bits\) =>/);
+    assert.doesNotMatch(js, /id="autofill-hard"|autofill-hard'\)/);
+    assert.doesNotMatch(html, /autofill-hard|按 JD 预填硬性/);
   });
 
   it('drops a model reply that came back after the user switched jobs', () => {
@@ -112,13 +118,35 @@ describe('screening configuration UI', () => {
     assert.match(js, /saveJobPresetFor\(targetJobId\)/);
   });
 
-  it('clears a stored understanding that belongs to another job', () => {
-    // 存档里若躺着上一个岗的理解/门槛/关键词，恢复时必须清掉并重新解读，
-    // 否则侧栏会一直显示「已自动填充本岗配置」+ 别人的岗位理解
-    assert.match(js, /jobSpecMatchesJob\(preset\.jobSpec, jobId\)/);
-    assert.match(js, /jobSpecMatchesJob\(preset\.jobSpec, jobId\)[\s\S]{0,400}resetJobPresetForm/);
-    // 老存档验不了来源，至少要提示可以重解读
+  it('keeps a job-keyed preset intact even when its understanding stamp differs', () => {
+    // 存档键 = 职位身份：同一键下的门槛/关键词是招聘官为本岗手配的。
+    // 岗位理解戳来自别的职位只降级为「按 JD 刷新」提示，绝不整表清空，
+    // 否则会出现「已点保存、下次进入又变回初始阶段」。
+    assert.doesNotMatch(js, /已清空，将按本岗 JD 重新解读/);
+    assert.match(js, /理解不对请点「按 JD 刷新」/);
+    assert.match(js, /applyJobPreset\(preset\);/);
+    // 精确键缺失时按同名职位找回一份，防 jobId 跨入口漂移导致存档「找不到」
+    assert.match(js, /已按同名职位恢复本岗配置/);
+    // 老存档验不了来源，提示可重解读
     assert.match(js, /sourceJobId[\s\S]{0,200}按 JD 刷新/);
+  });
+
+  it('freezes understanding once a preset exists: entry never silently re-interprets', () => {
+    // 冻结规则：进岗自动重解读只允许发生在「本岗从未保存过配置」的首次进入。
+    // 只要本岗存过档（哪怕理解区为空），理解/清单都不再被进岗逻辑静默重写。
+    assert.match(js, /async function ensureJobUnderstandingOnEnter\(hadSavedPreset\)/);
+    // 两个入口（切换岗位、详情页空列表分支）都必须把 restore 结果传进去
+    assert.doesNotMatch(js, /ensureJobUnderstandingOnEnter\(\)/);
+    const fnBody = js.slice(
+      js.indexOf('async function ensureJobUnderstandingOnEnter'),
+      js.indexOf('function maybeFillEmptyRequirementsFromJd')
+    );
+    // 冻结分支必须先于自动调 AI；AI 调用只允许落在「首次进入」分支里
+    const freezeAt = fnBody.indexOf('if (hadSavedPreset)');
+    const aiCallAt = fnBody.indexOf('refreshUnderstandingAndRequirements({');
+    assert.ok(freezeAt !== -1 && aiCallAt !== -1 && freezeAt < aiCallAt, '有存档必须先走冻结分支');
+    assert.match(fnBody, /本岗已保存过配置但没有岗位理解[\s\S]{0,120}按 JD 刷新/);
+    assert.match(fnBody, /真·首次进入/);
   });
 
   it('renders intern graduation risk away from evidence columns', () => {

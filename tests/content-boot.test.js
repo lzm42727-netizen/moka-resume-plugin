@@ -150,4 +150,74 @@ describe('content.js 顶层加载', () => {
     );
     assert.deepEqual(result.missing, ['学历需本科及以上', '性别需女', '年龄需 20-25']);
   });
+
+  it('isOnCandidatePage 精确匹配 application id，前缀撞车不算同页', () => {
+    const originalPathname = globalThis.location.pathname;
+    try {
+      globalThis.location.pathname = '/candidates/application/8147011850';
+      // 目标 id 是当前 URL id 的前缀：旧 indexOf 写法会误判「已在目标页」，在错误候选人身上点按钮
+      assert.equal(contentApi.isOnCandidatePage('814701185'), false);
+      assert.equal(contentApi.isOnCandidatePage('8147011850'), true);
+      globalThis.location.pathname = '/candidates/application/814701185?scene=x';
+      assert.equal(contentApi.isOnCandidatePage('814701185'), true);
+    } finally {
+      globalThis.location.pathname = originalPathname;
+    }
+  });
+
+  it('markDetailAppSeen 记录 application id 与候选人姓名，供点击前身份校验', () => {
+    contentApi.markDetailAppSeen(
+      'https://app.mokahr.com/api/applications/814701185?scene=x',
+      JSON.stringify({ code: 0, data: { id: 814701185, name: '王歆澄' } })
+    );
+    // 仅有请求没有响应体时，保留已有姓名不覆盖为空
+    contentApi.markDetailAppSeen('https://app.mokahr.com/api/applications/814701185');
+    const seen = contentApi.detailSeenAppsForTest();
+    assert.ok(seen['814701185'], '应记录 application id');
+    assert.equal(seen['814701185'].name, '王歆澄');
+  });
+
+  it('harvestMemberNames 从组织类接口收割分配对象的 id→姓名', () => {
+    const json = JSON.stringify({
+      code: 0,
+      data: {
+        list: [
+          { id: 6397518, name: '王歆澄' },
+          { id: 8981545, userName: '宁子腾' },
+          { id: 123, name: 'id 太小不收' },
+          { id: 99000001, name: '' },
+          { name: '没有 id 不收' }
+        ]
+      }
+    });
+    assert.equal(
+      contentApi.harvestMemberNames('https://app.mokahr.com/api/outer/ats-employee/search', json),
+      2
+    );
+    const names = contentApi.memberNamesForTest();
+    assert.equal(names['6397518'], '王歆澄');
+    assert.equal(names['8981545'], '宁子腾');
+  });
+
+  it('harvestMemberNames 跳过候选人与详情接口，防止把候选人姓名记成成员', () => {
+    const json = JSON.stringify({ data: { id: 63000001, name: '候选某人' } });
+    assert.equal(
+      contentApi.harvestMemberNames('https://app.mokahr.com/api/outer/ats-candidate/search-candidate/v2', json),
+      0
+    );
+    assert.equal(
+      contentApi.harvestMemberNames('https://app.mokahr.com/api/applications/814701185', json),
+      0
+    );
+    assert.ok(!contentApi.memberNamesForTest()['63000001']);
+  });
+
+  it('validAssigneeNames 只在弹窗名字数与分配 id 数一致时采信', () => {
+    // 弹窗芯片与 id 无顺序对应，只作为整组展示；数量对不上宁可退回「N 人」
+    assert.deepEqual(contentApi.validAssigneeNames(['高玉宝', '贾舒尧', '高玉宝'], 2), ['高玉宝', '贾舒尧']);
+    assert.deepEqual(contentApi.validAssigneeNames(['高玉宝'], 2), []);
+    assert.deepEqual(contentApi.validAssigneeNames(null, 2), []);
+    assert.deepEqual(contentApi.validAssigneeNames(['这是个超长名字超过了十二个字符限制吧'], 1), []);
+    assert.deepEqual(contentApi.validAssigneeNames(['王歆澄'], 1), ['王歆澄']);
+  });
 });

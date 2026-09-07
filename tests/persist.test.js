@@ -492,6 +492,17 @@ describe('job presets', () => {
     assert.equal(clean.jobSpec.sourceJobName, '党务经理（外联方向）');
   });
 
+  it('keeps the assignee confirmation stamp so it survives later preset saves', () => {
+    // 配置页「确认本岗分配对象」的时间戳要随存档持久化；
+    // 后续任何一次保存筛选条件都不能把它抹掉。
+    const clean = sanitizeJobPreset({ jobType: 'full-time', assigneeConfirmedAt: 1725430000000 });
+    assert.equal(clean.assigneeConfirmedAt, 1725430000000);
+    const missing = sanitizeJobPreset({ jobType: 'full-time' });
+    assert.equal(missing.assigneeConfirmedAt, 0);
+    const junk = sanitizeJobPreset({ jobType: 'full-time', assigneeConfirmedAt: 'abc' });
+    assert.equal(junk.assigneeConfirmedAt, 0);
+  });
+
   it('composes duty and skills into one stored string', () => {
     assert.equal(
       composeJobUnderstandingText({ duty: '品牌视觉助理', skill: '需要具备PS能力。' }),

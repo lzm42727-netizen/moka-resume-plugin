@@ -48,7 +48,7 @@
     },
     {
       "matches": ["https://app.mokahr.com/*"],
-      "js": ["lib/contracts.js", "lib/score.js", "lib/capture.js", "lib/persist.js", "lib/feedback.js", "lib/screening-job.js", "lib/moka-actions.js", "lib/match.js", "lib/candidate-profile.js", "content.js"],
+      "js": ["lib/contracts.js", "lib/score.js", "lib/capture.js", "lib/persist.js", "lib/feedback.js", "lib/screening-job.js", "lib/moka-actions.js", "lib/match.js", "lib/candidate-profile.js", "lib/batch.js", "content.js"],
       "run_at": "document_start"
     }
   ]

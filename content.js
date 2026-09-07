@@ -65,6 +65,487 @@ let harvestedScene = '';           // 从任意带 scene= 的页面请求里收�
 let lastProbeReason = '';
 const detailDataCache = new Map(); // id(string) -> 已含经历的详情响应 JSON（页面已加载过的候选人可直接复用）
 
+// 接口观测流水：inject.js 推过来的 POST 请求记录（只记不拦），用于发现批量操作等
+// 未识别接口。仅存内存，页面刷新即清空；上限截断防止筛选分页时无限膨胀。
+const REQUEST_LOG_LIMIT = 80;
+const requestLog = [];
+
+// 批量分配（本 org 的推进动作）捕获：模板 + 分配对象，按职位分桶持久化，
+// 跨页面刷新恢复；换职位必须用该职位自己的分配对象，防止跨职位串用
+const ASSIGNMENT_CAPTURE_KEY = 'mokaCapturedAssignment';
+const ASSIGNMENT_CAPTURE_LIMIT = 10; // 最多记住最近 10 个职位各自的分配对象
+const JOB_PIPELINE_MAP_KEY = 'mokaPipelineNameMapV3'; // pipelineId → 职位名（分配对象按「职位名」锚定）
+let capturedAssignment = null;      // 当前职位的 { url, headers, body }
+let capturedAssignmentPipelineId = ''; // capturedAssignment 所属的职位
+let capturedAssignmentSavedAt = 0; // 该条分配记录的捕获时间（配置页展示用）
+let lastAssigneeIds = [];           // 当前职位最近一次手动批量分配的对象 id 列表
+
+// 成员姓名映射：从「非候选人」接口的 JSON 响应里收割 {数字 id → 姓名}，
+// 供配置页/批量推进确认时把分配对象显示成名字。持久化，跨页面刷新可用。
+const MEMBER_NAMES_KEY = 'mokaMemberNames';
+const MEMBER_NAMES_LIMIT = 600;
+const MEMBER_NAME_SKIP_RE = /search-candidate|\/api\/applications\/\d+/;
+const memberNames = new Map();
+
+/** 从一段 JSON 响应里收割 id→姓名；返回新增条数。限制遍历规模防大响应卡顿 */
+function harvestMemberNames(url, text) {
+  const u = String(url || '');
+  if (!u || MEMBER_NAME_SKIP_RE.test(u)) return 0;
+  let json;
+  try { json = JSON.parse(text); } catch (e) { return 0; }
+  let added = 0;
+  const queue = [json];
+  let seen = 0;
+  while (queue.length && seen < 4000) {
+    seen++;
+    const cur = queue.shift();
+    if (!cur || typeof cur !== 'object') continue;
+    if (Array.isArray(cur)) {
+      queue.push.apply(queue, cur.slice(0, 200));
+      continue;
+    }
+    const id = cur.id != null ? Number(cur.id) : (cur.userId != null ? Number(cur.userId) : NaN);
+    const name = String(cur.name || cur.userName || cur.realName || cur.nickname
+      || cur.chineseName || cur.displayName || cur.employeeName || cur.trueName || '').trim();
+    if (Number.isInteger(id) && id >= 10000 && name && name.length <= 20
+      && !memberNames.has(String(id))) {
+      memberNames.set(String(id), name);
+      added++;
+      if (memberNames.size > MEMBER_NAMES_LIMIT) {
+        memberNames.delete(memberNames.keys().next().value);
+      }
+    }
+    Object.keys(cur).forEach((k) => {
+      const v = cur[k];
+      if (v && typeof v === 'object') queue.push(v);
+    });
+  }
+  if (added) {
+    persistMemberNames();
+    // 收割结果进流水（设置页可复制），失败/成功都有迹可循
+    logCapturedRequest({
+      url: '[member-harvest] ' + u,
+      body: '+' + added + ' 个 id→姓名（映射总数 ' + memberNames.size + '）',
+      at: Date.now()
+    });
+  }
+  return added;
+}
+
+let memberNamesSaveTimer = null;
+function persistMemberNames() {
+  clearTimeout(memberNamesSaveTimer);
+  memberNamesSaveTimer = setTimeout(() => {
+    try {
+      chrome.storage.local.set({ [MEMBER_NAMES_KEY]: Object.fromEntries(memberNames) });
+    } catch (e) { /* ignore */ }
+  }, 500);
+}
+
+function restoreMemberNames() {
+  try {
+    chrome.storage.local.get(MEMBER_NAMES_KEY, (res) => {
+      try {
+        if (chrome.runtime.lastError) return;
+        const stored = res && res[MEMBER_NAMES_KEY];
+        if (stored && typeof stored === 'object') {
+          Object.keys(stored).forEach((k) => {
+            if (!memberNames.has(k) && typeof stored[k] === 'string') memberNames.set(k, stored[k]);
+          });
+        }
+      } catch (e) { /* ignore */ }
+    });
+  } catch (e) { /* ignore */ }
+}
+
+/** 当前职位的分配对象 id 对应的姓名（查不到的返回空串，保持与 id 顺序对齐） */
+function assigneeIdNames() {
+  return lastAssigneeIds.map((id) => memberNames.get(String(id)) || '');
+}
+
+// 弹窗芯片刮到的人名集合（顺序与 id 无对应关系，仅作整组展示）
+let lastAssigneeNames = [];
+
+/** 弹窗刮到的名字 → 可采信的姓名集合：去重清洗后数量必须与分配 id 数一致 */
+function validAssigneeNames(scraped, count) {
+  if (!Array.isArray(scraped) || !count) return [];
+  const clean = [];
+  (scraped || []).forEach((n) => {
+    const t = String(n || '').trim();
+    if (t && t.length <= 12 && clean.indexOf(t) === -1) clean.push(t);
+  });
+  return clean.length === count ? clean : [];
+}
+
+/** 展示用姓名：id→姓名 能凑齐优先（逐人精确）；凑不齐但弹窗刮到了整组名字则用整组 */
+function resolveAssigneeNamesForDisplay() {
+  const resolved = assigneeIdNames();
+  if (lastAssigneeIds.length && resolved.every(Boolean)) return resolved;
+  if (lastAssigneeNames.length === lastAssigneeIds.length && lastAssigneeNames.length) {
+    return lastAssigneeNames;
+  }
+  return resolved;
+}
+
+/** 单点推荐走其它接口时：弹窗人名与本岗已记录的分配 id 完全对上才落库展示 */
+function storeRecommendNames(payload) {
+  if (!payload || typeof payload.body !== 'string') return;
+  const ids = MokaBatch.extractAssigneeIds(payload.body);
+  const names = pickValidAssigneeNames(payload.scrapedNames, payload.pageWideNames, ids.length);
+  if (!ids.length || !names.length) return;
+  const pipelineId = currentPipelineId();
+  if (!pipelineId) return;
+  if (capturedAssignmentPipelineId === String(pipelineId)
+    && lastAssigneeIds.join(',') === ids.join(',')) {
+    lastAssigneeNames = names;
+  }
+  bindSingleAssigneeName(ids, names);
+  seedMemberNamesFromPairs(payload.pairs);
+  readAssignmentStore((captures) => {
+    const entry = captures[pipelineId];
+    if (entry && Array.isArray(entry.assigneeIds)
+      && entry.assigneeIds.join(',') === ids.join(',')) {
+      entry.assigneeNames = names;
+      try {
+        chrome.storage.local.set({ [ASSIGNMENT_CAPTURE_KEY]: { captures } });
+      } catch (e) { /* ignore */ }
+    }
+  });
+}
+
+/** 单元素是否像「人名芯片」：名字纯文本形态（× 是图标）时，需芯片本身/
+ *  紧邻兄弟带关闭图标类名，或芯片类名像 tag/chip 组件。防止把「确定」误当姓名。 */
+function chipLikeNameElement(el) {
+  try {
+    const CLOSE_HINT_RE = /close|cross|del|remove|clear|closable/i;
+    const CHIP_HINT_RE = /tag|chip|closable|selected[-_]?item|member[-_]?item|assign/i;
+    const classOf = (node) => {
+      try { return String((node && node.getAttribute && node.getAttribute('class')) || ''); }
+      catch (e) { return ''; }
+    };
+    const sib = el && el.nextElementSibling;
+    if (CLOSE_HINT_RE.test(classOf(el)) || CLOSE_HINT_RE.test(classOf(sib))) return true;
+    if (el.querySelector('[class*="close"],[class*="cross"],[class*="del"],[class*="remove"],[class*="clear"]')) return true;
+    return CHIP_HINT_RE.test(classOf(el));
+  } catch (e) {
+    return false;
+  }
+}
+
+/** 从元素收集芯片姓名（文本 × 形态 + 纯名字+图标佐证形态），返回去重数组 */
+function collectChipNamesFrom(el, out, seen) {
+  try {
+    const t = String(el.textContent || '').trim();
+    let m = t.match(/^([\u4e00-\u9fa5A-Za-z0-9·]{1,12})\s*[×✕⨯✖xX]$/); // 形态一：文本 ×
+    if (!m) {
+      m = t.match(/^([\u4e00-\u9fa5A-Za-z0-9·]{1,12})$/);               // 形态二：× 是图标
+      if (m && !chipLikeNameElement(el)) m = null;
+    }
+    if (m && !seen[m[1]]) {
+      seen[m[1]] = 1;
+      out.push(m[1]);
+      return true;
+    }
+    return false;
+  } catch (e) {
+    return false;
+  }
+}
+
+const CHIP_LABEL_SET = ['推荐到', '分配给', '分配对象'];
+
+/** 找「推荐到/分配给/分配对象」标签元素（最多 4 个） */
+function findChipLabels() {
+  const labels = [];
+  try {
+    document.querySelectorAll('span,div,label,p,dt').forEach((el) => {
+      if (labels.length >= 4) return;
+      const t = String(el.textContent || '').trim().replace(/^\*/, '').replace(/[:：]\s*$/, '');
+      if (CHIP_LABEL_SET.indexOf(t) !== -1) labels.push(el);
+    });
+  } catch (e) { /* ignore */ }
+  return labels;
+}
+
+/** 第一遍：从标签向上 6 层找芯片层（推荐弹窗内）。返回 { labels, names } */
+function chipNamesByLabelWalk() {
+  const labels = findChipLabels();
+  const out = [];
+  const seen = {};
+  labels.forEach((lb) => {
+    let node = lb;
+    for (let i = 0; i < 6 && node && node !== document.body; i++) {
+      node = node.parentElement;
+      if (!node) break;
+      node.querySelectorAll('span,div,li,em,p').forEach((el) => {
+        if (labels.indexOf(el) !== -1 || el.children.length > 3) return;
+        collectChipNamesFrom(el, out, seen);
+      });
+      if (out.length) break; // 找到芯片层就停，防止收进弹窗外别的 × 芯片
+    }
+  });
+  return { labels: labels.length, names: out };
+}
+
+/** 第二遍：全页兜底扫「文本 ×」与「名字+关闭图标」芯片（标签结构不同时用），
+ *  数量由 merge 侧按本岗分配 id 数校验，多收无害（会整组拒掉）。上限 30 防误伤。 */
+function chipNamesPageWide() {
+  const out = [];
+  const seen = {};
+  try {
+    const all = document.querySelectorAll('span,div,li,em,p');
+    for (let i = 0; i < all.length && out.length < 30; i++) {
+      const el = all[i];
+      if (!el.children || el.children.length > 3) continue;
+      collectChipNamesFrom(el, out, seen);
+    }
+  } catch (e) { /* ignore */ }
+  return out;
+}
+
+/** 实时刮取当前打开的「推荐给用人部门」弹窗芯片姓名。content 与页面共享 DOM，
+ *  弹窗开着时配置页点「重新读取」即可直接带出名字，不必等点确认发请求那一刻。
+ *  逻辑与 inject.js 的 scrapeRecommendChipNames 保持一致思路（两处需同步维护）。
+ *  返回 { labels, anchored, pageWide } —— anchored 第一遍标签邻域，pageWide 全页兜底。 */
+function scrapeRecommendChipNamesFromDom() {
+  const anchored = chipNamesByLabelWalk();
+  const pageWide = chipNamesPageWide();
+  return {
+    labels: anchored.labels,
+    anchored: anchored.names,
+    pageWide
+  };
+}
+
+/** 两路刮取结果的采信顺序：先标签邻域（anchored），凑不齐再用全页兜底（pageWide），
+ *  数量必须与分配 id 数一致才采信 */
+function pickValidAssigneeNames(anchored, pageWide, count) {
+  const first = validAssigneeNames(anchored, count);
+  if (first.length) return first;
+  return validAssigneeNames(pageWide, count);
+}
+
+/** 单人分配时姓名↔id 可唯一对应，把绑定种进成员映射，供后续「采纳姓名」反查 */
+function bindSingleAssigneeName(ids, names) {
+  if (Array.isArray(ids) && ids.length === 1
+    && Array.isArray(names) && names.length === 1 && names[0]) {
+    if (!memberNames.has(String(ids[0]))) {
+      memberNames.set(String(ids[0]), names[0]);
+      persistMemberNames();
+    }
+  }
+}
+
+/** 成员姓名 → id 反查（同名多人视为歧义，不可采纳） */
+function resolveIdsForNames(names) {
+  const byName = {};
+  memberNames.forEach((name, id) => {
+    (byName[name] = byName[name] || []).push(Number(id));
+  });
+  const ids = [];
+  const missing = [];
+  const ambiguous = [];
+  (Array.isArray(names) ? names : []).forEach((n) => {
+    const cand = byName[n] || [];
+    if (!cand.length) missing.push(n);
+    else if (cand.length > 1) ambiguous.push(n);
+    else ids.push(cand[0]);
+  });
+  return { ok: !missing.length && !ambiguous.length, ids, missing, ambiguous };
+}
+
+/** 向 MAIN world 按需索要弹窗人选：姓名 + React fiber 里的 id（采纳用） */
+let assigneePairsReqSeq = 0;
+function requestAssigneePairs() {
+  return new Promise((resolve) => {
+    const reqId = `ap-${Date.now()}-${++assigneePairsReqSeq}`;
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener('message', onMessage);
+      resolve(value);
+    };
+    const onMessage = (event) => {
+      if (event.source !== window) return;
+      const data = event.data;
+      if (!data || data.source !== 'moka-inject' || data.type !== 'assignee-pairs') return;
+      if (!data.payload || data.payload.reqId !== reqId) return;
+      done(data.payload);
+    };
+    setTimeout(() => done({ names: [], pairs: [] }), 4000);
+    window.addEventListener('message', onMessage);
+    try {
+      window.postMessage({
+        source: 'moka-content',
+        type: 'scrape-assignee-pairs',
+        payload: { reqId }
+      }, '*');
+    } catch (e) {
+      done({ names: [], pairs: [] });
+    }
+  });
+}
+
+/** 把 fiber 抓到的 id→姓名对种进成员映射（最可靠的映射来源） */
+function seedMemberNamesFromPairs(pairs) {
+  (Array.isArray(pairs) ? pairs : []).forEach((p) => {
+    if (p && Number.isInteger(p.id) && p.id > 0 && p.name && p.name.length <= 20) {
+      memberNames.set(String(p.id), p.name);
+    }
+  });
+  if (pairs && pairs.length) persistMemberNames();
+}
+
+/** 采纳结果写入请求流水（诊断用）：点「确认本岗分配对象」后在流水里必有一行 */
+function logAdoptTrace(outcome, detail) {
+  requestLog.push({ url: '[adopt] ' + outcome, body: String(detail || ''), at: Date.now() });
+  while (requestLog.length > REQUEST_LOG_LIMIT) requestLog.shift();
+}
+
+/** 配置页「确认本岗分配对象」时采纳弹窗当前人选。采信顺序（系统性）：
+ *  ① React fiber 成对姓名（姓名+id 一次拿到，伪姓名混不进来）优先；
+ *  ② 标签邻域 + MAIN world 刮到的姓名并集，走成员映射反查兜底。
+ *  改写本岗记录的分配对象（模板 url/headers/resumeType 沿用）。改写后批量
+ *  推进重放与确认的姓名严格一致。
+ *  返回 { ok, adopted, reason?, names, ids?, missing?, ambiguous? } */
+function adoptScrapedAssignees() {
+  return Promise.all([
+    loadAssignmentForCurrentPipeline(),
+    requestAssigneePairs()
+  ]).then((results) => {
+    const template = results[0];
+    const live = results[1] || {};
+    // 先种 fiber 对，再解析：fiber 命中的姓名直接用 fiber id（最可靠）；
+    // 其余走成员映射反查（同名多人视为歧义）
+    seedMemberNamesFromPairs(live.pairs);
+    const byName = {};
+    (Array.isArray(live.pairs) ? live.pairs : []).forEach((p) => {
+      if (p && Number.isInteger(p.id) && p.name) {
+        (byName[p.name] = byName[p.name] || []).push(p.id);
+      }
+    });
+    const pairNames = Object.keys(byName).filter((n) => byName[n].length === 1);
+    let capped = [];
+    if (pairNames.length) {
+      // ① fiber 成对姓名：每个都自带唯一 id，直接采信
+      capped = pairNames.slice(0, 5);
+    } else {
+      // ② 姓名并集：content 本地刮的 + MAIN world 刮的（去重，保序）
+      capped = [];
+      const seenName = {};
+      const local = chipNamesByLabelWalk();
+      (Array.isArray(local.names) ? local.names : []).forEach((n) => {
+        if (!seenName[n]) { seenName[n] = 1; capped.push(n); }
+      });
+      (Array.isArray(live.names) ? live.names : []).forEach((n) => {
+        if (!seenName[n]) { seenName[n] = 1; capped.push(n); }
+      });
+      capped = capped.slice(0, 5);
+    }
+    if (!capped.length) {
+      logAdoptTrace('未采纳', '原因=no-names（弹窗姓名一个都没读到；fiber 对='
+        + (Array.isArray(live.pairs) ? live.pairs.length : 0) + '）');
+      return { ok: true, adopted: false, reason: 'no-names', names: [] };
+    }
+    const ids = [];
+    const missing = [];
+    const ambiguous = [];
+    capped.forEach((n) => {
+      const fromFiber = byName[n] || [];
+      if (fromFiber.length === 1) {
+        ids.push(fromFiber[0]);
+        return;
+      }
+      const mappedIds = [];
+      memberNames.forEach((name, mid) => {
+        if (name === n) mappedIds.push(Number(mid));
+      });
+      if (fromFiber.length > 1 || mappedIds.length > 1) {
+        ambiguous.push(n);
+        return;
+      }
+      if (mappedIds.length === 1) {
+        ids.push(mappedIds[0]);
+        return;
+      }
+      missing.push(n);
+    });
+    if (missing.length || ambiguous.length || !ids.length) {
+      logAdoptTrace('未采纳', '原因=' + (missing.length ? 'unknown-names' : 'ambiguous-names')
+        + '；names=' + capped.join('/') + '；missing=' + missing.join('/')
+        + '；ambiguous=' + ambiguous.join('/') + '；fiber对='
+        + (Array.isArray(live.pairs) ? live.pairs.length : 0)
+        + '；成员映射=' + memberNames.size);
+      return {
+        ok: true,
+        adopted: false,
+        reason: missing.length ? 'unknown-names' : 'ambiguous-names',
+        names: capped,
+        missing,
+        ambiguous
+      };
+    }
+    const pipelineId = currentPipelineId();
+    if (!pipelineId || !template) {
+      logAdoptTrace('未采纳', '原因=no-record；pipelineId=' + (pipelineId || '空')
+        + '；template=' + (template ? '有' : '无') + '；names=' + capped.join('/'));
+      return { ok: true, adopted: false, reason: 'no-record', names: capped };
+    }
+    const entry = {
+      template,
+      assigneeIds: ids,
+      assigneeNames: capped.slice(),
+      pipelineId: String(pipelineId),
+      jobName: normalizeJobName(pageJobName()),
+      savedAt: Date.now()
+    };
+    if (entry.jobName) rememberJobPipeline(entry.pipelineId, entry.jobName);
+    capturedAssignment = template;
+    capturedAssignmentPipelineId = String(pipelineId);
+    capturedAssignmentSavedAt = entry.savedAt;
+    lastAssigneeIds = ids;
+    lastAssigneeNames = capped.slice();
+    persistAssignmentEntry(entry);
+    logAdoptTrace('已采纳', 'names=' + capped.join('/') + '；ids=' + ids.join('/')
+      + '；pipelineId=' + pipelineId + '；来源=' + (pairNames.length ? 'fiber对' : '姓名反查'));
+    return { ok: true, adopted: true, names: capped, ids };
+  }).catch((err) => {
+    // 采纳过程本身抛错也要留痕：流水 + 明确错误信息（弹窗侧绝不静默）
+    logAdoptTrace('异常', (err && err.stack) ? String(err.stack).split('\n').slice(0, 2).join(' | ')
+      : String(err));
+    throw err;
+  });
+}
+
+/** 配置页「重新读取」实时刮到的姓名：先信标签邻域（anchored），凑不齐再用全页兜底
+ *  （pageWide），数量与本岗分配 id 对上才采信并落库。返回最终展示姓名。 */
+function mergeLiveScrapedAssigneeNames(scraped) {
+  return loadAssignmentForCurrentPipeline().then(() => {
+    const raw = scraped && typeof scraped === 'object' ? scraped : {};
+    const names = pickValidAssigneeNames(
+      Array.isArray(raw.anchored) ? raw.anchored : [],
+      Array.isArray(raw.pageWide) ? raw.pageWide : [],
+      lastAssigneeIds.length
+    );
+    if (!names.length) return resolveAssigneeNamesForDisplay();
+    lastAssigneeNames = names;
+    const pipelineId = currentPipelineId();
+    if (pipelineId) {
+      readAssignmentStore((captures) => {
+        const entry = captures[String(pipelineId)];
+        if (entry) {
+          entry.assigneeNames = names;
+          try {
+            chrome.storage.local.set({ [ASSIGNMENT_CAPTURE_KEY]: { captures } });
+          } catch (e) { /* ignore */ }
+        }
+      });
+    }
+    return resolveAssigneeNamesForDisplay();
+  });
+}
+
 // 尽早监听，避免错过 inject.js 的早期推送
 window.addEventListener('message', (event) => {
   if (event.source !== window) return;
@@ -73,20 +554,267 @@ window.addEventListener('message', (event) => {
   if (data.type === 'search-request') {
     capturedRequest = data.payload;
     persistCapture();
+    // 搜索请求发生在当前页面：pipelineId 来自请求体，职位名来自当前 URL ——
+    // 同一页面上下文，可安全建立 pipelineId↔职位名 对应（分配对象锚点）
+    try {
+      const sbody = JSON.parse(data.payload && data.payload.body ? data.payload.body : '{}');
+      if (sbody && sbody.pipelineId) {
+        rememberJobPipeline(String(sbody.pipelineId), pageJobName());
+      }
+    } catch (e) { /* ignore */ }
     // 开筛分页会触发大量 search-request，避免刷换岗通知打断筛选
     if (!isScreening) maybeNotifyPageJobChanged('search-capture');
   } else if (data.type === 'detail-request') {
     const first = !capturedDetailRequest;
     capturedDetailRequest = data.payload;
+    markDetailAppSeen(data.payload && data.payload.url);
     persistCapture();
     if (first) { try { markDetailBannerReady(); } catch (e) {} } // 用户点开候选人后，横幅变为「已就绪」
   } else if (data.type === 'detail-data') {
     cacheDetailData(data.payload);
+    markDetailAppSeen(data.payload && data.payload.url, data.payload && data.payload.text);
   } else if (data.type === 'scene-token') {
     const s = data.payload && data.payload.scene;
     if (s) harvestedScene = String(s);
+  } else if (data.type === 'request-log') {
+    logCapturedRequest(data.payload);
+  } else if (data.type === 'assignment-request') {
+    captureAssignmentRequest(data.payload);
+  } else if (data.type === 'member-data') {
+    // 选人/组织类接口的响应：收割 id→姓名，供分配对象展示名字
+    harvestMemberNames(data.payload && data.payload.url, data.payload && data.payload.text);
+  } else if (data.type === 'assignee-names') {
+    // 单点推荐等走其它接口的分配：只采信弹窗刮到的人名，不动重放模板
+    storeRecommendNames(data.payload);
   }
 });
+
+/** 记录一条 POST 流水；超限丢弃最旧的。names = 分配请求时弹窗刮到的姓名（诊断用） */
+function logCapturedRequest(entry) {
+  if (!entry || !entry.url) return;
+  const item = {
+    url: String(entry.url),
+    body: String(entry.body || ''),
+    at: Number(entry.at) || Date.now()
+  };
+  if (Array.isArray(entry.names)) item.names = entry.names;
+  requestLog.push(item);
+  while (requestLog.length > REQUEST_LOG_LIMIT) requestLog.shift();
+}
+
+/** 记住批量分配请求模板与分配对象，供「批量推进」直接重放。
+ *  分配对象按职位（pipelineId）隔离：每个职位各自记录，换职位必须重新捕获，
+ *  避免 A 职位的简历被推进到 B 职位的用人部门。 */
+function captureAssignmentRequest(payload) {
+  if (!payload || !payload.url || typeof payload.body !== 'string') return;
+  const assigneeIds = MokaBatch.extractAssigneeIds(payload.body);
+  if (!assigneeIds.length) return; // 无分配对象的请求不具备重放价值
+  const pipelineId = currentPipelineId();
+  if (!pipelineId) return; // 无法定位职位时不捕获，避免跨职位串用
+  const assigneeNames = pickValidAssigneeNames(
+    payload.scrapedNames, payload.pageWideNames, assigneeIds.length
+  );
+  const entry = {
+    template: {
+      url: String(payload.url),
+      headers: payload.headers && typeof payload.headers === 'object' ? payload.headers : {},
+      body: payload.body
+    },
+    assigneeIds,
+    assigneeNames,
+    pipelineId: String(pipelineId),
+    jobName: normalizeJobName(pageJobName()),
+    savedAt: Date.now()
+  };
+  if (entry.jobName) rememberJobPipeline(entry.pipelineId, entry.jobName);
+  persistAssignmentEntry(entry);
+  capturedAssignment = entry.template;
+  capturedAssignmentPipelineId = entry.pipelineId;
+  capturedAssignmentSavedAt = entry.savedAt;
+  lastAssigneeIds = assigneeIds;
+  lastAssigneeNames = assigneeNames;
+  bindSingleAssigneeName(assigneeIds, assigneeNames);
+  seedMemberNamesFromPairs(payload.pairs);
+}
+
+/** 把分配存档写入 storage（按职位分桶 + 超限清理） */
+function persistAssignmentEntry(entry) {
+  readAssignmentStore((captures) => {
+    captures[entry.pipelineId] = entry;
+    // 每个职位一份；总数超限时丢弃最旧的职位记录
+    const keys = Object.keys(captures)
+      .sort((a, b) => (captures[b] && captures[b].savedAt || 0) - (captures[a] && captures[a].savedAt || 0));
+    keys.slice(ASSIGNMENT_CAPTURE_LIMIT).forEach((k) => { delete captures[k]; });
+    try {
+      chrome.storage.local.set({ [ASSIGNMENT_CAPTURE_KEY]: { captures } });
+    } catch (e) { /* ignore */ }
+  });
+}
+
+function currentPipelineId() {
+  const ctx = parsePageContext();
+  return String((ctx && ctx.pipelineId) || pipelineIdFromUrl(location.href) || lastKnownPipelineId || '');
+}
+
+/** 读取按职位分桶的分配模板存储（storage 异步，统一回调出口） */
+function readAssignmentStore(cb) {
+  try {
+    chrome.storage.local.get(ASSIGNMENT_CAPTURE_KEY, (result) => {
+      try {
+        if (chrome.runtime.lastError) { cb({}); return; }
+        const stored = result && result[ASSIGNMENT_CAPTURE_KEY];
+        cb(stored && typeof stored === 'object' && stored.captures && typeof stored.captures === 'object'
+          ? stored.captures
+          : {});
+      } catch (e) { cb({}); }
+    });
+  } catch (e) {
+    cb({});
+  }
+}
+
+/** 职位名归一化：去空白后比较（URL title 与下拉框文案同源，只可能差空白/编码） */
+function normalizeJobName(name) {
+  return String(name || '').replace(/\s+/g, '');
+}
+
+function jobNameMatches(a, b) {
+  const x = normalizeJobName(a);
+  const y = normalizeJobName(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  // URL title 可能被截断：一方完整包含另一方且较短者足够长才认
+  const shorter = x.length < y.length ? x : y;
+  const longer = x.length < y.length ? y : x;
+  return shorter.length >= 4 && longer.indexOf(shorter) !== -1;
+}
+
+/** 读取 pipelineId → 职位名 映射（分配对象按「职位名」锚定的辅助索引） */
+function readJobPipelineMap(cb) {
+  try {
+    chrome.storage.local.get(JOB_PIPELINE_MAP_KEY, (result) => {
+      try {
+        if (chrome.runtime.lastError) { cb({}); return; }
+        const stored = result && result[JOB_PIPELINE_MAP_KEY];
+        cb(stored && typeof stored === 'object' ? stored : {});
+      } catch (e) { cb({}); }
+    });
+  } catch (e) {
+    cb({});
+  }
+}
+
+/** 记住 pipelineId ↔ 职位名（两者必须来自同一页面 URL，同源才可信；
+ *  jobId/jobIds 参数来自筛选状态、可能过期，绝不参与职位身份判定） */
+function rememberJobPipeline(pipelineId, jobName) {
+  const pid = String(pipelineId || '');
+  const name = normalizeJobName(jobName);
+  if (!pid || !name) return;
+  readJobPipelineMap((map) => {
+    if (map[pid] === name) return;
+    map[pid] = name;
+    try {
+      chrome.storage.local.set({ [JOB_PIPELINE_MAP_KEY]: map });
+    } catch (e) { /* ignore */ }
+  });
+}
+
+/** 当前页面的职位名：URL title（与 pipelineId 同源，最可信）→ 页面展示名兜底 */
+function pageJobName() {
+  const ctx = parsePageContext();
+  if (ctx && ctx.title) return safeDecode(ctx.title);
+  return resolveJobDisplayName();
+}
+
+/** 按职位（jobLabel=下拉框选中的职位名）查分配对象记录——分配对象跟职位走的
+ *  关键。以「职位名」为锚点（URL title 与下拉框文案同源），彻底绕开
+ *  jobId/pipelineId 两套 id 空间的桥接错配（jobIds 参数是筛选状态，会过期）。
+ *  查找顺序：① 存档里盖了职位名章且匹配的记录（同名的取最新）；
+ *  ② pipelineId→职位名映射反查；③ 选中职位就是页面当前职位时用页面 pipeline。
+ *  返回 { ok, ready, assigneeCount, assigneeNames, savedAt, pipelineId, isPageJob } */
+function getAssigneeForJob(jobId, jobLabel) {
+  return new Promise((resolve) => {
+    const label = String(jobLabel || '').trim();
+    const pagePipelineId = currentPipelineId();
+    const pageName = pageJobName();
+    if (pagePipelineId && pageName) rememberJobPipeline(pagePipelineId, pageName);
+    if (!label) {
+      resolve({ ok: true, ready: false, isPageJob: false });
+      return;
+    }
+    const isPageJob = jobNameMatches(label, pageName);
+    readJobPipelineMap((map) => {
+      // 映射反查：职位名 → pipelineId
+      let mappedPid = '';
+      if (isPageJob && pagePipelineId) mappedPid = String(pagePipelineId);
+      if (!mappedPid) {
+        Object.keys(map).some((pid) => {
+          if (jobNameMatches(label, map[pid])) { mappedPid = String(pid); return true; }
+          return false;
+        });
+      }
+      readAssignmentStore((captures) => {
+        // ① 职位名章精确匹配（同名取最新）
+        let entry = null;
+        Object.keys(captures).forEach((k) => {
+          const e = captures[k];
+          if (e && jobNameMatches(label, e.jobName)
+            && (!entry || (Number(e.savedAt) || 0) > (Number(entry.savedAt) || 0))) {
+            entry = e;
+          }
+        });
+        // ② 映射/页面 pipeline 兜底
+        if (!entry && mappedPid) entry = captures[String(mappedPid)];
+        const pid = entry ? String(entry.pipelineId || mappedPid || '') : String(mappedPid || '');
+        if (entry || mappedPid || isPageJob) {
+          logAdoptTrace('查询', 'label=' + label + '；pagePid=' + (pagePipelineId || '空')
+            + '；pageName=' + (pageName || '空') + '；resolvedPid=' + (pid || '空')
+            + '；entryName=' + (entry && entry.jobName ? entry.jobName : '无'));
+        }
+        resolve({
+          ok: true,
+          ready: !!(entry && Array.isArray(entry.assigneeIds) && entry.assigneeIds.length),
+          assigneeCount: entry && Array.isArray(entry.assigneeIds) ? entry.assigneeIds.length : 0,
+          assigneeNames: entry && Array.isArray(entry.assigneeNames) ? entry.assigneeNames : [],
+          savedAt: entry ? Number(entry.savedAt) || 0 : 0,
+          pipelineId: pid,
+          isPageJob: isPageJob || (!!pid && !!pagePipelineId && pid === String(pagePipelineId))
+        });
+      });
+    });
+  });
+}
+
+/** 确保内存中的模板属于当前职位；不是（或缺失）则从存储里取当前职位那份 */
+function loadAssignmentForCurrentPipeline() {
+  return new Promise((resolve) => {
+    const pipelineId = currentPipelineId();
+    if (!pipelineId) { resolve(null); return; }
+    if (capturedAssignmentPipelineId === pipelineId && capturedAssignment && lastAssigneeIds.length) {
+      resolve(capturedAssignment);
+      return;
+    }
+    readAssignmentStore((captures) => {
+      const entry = captures[pipelineId];
+      if (entry && entry.template && typeof entry.template === 'object') {
+        capturedAssignment = entry.template;
+        capturedAssignmentPipelineId = String(entry.pipelineId || pipelineId);
+        capturedAssignmentSavedAt = Number(entry.savedAt) || 0;
+        lastAssigneeIds = MokaBatch.sanitizeIdList(entry.assigneeIds, 5);
+        lastAssigneeNames = Array.isArray(entry.assigneeNames)
+          ? validAssigneeNames(entry.assigneeNames, lastAssigneeIds.length)
+          : [];
+        resolve(capturedAssignment);
+      } else {
+        resolve(null);
+      }
+    });
+  });
+}
+
+function restoreAssignmentCapture() {
+  return loadAssignmentForCurrentPipeline();
+}
 
 function persistCapture() {
   try {
@@ -125,6 +853,89 @@ function restoreCapture() {
 }
 
 const captureReady = restoreCapture();
+
+/* ---------------- 详情页身份追踪（防串人误推） ----------------
+ * 记录页面最近加载过的「application id -> 候选人姓名」信号，
+ * 单点推荐/淘汰点击前据此校验详情页渲染的确实是目标候选人。 */
+const DETAIL_SEEN_LIMIT = 50;
+const detailSeenApps = new Map(); // appId(string) -> { name }
+
+function extractDetailName(json) {
+  if (!json || typeof json !== 'object') return '';
+  const raw = json.name
+    || (json.candidate && json.candidate.name)
+    || json.candidateName
+    || (json.data && json.data.name);
+  return String(raw || '').trim().slice(0, 64);
+}
+
+function markDetailAppSeen(url, text) {
+  const m = String(url || '').match(/\/applications\/(\d+)/);
+  if (!m) return;
+  let name = '';
+  if (text) {
+    try {
+      name = extractDetailName(MokaCapture.unwrapDetailJson(JSON.parse(text)));
+    } catch (e) { /* ignore */ }
+  }
+  const prev = detailSeenApps.get(m[1]);
+  detailSeenApps.set(m[1], { name: name || (prev && prev.name) || '' });
+  while (detailSeenApps.size > DETAIL_SEEN_LIMIT) {
+    detailSeenApps.delete(detailSeenApps.keys().next().value);
+  }
+}
+
+/** 目标候选人姓名（优先取当前筛选结果，取不到再翻反馈存档） */
+async function candidateNameFor(appId) {
+  try {
+    const item = await findResultOrRestore(appId);
+    const nm = item && item.app && item.app.name;
+    return nm ? String(nm).trim() : '';
+  } catch (e) {
+    return '';
+  }
+}
+
+/** 点击推荐/淘汰前的身份校验：页面渲染的必须是目标候选人，否则中止 */
+async function waitForCandidateVerified(appId, timeoutMs) {
+  const target = String(appId);
+  const expected = await candidateNameFor(target);
+  const deadline = Date.now() + (timeoutMs || 15000);
+  let sawDetail = false;
+  while (Date.now() < deadline) {
+    // 详情页已渲染出目标姓名 → 就是本人
+    if (expected && document.body && String(document.body.innerText || '').indexOf(expected) !== -1) {
+      return { ok: true };
+    }
+    const info = detailSeenApps.get(target);
+    if (info) {
+      sawDetail = true;
+      // 详情接口返回的姓名与目标不一致 → 页面/数据串人，宁可不点
+      if (expected && info.name && info.name !== expected) {
+        return {
+          ok: false,
+          error: `身份校验失败：页面加载的是「${info.name}」，不是目标「${expected}」，已取消自动操作以防误推`
+        };
+      }
+      if (info.name || !expected) return { ok: true };
+    }
+    await MokaActions.sleep(250);
+  }
+  // 等不到任何身份信号：宁可中止也不盲点（误推比失败更糟）
+  if (!expected && !sawDetail) return { ok: true, unverified: true };
+  return sawDetail
+    ? { ok: true }
+    : { ok: false, error: `未能在详情页确认候选人「${expected || target}」，已取消自动操作，请刷新页面后重试` };
+}
+
+/** 等页面就绪 → 身份校验 → 执行按钮自动化（推荐/淘汰共用） */
+async function runPendingActionOnVerifiedPage(pending) {
+  await waitForDomReady();
+  await MokaActions.sleep(2000);
+  const check = await waitForCandidateVerified(pending.appId, 15000);
+  if (!check.ok) throw new Error(check.error);
+  await runMokaActionOnPage(pending.action);
+}
 
 /** 缓存单个候选人的详情响应，严格按 URL 里的 application id + 顶层 id/candidateId 建索引 */
 function cacheDetailData(payload) {
@@ -333,10 +1144,72 @@ function init() {
         .then((result) => sendResponse(result || { ok: true }))
         .catch((err) => sendResponse({ ok: false, error: (err && err.message) || '恢复操作失败' }));
       return true;
+    } else if (request.action === 'getRequestLog') {
+      sendResponse({ ok: true, log: requestLog.slice() });
+      return false;
+    } else if (request.action === 'getBatchAssignContext') {
+      loadAssignmentForCurrentPipeline().then((tpl) => {
+        sendResponse({
+          ok: true,
+          ready: !!(tpl && lastAssigneeIds.length),
+          assigneeCount: lastAssigneeIds.length,
+          assigneeNames: resolveAssigneeNamesForDisplay(),
+          savedAt: capturedAssignmentSavedAt
+        });
+      });
+      return true;
+    } else if (request.action === 'getAssigneeForJob') {
+      // 配置页「分配对象」跟职位走：按下拉框选中的 jobId 查该职位自己的记录，
+      // 而不是 Moka 页面当前职位的（两者可能不同步）
+      getAssigneeForJob(request.jobId, request.jobLabel).then((r) => sendResponse(r));
+      return true;
+    } else if (request.action === 'scrapeAssigneeNames') {
+      // 配置页「重新读取」：弹窗开着时直接从页面 DOM 实时刮「推荐到」姓名；
+      // readOnly=true 时只读不落库（供「已记录 vs 弹窗当前」比对，防显示与 id 脱钩）
+      const scraped = scrapeRecommendChipNamesFromDom();
+      if (request.readOnly) {
+        sendResponse({
+          ok: true,
+          names: (Array.isArray(scraped.anchored) ? scraped.anchored : []).slice(0, 5),
+          debug: { labels: scraped.labels, anchored: scraped.anchored, pageWide: scraped.pageWide }
+        });
+        return false;
+      }
+      mergeLiveScrapedAssigneeNames(scraped)
+        .then((names) => sendResponse({
+          ok: true,
+          names,
+          debug: {
+            labels: scraped.labels,
+            anchored: scraped.anchored,
+            pageWide: scraped.pageWide
+          }
+        }))
+        .catch(() => sendResponse({ ok: true, names: [], debug: null }));
+      return true;
+    } else if (request.action === 'adoptScrapedAssignees') {
+      // 配置页「确认本岗分配对象」：把弹窗当前人选（姓名→id 反查）写进本岗记录，
+      // 之后关掉弹窗、换页面都不会丢，批量推进重放即按这组人
+      adoptScrapedAssignees()
+        .then((r) => sendResponse(r))
+        .catch((err) => sendResponse({
+          ok: true,
+          adopted: false,
+          reason: 'error',
+          error: (err && err.message) ? String(err.message) : String(err || '未知异常')
+        }));
+      return true;
+    } else if (request.action === 'batchAssign') {
+      handleBatchAssign(request.appIds)
+        .then((result) => sendResponse(result))
+        .catch((err) => sendResponse({ ok: false, error: (err && err.message) || '批量推进失败' }));
+      return true;
     }
     sendResponse(MokaContracts.unknownActionResponse(request && request.action));
     return false;
   });
+  restoreAssignmentCapture();
+  restoreMemberNames();
   captureReady.then(() => {
     bootstrapResultsIfEmpty().catch(() => {});
     offerResumeIfNeeded().catch(() => {});
@@ -500,6 +1373,10 @@ async function respondGetJobs(sendResponse) {
   }
   const ctx = parsePageContext();
   const pageJobId = pageJobIdFromContext();
+  // 顺带记住 pipelineId ↔ 职位名（同一 URL 的两个参数，同源可信）
+  if (ctx && ctx.pipelineId) {
+    rememberJobPipeline(String(ctx.pipelineId), ctx.title ? safeDecode(ctx.title) : pageJobName());
+  }
   const jobId = (lastScreenConfig && lastScreenConfig.jobId) || (jobs[0] && jobs[0].id) || '';
   const jobName = (jobs[0] && jobs[0].name) || resolveJobDisplayName(jobId) || '';
   if (jobName) lastKnownJobName = jobName;
@@ -1989,7 +2866,9 @@ function candidateUrlFor(appId, listUrl) {
 }
 
 function isOnCandidatePage(appId) {
-  return location.pathname.indexOf('/candidates/application/' + String(appId)) !== -1;
+  // 精确匹配 application id 段，防止前缀撞车（/application/185 是 /application/1850 的子串）
+  const re = new RegExp('/candidates/application/' + String(appId) + '(?![0-9])');
+  return re.test(location.pathname);
 }
 
 function isOnListPage() {
@@ -2068,9 +2947,7 @@ async function resumePendingMokaAction() {
         return { ok: true, navigating: 'candidate' };
       }
       await publishWithResults(mokaActionStatusText(pending.action), undefined, pending.pipelineId);
-      await waitForDomReady();
-      await MokaActions.sleep(2000);
-      await runMokaActionOnPage(pending.action);
+      await runPendingActionOnVerifiedPage(pending);
       pending.phase = 'list';
       pending.ts = Date.now();
       await savePendingMokaAction(pending);
@@ -2091,9 +2968,7 @@ async function resumePendingMokaAction() {
       pending.ts = Date.now();
       await savePendingMokaAction(pending);
       await publishWithResults(mokaActionStatusText(pending.action), undefined, pending.pipelineId);
-      await waitForDomReady();
-      await MokaActions.sleep(2000);
-      await runMokaActionOnPage(pending.action);
+      await runPendingActionOnVerifiedPage(pending);
       pending.phase = 'list';
       pending.ts = Date.now();
       await savePendingMokaAction(pending);
@@ -2141,6 +3016,92 @@ async function resumePendingMokaAction() {
     mokaActionBusy = false;
   }
   return { ok: false, skipped: true, reason: 'unknown-phase' };
+}
+
+/**
+ * 让 MAIN world（inject.js）用页面原生 fetch 代发批量分配请求。
+ * ISOLATED world 的 fetch 写接口可能被页面 CSP/CORS/Origin 校验拦截，
+ * 而 MAIN world 代发与用户在页面上点按钮发出的请求完全同源同权。
+ * 通过 reqId 匹配响应，超时与 MOKA_TIMEOUT_MS 对齐。
+ */
+let assignmentReqSeq = 0;
+function requestMainWorldAssignment(payload) {
+  return new Promise((resolve) => {
+    const reqId = `ba-${Date.now()}-${++assignmentReqSeq}`;
+    let settled = false;
+    let timer = null;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      window.removeEventListener('message', onMessage);
+      resolve(value);
+    };
+    const onMessage = (event) => {
+      if (event.source !== window) return;
+      const data = event.data;
+      if (!data || data.source !== 'moka-inject' || data.type !== 'assignment-response') return;
+      if (!data.payload || data.payload.reqId !== reqId) return;
+      done(data.payload);
+    };
+    timer = setTimeout(
+      () => done({ status: 0, text: '', error: `请求超时（${Math.round(MOKA_TIMEOUT_MS / 1000)}s）` }),
+      MOKA_TIMEOUT_MS
+    );
+    window.addEventListener('message', onMessage);
+    try {
+      window.postMessage({
+        source: 'moka-content',
+        type: 'do-assignment',
+        payload: Object.assign({ reqId }, payload)
+      }, '*');
+    } catch (e) {
+      done({ status: 0, text: '', error: (e && e.message) || '无法与页面脚本通信' });
+    }
+  });
+}
+
+/**
+ * 批量推进（批量分配）：用捕获的 assignment/update/v2 模板，
+ * 把插件选中的候选人 id 塞进 applicationIds 后重放。
+ * 与单点自动化不同，这里不碰 Moka 页面 UI，顺序与列表页无关。
+ * 实际 HTTP 请求由 MAIN world 代发（见 requestMainWorldAssignment）。
+ */
+async function handleBatchAssign(appIds) {
+  if (isScreening) return { ok: false, error: '筛选进行中，请先停止筛选再批量推进' };
+  if (mokaActionBusy) return { ok: false, error: '有单点 Moka 操作进行中，请稍候' };
+  const pipelineId = currentPipelineId();
+  if (!pipelineId) {
+    return { ok: false, error: '无法识别当前职位，请回到该职位的简历列表页再批量推进' };
+  }
+  // 只用当前职位自己捕获的分配对象；其他职位的记录一律不混用
+  const template = await loadAssignmentForCurrentPipeline();
+  if (!template || template.url == null || !lastAssigneeIds.length) {
+    return {
+      ok: false,
+      error: '本职位尚未记录分配对象：请先在本职位手动批量分配一次（每个职位的分配对象各自记录，不会串用）'
+    };
+  }
+  const built = MokaBatch.buildBatchAssignmentBody(
+    template.body, appIds, lastAssigneeIds
+  );
+  if (!built.ok) return built;
+
+  const sent = await requestMainWorldAssignment({
+    url: template.url,
+    headers: MokaBatch.sanitizeCapturedHeaders(template.headers),
+    body: JSON.stringify(built.body)
+  });
+  if (sent.error) {
+    return { ok: false, error: sent.error || '批量推进请求失败，请检查 Moka 页面是否可访问' };
+  }
+  const evaluated = MokaBatch.evaluateAssignmentResponse(sent.status, sent.text);
+  if (!evaluated.ok) return evaluated;
+  return {
+    ok: true,
+    count: built.body.applicationIds.length,
+    assigneeCount: built.body.assigneeIds.length
+  };
 }
 
 async function handleMokaAction(appId, type) {
@@ -2459,7 +3420,22 @@ function markDetailBannerReady() {
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { evaluateHardConditions };
+  module.exports = {
+    evaluateHardConditions,
+    isOnCandidatePage,
+    markDetailAppSeen,
+    harvestMemberNames,
+    assigneeIdNames,
+    validAssigneeNames,
+    resolveAssigneeNamesForDisplay,
+    scrapeRecommendChipNamesFromDom,
+    resolveIdsForNames,
+    adoptScrapedAssignees,
+    rememberJobPipeline,
+    getAssigneeForJob,
+    detailSeenAppsForTest: () => Object.fromEntries(detailSeenApps),
+    memberNamesForTest: () => Object.fromEntries(memberNames)
+  };
 }
 
 init();

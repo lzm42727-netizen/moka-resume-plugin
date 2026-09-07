@@ -52,6 +52,16 @@
                 </div>
             </section>
 
+            <!-- 分配对象：批量推进用，开筛前在本页确认 -->
+            <section class="panel">
+                <h3 class="panel-title">
+                    <span class="panel-icon">🎯</span>分配对象
+                    <span class="panel-title-paren">（<button type="button" id="refresh-assignee" class="btn-link">重新读取</button>）</span>
+                </h3>
+                <div id="assignee-status" class="cond-hint cond-hint-flush">读取中…</div>
+                <button type="button" id="confirm-assignee" class="btn btn-secondary btn-sm hidden">确认本岗分配对象</button>
+            </section>
+
             <!-- 岗位理解：沿用原权重区绿色摘要样式 -->
             <section class="panel">
                 <h3 class="panel-title">
@@ -59,14 +69,13 @@
                     <span class="panel-title-paren">（<button type="button" id="refresh-job-understanding" class="btn-link">按 JD 刷新</button>）</span>
                 </h3>
                 <div id="jd-understanding" class="jd-understanding hidden"></div>
-                <div id="understanding-note" class="cond-hint cond-hint-flush">只读摘要；清单与职位不符时点「按 JD 刷新」整表重写</div>
+                <div id="understanding-note" class="cond-hint cond-hint-flush">只读摘要；点「按 JD 刷新」后会联动预设硬性门槛与筛选关键词</div>
             </section>
 
-            <!-- 硬性门槛：点「按 JD 预填」识别，空项不参与筛选 -->
+            <!-- 硬性门槛：随「按 JD 刷新」联动预填，空项不参与筛选 -->
             <section class="panel">
                 <h3 class="panel-title">
                     <span class="panel-icon">🔒</span>硬性门槛
-                    <span class="panel-title-paren">（<button type="button" id="autofill-hard" class="btn-link">点击按 JD 预填硬性</button>）</span>
                 </h3>
                 <div id="autofill-note" class="cond-hint cond-hint-flush"></div>
 
@@ -214,6 +223,30 @@
                 <button type="button" class="mp-filter" data-filter="error">评分失败</button>
                 <button type="button" class="mp-filter" data-filter="feedback">已决策</button>
                 <input id="result-search" class="mp-search" type="search" placeholder="搜索姓名">
+                <button type="button" id="batch-advance" class="mp-batch-btn" title="批量分配勾选的候选人（等同在 Moka 批量推荐/推进）">批量推进</button>
+            </div>
+
+            <!-- 批量推进确认面板 -->
+            <div id="batch-panel" class="mp-cal-panel hidden">
+                <div class="mp-cal-head">
+                    <div class="mp-cal-title">批量推进确认</div>
+                    <button type="button" id="close-batch-panel" class="btn-link">关闭</button>
+                </div>
+                <div class="mp-cal-section">
+                    <div id="batch-summary" class="mp-batch-text"></div>
+                    <div class="mp-batch-actions">
+                        <button type="button" id="batch-pick-advance" class="btn-link">勾选可推进</button>
+                        <button type="button" id="batch-clear" class="btn-link">清空勾选</button>
+                    </div>
+                </div>
+                <div class="mp-cal-section">
+                    <div class="mp-cal-section-label">分配对象</div>
+                    <div id="batch-assignee" class="mp-batch-text"></div>
+                </div>
+                <div class="mp-cal-section">
+                    <div id="batch-result" class="test-result hidden"></div>
+                    <button type="button" id="confirm-batch" class="btn btn-primary">确认推进</button>
+                </div>
             </div>
             <div id="result-list" class="mp-list"></div>
         </div>
@@ -267,6 +300,18 @@
                 </div>
 
                 <div id="test-result" class="test-result hidden"></div>
+            </section>
+
+            <!-- 接口观测：排查批量操作等未识别接口（调试用） -->
+            <section class="panel">
+                <h3 class="panel-title"><span class="panel-icon">🛠️</span>接口观测（排查用）</h3>
+                <div class="form-group">
+                    <small>记录 Moka 页面最近发出的 POST 请求（最多 80 条，只记录不拦截，不发送给任何人）。用于发现批量操作等插件尚未识别的接口：在 Moka 手动做一次操作后点下面按钮，把复制的流水发给开发者分析。刷新 Moka 页面会清空流水。</small>
+                </div>
+                <div class="button-group button-group-tight">
+                    <button id="copy-request-log" class="btn btn-secondary" type="button">📋 复制接口流水</button>
+                </div>
+                <div id="request-log-result" class="test-result hidden"></div>
             </section>
         </div>
 
@@ -336,6 +381,7 @@
     <script src="../lib/feedback.js"></script>
     <script src="../lib/calibrate.js"></script>
     <script src="../lib/moka-actions.js"></script>
+    <script src="../lib/batch.js"></script>
     <script src="../config.local.js"></script>
     <script src="popup.js"></script>
 </body>

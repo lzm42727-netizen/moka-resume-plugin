@@ -5,6 +5,8 @@ function switchTab(tabName) {
   document.querySelectorAll('.tab-content').forEach((c) => {
     c.classList.toggle('active', c.id === `${tabName}-tab`);
   });
+  // 回到配置页时刷新分配对象状态（Moka 里手动分配后可能已有新记录）
+  if (tabName === 'screening') renderAssigneeStatus();
 }
 
 document.querySelectorAll('.tab-btn').forEach((btn) => {
@@ -256,6 +258,7 @@ function setWeights(w) {
 
 function resetJobPresetForm(opts) {
   applyingPreset = true;
+  currentAssigneeConfirmedAt = 0;
   const internSuggested = !!(opts && opts.internSuggested);
   const typeVal = internSuggested ? 'intern' : 'full-time';
   const type = document.querySelector('input[name="job-type"][value="' + typeVal + '"]');
@@ -341,9 +344,10 @@ async function switchJobPreset(prevJobId, targetJobId, label) {
   if (fixedType && restored) {
     scheduleSaveJobPreset();
   }
-  // 与 v1.6.2 一致：进岗只在无理解时补一次，绝不在 loadJobs 路径上阻塞打 JD
+  // 进岗稳定规则：理解已就位或本岗已有存档时，绝不自动调 AI 重解读
   // （清单纠错请点「按 JD 刷新」，会整表重写）
-  await ensureJobUnderstandingOnEnter();
+  await ensureJobUnderstandingOnEnter(restored);
+  renderAssigneeStatus();
   if (prevJobId && targetJobId && String(prevJobId) !== String(targetJobId)) {
     await pullResults();
   }
@@ -363,6 +367,9 @@ let activePresetJobId = '';
 let activePresetJobLabel = '';
 /** 表单当前装着哪个岗位的配置；仅本次侧栏会话有效，不持久化 */
 let presetFormJobId = '';
+/** 本岗分配对象的确认时间（随存档持久化；0 = 未确认，批量推进前置确认用） */
+let currentAssigneeConfirmedAt = 0;
+let lastAdoptNote = ''; // 最近一次「确认本岗分配对象」未采纳的原因（面板常驻显示）
 let lastKnownPageJobId = '';
 let loadJobsInFlight = null;
 let startingScreen = false;
@@ -476,6 +483,7 @@ function collectJobPreset() {
   if (jobUnderstanding) jobSpec.summary = jobUnderstanding;
   return MokaPersist.sanitizeJobPreset({
     jobType: document.querySelector('input[name="job-type"]:checked').value,
+    assigneeConfirmedAt: currentAssigneeConfirmedAt,
     hard: Object.assign({}, hard, { ageRangeValues }),
     weights: readWeights(),
     requirements,
@@ -592,6 +600,7 @@ function applyJobPreset(preset) {
   writeHardConditions(preset.hard);
   // 只认本岗存档的 jobSpec，绝不用上一岗残留的 lastJobSpec
   lastJobSpec = preset.jobSpec || null;
+  currentAssigneeConfirmedAt = Number(preset.assigneeConfirmedAt) || 0;
   let req = preset.requirements || { must: preset.mustHaves || [], important: [], nice: [] };
   if ((!req.important || !req.important.length || !req.nice || !req.nice.length) && preset.jobSpec) {
     req = MokaPersist.fillRequirementsFromJobSpec(req, preset.jobSpec);
@@ -660,30 +669,50 @@ function restoreCurrentJobPreset() {
   if (!jobId) return Promise.resolve(false);
   const key = MokaPersist.JOB_PRESET_STORAGE_KEY;
   return chrome.storage.local.get(key).then((res) => {
-    const preset = MokaPersist.getJobPreset(res[key], jobId);
+    const record = res[key] || {};
+    let preset = MokaPersist.getJobPreset(record, jobId);
     presetFormJobId = String(jobId);
-    // 存档里的理解若来自别的职位，连同它带出的门槛/关键词一起作废，重新按本岗 JD 解读
-    const crossJob = !!preset && MokaPersist.jobSpecMatchesJob
-      && !MokaPersist.jobSpecMatchesJob(preset.jobSpec, jobId);
-    if (!preset || crossJob) {
+    // 同职位的存档找不到时，兜底按「职位名」找回一份：
+    // 同一职位在不同入口/管道下 jobId 可能不同（存档仍在，只是键对不上），
+    // 找到唯一同名存档就恢复，避免「已保存却变回初始」。
+    let byName = false;
+    if (!preset && activePresetJobLabel) {
+      const matches = [];
+      Object.keys(record || {}).forEach((rowKey) => {
+        const clean = MokaPersist.sanitizeJobPreset(record[rowKey] && record[rowKey].value);
+        const name = clean && clean.jobSpec && clean.jobSpec.sourceJobName;
+        if (name && name === String(activePresetJobLabel)) matches.push({ rowKey, clean });
+      });
+      if (matches.length === 1) {
+        preset = matches[0].clean;
+        byName = true;
+      }
+    }
+    if (!preset) {
       resetJobPresetForm({ internSuggested: /实习/.test(activePresetJobLabel || '') });
-      setPresetNote(
-        crossJob
-          ? '存档里的理解来自其它职位，已清空，将按本岗 JD 重新解读'
-          : '本岗尚未保存配置。首次会自动生成理解并保存。',
-        crossJob ? '#fa8c16' : '#8c8c8c'
-      );
+      setPresetNote('本岗尚未保存配置。首次会自动生成理解并保存。', '#8c8c8c');
       return false;
     }
+    // 岗位理解盖章来自其它职位 ≠ 这份存档不是本岗的：存档键就是职位身份。
+    // 门槛/关键词是招聘官按本岗手配的，绝不能因为理解戳对不上就整表清空。
+    const crossJob = byName ? false : (MokaPersist.jobSpecMatchesJob
+      && !MokaPersist.jobSpecMatchesJob(preset.jobSpec, jobId));
     applyJobPreset(preset);
-    // 老存档没记来源职位，验不了是不是本岗的，得让用户知道可以一键重解读
-    const unstamped = !!preset.jobSpec && !preset.jobSpec.sourceJobId;
-    setPresetNote(
-      unstamped
-        ? '已自动填充本岗配置（旧存档，理解若不是本岗请点「按 JD 刷新」）'
-        : '已自动填充本岗配置',
-      '#52c41a'
-    );
+    if (byName) {
+      setPresetNote('已按同名职位恢复本岗配置（存档职位与当前职位 id 不同，条件已带出）', '#52c41a');
+    } else if (crossJob) {
+      // 只提示，不抹数据：理解若确属别的岗位，点「按 JD 刷新」会按本岗重解读并落盘
+      setPresetNote('已自动填充本岗配置；其中的岗位理解来自其它职位，若理解不对请点「按 JD 刷新」', '#fa8c16');
+    } else {
+      // 老存档没记来源职位，验不了是不是本岗的，得让用户知道可以一键重解读
+      const unstamped = !!preset.jobSpec && !preset.jobSpec.sourceJobId;
+      setPresetNote(
+        unstamped
+          ? '已自动填充本岗配置（旧存档，理解若不是本岗请点「按 JD 刷新」）'
+          : '已自动填充本岗配置',
+        '#52c41a'
+      );
+    }
     // 空栏补全已在 applyJobPreset 内仅用本岗 preset.jobSpec 完成，此处不再用全局 lastJobSpec
     if (hasJobUnderstandingContent()) {
       setJobUnderstandingText(
@@ -696,28 +725,44 @@ function restoreCurrentJobPreset() {
 }
 
 /**
- * 进入本岗：已有理解则不动；否则解读 JD 写入摘要 + 空栏要求，并自动落盘（下次免刷新）
+ * 进入本岗的稳定性规则（岗位理解一经确认，不再每次进入都重新解读）：
+ * - 理解区已有内容 → 直接保留，什么都不做；
+ * - 本岗已保存过配置（hadSavedPreset=true，含只手配过门槛/关键词、从未生成理解的职位）
+ *   → 绝不自动重解读：能渲染就渲染存档摘要，否则只提示可手动点「按 JD 刷新」；
+ * - 只有「真·首次进入」（本岗从未保存过任何配置）才解读 JD 并落盘（下次直接恢复）。
+ * 冻结依据：本岗一经保存过配置即视为已确认，进岗不再静默调模型，防止每次进来都
+ * 重新理解一遍、或用新解读整表覆盖招聘官手配的重点看/加分看清单。
  */
-async function ensureJobUnderstandingOnEnter() {
+async function ensureJobUnderstandingOnEnter(hadSavedPreset) {
   if (!currentJobId() && !effectiveJobId()) return false;
   if (hasJobUnderstandingContent()) return false;
-  // 存档里已有 jobSpec.summary 时，先渲染摘要，仍不必打 AI
-  if (lastJobSpec && (lastJobSpec.summary || lastJobSpec.responsibilities || lastJobSpec.importantHaves)) {
-    applyingPreset = true;
-    try {
-      applyJobUnderstandingFromSpec(lastJobSpec, '已从本岗存档恢复岗位理解');
-      const built = MokaPersist.buildRequirementsFromJobSpec
-        ? MokaPersist.buildRequirementsFromJobSpec(lastJobSpec)
-        : MokaPersist.fillRequirementsFromJobSpec({ must: [], important: [], nice: [] }, lastJobSpec);
-      applyRequirementsToEditors(built, readHardConditions());
-    } finally {
-      applyingPreset = false;
+  const jobId = currentJobId() || effectiveJobId();
+  if (hadSavedPreset) {
+    // 存档里已有可渲染字段时先补渲染摘要（不打 AI）
+    if (lastJobSpec && (lastJobSpec.summary || lastJobSpec.responsibilities || lastJobSpec.importantHaves)) {
+      applyingPreset = true;
+      try {
+        applyJobUnderstandingFromSpec(lastJobSpec, '已从本岗存档恢复岗位理解');
+        const built = MokaPersist.buildRequirementsFromJobSpec
+          ? MokaPersist.buildRequirementsFromJobSpec(lastJobSpec)
+          : MokaPersist.fillRequirementsFromJobSpec({ must: [], important: [], nice: [] }, lastJobSpec);
+        applyRequirementsToEditors(built, readHardConditions());
+      } finally {
+        applyingPreset = false;
+      }
     }
     if (hasJobUnderstandingContent()) {
-      await saveJobPresetFor(currentJobId() || effectiveJobId());
+      await saveJobPresetFor(jobId);
       return true;
     }
+    const note = document.getElementById('understanding-note');
+    if (note) {
+      note.textContent = '本岗已保存过配置但没有岗位理解；如确需按 JD 解读请点「按 JD 刷新」，不会再自动重解读';
+      note.style.color = '#8c8c8c';
+    }
+    return false;
   }
+  // 真·首次进入（本岗从未保存过任何配置）：解读一次并自动落盘，之后进岗直接恢复
   const ok = await refreshUnderstandingAndRequirements({
     silentNote: '正在生成本岗理解…',
     doneNote: '已自动生成本岗理解并保存，下次进入直接恢复',
@@ -896,13 +941,31 @@ function refreshUnderstandingAndRequirements(opts) {
           resolve(false);
           return;
         }
-        if (note) note.style.color = '#52c41a';
-        const finish = () => resolve(true);
-        if (options.autoSave) {
-          saveJobPresetFor(targetJobId).then(finish).catch(finish);
-        } else {
-          finish();
-        }
+        // 联动：硬性门槛（学历/院校/经验/性别/实习/语言等）也按 JD 识别预设，
+        // 与岗位理解同源——一次刷新，理解、硬性门槛、筛选关键词全部就位
+        prefillHardFromJD().then((bits) => {
+          const baseNote = options.doneNote || (options.replaceRequirements === false
+            ? '已写入岗位理解并预填空栏要求'
+            : '已按 JD 更新岗位理解与要求清单');
+          if (note) {
+            note.textContent = baseNote
+              + (bits && bits.length ? '；已联动预填硬性门槛：' + bits.join('、') : '');
+            note.style.color = '#52c41a';
+          }
+          const afNote = document.getElementById('autofill-note');
+          if (afNote) {
+            afNote.textContent = bits && bits.length
+              ? '已随「按 JD 刷新」联动预填：' + bits.join('、') + '，可再改'
+              : '该 JD 未写明硬性条件，可手动设置';
+            afNote.style.color = bits && bits.length ? '#52c41a' : '#fa8c16';
+          }
+          const finish = () => resolve(true);
+          if (options.autoSave) {
+            saveJobPresetFor(targetJobId).then(finish).catch(finish);
+          } else {
+            finish();
+          }
+        });
       });
     });
   });
@@ -1057,6 +1120,44 @@ function showTestResult(message, type) {
     setTimeout(() => resultDiv.classList.add('hidden'), 3000);
   }
 }
+
+// 接口观测流水：复制 Moka 页面最近发出的 POST 请求（排查批量操作等未识别接口）
+document.getElementById('copy-request-log').addEventListener('click', async () => {
+  const btn = document.getElementById('copy-request-log');
+  const resultDiv = document.getElementById('request-log-result');
+  const show = (message, type) => {
+    resultDiv.textContent = message;
+    resultDiv.className = `test-result ${type}`;
+    resultDiv.classList.remove('hidden');
+    if (type === 'success') setTimeout(() => resultDiv.classList.add('hidden'), 3000);
+  };
+
+  const tab = await getMokaTab();
+  if (!isMokaTab(tab)) {
+    show('❌ 请先打开 Moka 候选人列表页', 'error');
+    return;
+  }
+
+  btn.disabled = true;
+  const response = await sendMessageToTab(tab.id, { action: 'getRequestLog' });
+  btn.disabled = false;
+
+  if (!response || !response.ok) {
+    show('❌ 未取到流水：请刷新 Moka 页面后重试', 'error');
+    return;
+  }
+  const log = Array.isArray(response.log) ? response.log : [];
+  if (!log.length) {
+    show('⚠️ 流水为空：刷新 Moka 页面后做一次手动操作，再回来复制', 'error');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(log, null, 2));
+    show(`✅ 已复制最近 ${log.length} 条 POST 请求`, 'success');
+  } catch (error) {
+    show('❌ 复制失败: ' + error.message, 'error');
+  }
+});
 
 // 加载已保存设置
 async function loadSettings() {
@@ -1241,8 +1342,9 @@ async function loadJobs() {
     if (activePresetJobId) {
       ensureJobSelectOption(activePresetJobId, activePresetJobLabel);
       jobSelect.value = activePresetJobId;
-      await restoreCurrentJobPreset();
-      await ensureJobUnderstandingOnEnter();
+      const hadPreset = await restoreCurrentJobPreset();
+      await ensureJobUnderstandingOnEnter(hadPreset);
+      renderAssigneeStatus();
       return;
     }
     jobSelect.innerHTML = '<option value="">请打开候选人列表页（含 pipelineId）</option>';
@@ -1358,127 +1460,26 @@ function applyHardAutofill(af, { fromButton }) {
   return bits;
 }
 
-/** 硬性「按 JD 预填」顺带补模型识别到的手写门槛。 */
-function fillMustHavesFromJobSpec(onDone) {
-  const apiKey = document.getElementById('api-key').value;
-  if (!apiKey) {
-    onDone(false);
-    return;
-  }
-  getMokaTab().then((tab) => {
-    if (!isMokaTab(tab)) {
-      onDone(false);
-      return;
-    }
-    const jobType = document.querySelector('input[name="job-type"]:checked').value;
-    const targetJobId = currentJobId() || effectiveJobId();
-    chrome.tabs.sendMessage(tab.id, { action: 'getJobSpec', jobType, jobId: targetJobId }, (response) => {
-      if (chrome.runtime.lastError) {
-        onDone(false);
-        return;
-      }
-      const spec = response && response.spec;
-      if (!spec || (currentJobId() || effectiveJobId()) !== targetJobId) {
-        onDone(false);
-        return;
-      }
-      lastJobSpec = spec;
+async function prefillHardFromJD() {
+  const tab = await getMokaTab();
+  if (!isMokaTab(tab)) return [];
+  const contextJobId = currentJobId() || effectiveJobId();
+  return new Promise((resolve) => {
+    chrome.tabs.sendMessage(tab.id, { action: 'getJobContext', jobId: contextJobId }, (response) => {
+      if (chrome.runtime.lastError || !response || !response.autofill) { resolve([]); return; }
+      let bits;
       applyingPreset = true;
       try {
-        if (Array.isArray(spec.mustHaves)) {
-          const split = MokaMatch.splitMustHavesForHard(spec.mustHaves, readHardConditions());
-          if (split.languages && split.languages.length) {
-            languageEditor.set(languageEditor.get().concat(split.languages).slice(0, 6));
-          }
-          if (split.customGates && split.customGates.length) {
-            customGateEditor.set(customGateEditor.get().concat(split.customGates).slice(0, 6));
-          }
-        }
-        if (!importantEditor.get().length || !niceEditor.get().length) {
-          const filled = MokaPersist.fillRequirementsFromJobSpec({
-            must: [],
-            important: importantEditor.get(),
-            nice: niceEditor.get()
-          }, spec);
-          applyRequirementsToEditors(filled, readHardConditions());
-        }
-        if (!readJobUnderstandingText()) {
-          applyJobUnderstandingFromSpec(spec, '硬性已预填；理解/重要/加分可再点上方刷新或手改');
-        } else {
-          const note = document.getElementById('understanding-note');
-          if (note) {
-            note.textContent = '硬性已预填；重要/加分空栏已尽量从 JD 补，可再改后保存';
-            note.style.color = '#8c8c8c';
-          }
-        }
+        bits = applyHardAutofill(response.autofill, { fromButton: true });
+      } catch (e) {
+        bits = [];
       } finally {
         applyingPreset = false;
       }
-      onDone(languageEditor.get().length > 0 || customGateEditor.get().length > 0);
+      resolve(bits || []);
     });
   });
 }
-
-async function loadJobContext(opts) {
-  const fromButton = !!(opts && opts.fromButton);
-  const note = document.getElementById('autofill-note');
-  const btn = document.getElementById('autofill-hard');
-  const tab = await getMokaTab();
-  if (!isMokaTab(tab)) {
-    note.textContent = '请先打开 Moka 候选人列表页';
-    note.style.color = '#fa8c16';
-    return;
-  }
-
-  note.textContent = '正在读取 JD…';
-  note.style.color = '#1890ff';
-  if (btn) btn.disabled = true;
-
-  const contextJobId = currentJobId() || effectiveJobId();
-  chrome.tabs.sendMessage(tab.id, { action: 'getJobContext', jobId: contextJobId }, (response) => {
-    if (chrome.runtime.lastError) {
-      if (btn) btn.disabled = false;
-      note.textContent = '未能读取 JD，请刷新 Moka 后重试';
-      note.style.color = '#fa8c16';
-      return;
-    }
-    const af = response && response.autofill;
-    if (!af) {
-      if (btn) btn.disabled = false;
-      note.textContent = (response && response.error)
-        || '未能读取 JD：请回到候选人列表页后重试（详情页需先在列表打开过）';
-      note.style.color = '#fa8c16';
-      return;
-    }
-
-    applyingPreset = true;
-    let bits;
-    try {
-      bits = applyHardAutofill(af, { fromButton });
-    } finally {
-      applyingPreset = false;
-    }
-    const finish = (mustFromAi) => {
-      if (btn) btn.disabled = false;
-      if (mustFromAi && bits.indexOf('必须') === -1) bits.push('必须');
-      if (bits.length) {
-        note.textContent = '已识别：' + bits.join(' · ') + '，可再改（未点保存则开筛时会自动保存）';
-        note.style.color = '#52c41a';
-      } else {
-        note.textContent = '该 JD 未写明硬性条件，请手动设置';
-        note.style.color = '#fa8c16';
-      }
-      // 预填不自动落盘（与方案 D §4 一致）；开筛前会落盘
-    };
-
-    if (fromButton) fillMustHavesFromJobSpec(finish);
-    else finish(false);
-  });
-}
-
-document.getElementById('autofill-hard').addEventListener('click', () => {
-  loadJobContext({ fromButton: true });
-});
 
 // 开始筛选
 document.getElementById('start-screening').addEventListener('click', async () => {
@@ -2572,6 +2573,7 @@ function renderResults() {
   }
 
   updateExportButton();
+  updateBatchButton();
   updateFilterTabLabels();
   refreshCalibrationButton();
 
@@ -2672,6 +2674,19 @@ function createResultRow(view) {
   row.className = 'mp-row'
     + (view.hardPassed === false ? ' failed' : '')
     + (view.stage || view.rescoring ? ' scoring' : '');
+
+  const chk = document.createElement('input');
+  chk.type = 'checkbox';
+  chk.className = 'mp-row-check';
+  chk.checked = batchSelected.has(String(view.id));
+  chk.title = '勾选后可通过「批量推进」批量分配';
+  chk.addEventListener('click', (e) => e.stopPropagation());
+  chk.addEventListener('change', () => {
+    if (chk.checked) batchSelected.add(String(view.id));
+    else batchSelected.delete(String(view.id));
+    updateBatchButton();
+  });
+  row.appendChild(chk);
 
   const scoreEl = document.createElement('div');
   if (view.score) {
@@ -2878,6 +2893,472 @@ function createResultRow(view) {
   });
   return row;
 }
+
+/* ---------------- 批量推进（批量分配接口重放） ---------------- */
+
+const batchSelected = new Set();
+
+function selectedBatchViews() {
+  const alive = new Set(resultState.items.map((v) => String(v.id)));
+  return Array.from(batchSelected)
+    .filter((id) => alive.has(id))
+    .map((id) => resultState.items.find((v) => String(v.id) === id))
+    .filter(Boolean);
+}
+
+function updateBatchButton() {
+  const btn = document.getElementById('batch-advance');
+  if (!btn) return;
+  const n = selectedBatchViews().length;
+  btn.textContent = n ? `批量推进 (${n})` : '批量推进';
+  btn.classList.toggle('on', n > 0);
+}
+
+function pickAdvanceable() {
+  resultState.items.forEach((v) => {
+    if (MokaMatch.hasAnyDecisionFeedback(v)) return; // 已决策的不再重复勾选
+    if (v.score && (v.score.level === '可推进' || v.score.level === '优先推进')) {
+      batchSelected.add(String(v.id));
+    }
+  });
+  renderResults();
+  refreshBatchPanelIfOpen();
+}
+
+function clearBatchSelection() {
+  batchSelected.clear();
+  renderResults();
+  refreshBatchPanelIfOpen();
+}
+
+/** 批量推进面板开着时同步刷新勾选摘要与分配对象状态，避免面板内容停留在旧状态 */
+function refreshBatchPanelIfOpen() {
+  const panel = document.getElementById('batch-panel');
+  if (panel && !panel.classList.contains('hidden')) openBatchPanel();
+}
+
+function closeBatchPanel() {
+  const panel = document.getElementById('batch-panel');
+  const result = document.getElementById('batch-result');
+  if (panel) panel.classList.add('hidden');
+  if (result) {
+    result.classList.add('hidden');
+    result.textContent = '';
+  }
+}
+
+/** 时间戳 → 「M-D HH:mm」；无效值返回空串 */
+function formatAssigneeTime(ts) {
+  const n = Number(ts);
+  if (!n) return '';
+  const d = new Date(n);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (x) => String(x).padStart(2, '0');
+  return (d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+/** 读取本岗存档里的分配对象确认时间 */
+function readAssigneeConfirmedAt(jobId) {
+  if (!jobId || !window.MokaPersist) return Promise.resolve(0);
+  const key = MokaPersist.JOB_PRESET_STORAGE_KEY;
+  return chrome.storage.local.get(key).then((res) => {
+    const record = res[key] || {};
+    const preset = MokaPersist.getJobPreset(record, jobId);
+    return (preset && Number(preset.assigneeConfirmedAt)) || 0;
+  }).catch(() => 0);
+}
+
+/** 把分配对象渲染成「（N 人：姓名、姓名）」；姓名凑不齐时退回「（N 人）」 */
+function formatAssigneeWho(count, names) {
+  const list = Array.isArray(names) ? names.filter(Boolean) : [];
+  if (count > 0 && list.length === count) return '（' + count + ' 人：' + list.join('、') + '）';
+  return '（' + count + ' 人）';
+}
+
+/** 当前选中职位的展示名（下拉框选项文案）——分配对象按职位名锚定 */
+function currentJobLabel() {
+  const jobSelect = document.getElementById('job-select');
+  if (jobSelect && jobSelect.selectedIndex >= 0 && jobSelect.options[jobSelect.selectedIndex]) {
+    return jobSelect.options[jobSelect.selectedIndex].textContent || '';
+  }
+  return activePresetJobLabel || '';
+}
+
+/**
+ * 按选中职位读取分配对象上下文；名字缺失且 Moka 页面正处于该职位时，
+ * 直接从页面 DOM 实时刮「推荐到」芯片补齐。返回 { ctx, liveNames, scrapeDebug, stale }。
+ * - 跟职位走：按「职位名」查该职位自己的存档（与页面 URL title 同源锚定），
+ *   而不是 Moka 页面当前职位的——下拉框换职位后显示/确认都不会串岗；
+ * - isPageJob=false：页面在别的职位上，此时不做实时刮取（页面弹窗属于别的职位）；
+ * - liveNames=true：姓名来自本次实时刮取（已由 content 采信落库）
+ * - stale=true：内容脚本不认识新 action，说明扩展没重载
+ */
+async function fetchAssigneeContextWithLiveScrape(jobId) {
+  const jobLabel = currentJobLabel();
+  let ctx = await sendToMoka({ action: 'getAssigneeForJob', jobId, jobLabel });
+  if (!ctx || !ctx.ok) return { ctx, liveNames: false, stale: false };
+  if (!ctx.isPageJob) return { ctx, liveNames: false, stale: false };
+  // 已有完整姓名时也做只读比对：发现「弹窗当前人选 ≠ 已存记录」立即提示，
+  // 绝不静默沿用旧记录（旧记录可能已被跨职位操作污染）
+  if (ctx.ready) {
+    const known = Array.isArray(ctx.assigneeNames) ? ctx.assigneeNames.filter(Boolean) : [];
+    if (known.length === ctx.assigneeCount) {
+      const cmp = await sendToMoka({ action: 'scrapeAssigneeNames', readOnly: true });
+      const popupNames = (cmp && cmp.ok && Array.isArray(cmp.names)) ? cmp.names.filter(Boolean) : [];
+      return { ctx, liveNames: false, stale: false, popupNames };
+    }
+  }
+  const known = Array.isArray(ctx.assigneeNames) ? ctx.assigneeNames.filter(Boolean) : [];
+  if (known.length === ctx.assigneeCount) return { ctx, liveNames: false, stale: false };
+  const scrape = await sendToMoka({ action: 'scrapeAssigneeNames' });
+  if (!scrape || !scrape.ok) {
+    return { ctx, liveNames: false, stale: true };
+  }
+  if (Array.isArray(scrape.names) && scrape.names.filter(Boolean).length === ctx.assigneeCount) {
+    ctx.assigneeNames = scrape.names;
+    return { ctx, liveNames: true, stale: false };
+  }
+  return {
+    ctx,
+    liveNames: false,
+    stale: false,
+    scrapeDebug: (scrape.debug && typeof scrape.debug === 'object') ? scrape.debug : null
+  };
+}
+
+/** 把实时刮取的诊断压缩成一句可读文案（仅用于「有标签但没读到人名」的少见情况） */
+function summarizeScrapeDebug(debug) {
+  if (!debug) return '';
+  const anchor = Array.isArray(debug.anchored) ? debug.anchored : [];
+  const labels = Number(debug.labels) || 0;
+  if (labels > 0 && !anchor.length) return '页面上有「推荐到」标签但没读到人名芯片';
+  return '';
+}
+
+/**
+ * 配置页「分配对象」区块：展示本岗记录状态并支持前置确认。
+ * - 已记录 + 已确认：绿色状态，开筛后批量推进直接使用，不再处理分配对象；
+ * - 已记录 + 未确认：展示「确认本岗分配对象」按钮；
+ * - 未记录：引导去本职位的 Moka 列表手动批量分配一次（插件自动捕获）。
+ */
+async function renderAssigneeStatusInner() {
+  const el = document.getElementById('assignee-status');
+  const btn = document.getElementById('confirm-assignee');
+  if (!el) return;
+  const jobId = currentJobId() || effectiveJobId();
+  if (!jobId) {
+    el.textContent = '请先在上方选择职位';
+    el.style.color = '';
+    if (btn) btn.classList.add('hidden');
+    return;
+  }
+  el.textContent = '正在读取本岗分配对象…';
+  el.style.color = '';
+  if (btn) btn.classList.add('hidden');
+  const { ctx, liveNames, stale, scrapeDebug, popupNames } = await fetchAssigneeContextWithLiveScrape(jobId);
+  // 等待期间职位被切走：丢弃本次结果，下一次渲染会按新职位重查
+  if ((currentJobId() || effectiveJobId()) !== jobId) return;
+  const confirmedAt = currentAssigneeConfirmedAt || await readAssigneeConfirmedAt(jobId);
+  if (!ctx) {
+    el.textContent = '无法连接 Moka 页面：请打开本职位的 Moka 列表页后点「重新读取」';
+    el.style.color = '#fa8c16';
+    return;
+  }
+  if (!ctx.ready) {
+    el.textContent = ctx.isPageJob
+      ? '本岗尚未记录分配对象：请在本职位的 Moka 列表手动批量分配一次（选好人点确认即可，插件会自动记录），完成后回本页点「重新读取」'
+      : '该职位尚未记录分配对象：请在 Moka 打开该职位的候选人列表，批量分配一次（插件自动记录）后回本页点「重新读取」';
+    el.style.color = '#fa8c16';
+    return;
+  }
+  const who = formatAssigneeWho(ctx.assigneeCount, ctx.assigneeNames);
+  const recorded = '已记录本岗分配对象' + who
+    + (ctx.savedAt ? '，记录于 ' + formatAssigneeTime(ctx.savedAt) : '');
+  if (stale) {
+    el.textContent = recorded + '。⚠️ 内容脚本版本过旧：请到 chrome://extensions 重新加载插件并刷新 Moka 页面，再点「重新读取」';
+    el.style.color = '#fa8c16';
+    if (btn) btn.classList.remove('hidden');
+    return;
+  }
+  if (ctx.assigneeCount && who.indexOf('：') === -1) {
+    const anchor = (scrapeDebug && Array.isArray(scrapeDebug.anchored)) ? scrapeDebug.anchored : [];
+    if (anchor.length) {
+      // 弹窗当前人选与已记录的不一致：给双方名单 + 对齐方式
+      el.textContent = recorded + '。弹窗当前选了 ' + anchor.length + ' 人（'
+        + anchor.join('、') + '），与本岗已记录的 ' + ctx.assigneeCount
+        + ' 人不一致；若以弹窗当前为准，直接点下方「确认本岗分配对象」即可采纳并永久记住，'
+        + '或在该弹窗点「推荐并进入用人部门筛选」完成确认自动同步';
+    } else {
+      // 弹窗没开：页面上没有芯片可读。不倒诊断杂项，给一句干净的行动指引
+      const partial = summarizeScrapeDebug(scrapeDebug);
+      el.textContent = recorded + '。'
+        + (partial ? '（' + partial + '）' : '推荐弹窗当前未打开，读不到页面上的姓名。')
+        + '请打开 Moka 的「推荐给用人部门」弹窗后点「重新读取」，识别到姓名后点「确认本岗分配对象」即可永久记住，关掉弹窗也不会丢';
+    }
+    el.style.color = '#fa8c16';
+    if (btn) btn.classList.remove('hidden');
+    return;
+  }
+  // 弹窗当前人选 vs 已存记录：不一致立即置顶提示（即使已确认也允许改选），
+  // 杜绝「记录里是 A、弹窗选的是 B」却毫无感知
+  if (Array.isArray(popupNames) && popupNames.length) {
+    const storedNames = Array.isArray(ctx.assigneeNames) ? ctx.assigneeNames.filter(Boolean) : [];
+    const same = storedNames.length === popupNames.length
+      && storedNames.every((n, i) => n === popupNames[i]);
+    if (!same) {
+      el.textContent = recorded + '。弹窗当前选了 ' + popupNames.length + ' 人（'
+        + popupNames.join('、') + '）'
+        + (storedNames.length ? '，与已记录的（' + storedNames.join('、') + '）不一致' : '')
+        + '；如以弹窗当前为准，点下方「确认本岗分配对象」即可采纳并永久记住';
+      el.style.color = '#fa8c16';
+      if (btn) btn.classList.remove('hidden');
+      return;
+    }
+  }
+  if (confirmedAt) {
+    // 已确认：一行干净的状态——姓名 + 记录时间，其余说明一律省略
+    const nm = Array.isArray(ctx.assigneeNames) && ctx.assigneeNames.length
+      ? ctx.assigneeNames.join('、') : '';
+    el.textContent = '✓ 已确认本岗分配对象：' + (nm ? nm + '（' + ctx.assigneeCount + ' 人）' : ctx.assigneeCount + ' 人')
+      + '，记录于 ' + formatAssigneeTime(confirmedAt) + '，开筛后批量推进按此执行';
+    el.style.color = '#52c41a';
+  } else {
+    el.textContent = recorded + (liveNames ? '（本次从推荐弹窗实时读取）' : '')
+      + '。确认后开筛即可直接批量推进；不同职位各自记录，不会串用';
+    el.style.color = '';
+    if (btn) btn.classList.remove('hidden');
+  }
+}
+
+/** 配置页分配对象状态渲染：先跑状态，再把最近一次「确认」的结果说明置顶显示
+ *  （成功确认时 lastAdoptNote 清空，绿色状态行本身就是结果，不叠加冗余说明） */
+async function renderAssigneeStatus() {
+  await renderAssigneeStatusInner();
+  const el = document.getElementById('assignee-status');
+  if (el && lastAdoptNote) {
+    el.textContent = lastAdoptNote + '\n' + el.textContent;
+    el.style.whiteSpace = 'pre-line';
+  }
+}
+
+/** 把确认时间写进本岗存档（不影响表单其它字段） */
+async function stampAssigneeConfirmed(jobId) {
+  if (!jobId || !window.MokaPersist) return;
+  const key = MokaPersist.JOB_PRESET_STORAGE_KEY;
+  const id = MokaPersist.jobPresetKey(jobId);
+  if (!id) return;
+  try {
+    const res = await chrome.storage.local.get(key);
+    const record = res[key] || {};
+    const existing = MokaPersist.getJobPreset(record, jobId) || collectJobPreset();
+    currentAssigneeConfirmedAt = Date.now();
+    const merged = Object.assign({}, existing, { assigneeConfirmedAt: currentAssigneeConfirmedAt });
+    const next = MokaPersist.putJobPreset(record, id, merged, Date.now());
+    await chrome.storage.local.set({ [key]: next });
+  } catch (e) { /* 存储失败不打断 */ }
+}
+
+/**
+ * 配置页点「确认本岗分配对象」：
+ * 1) 弹窗开着且有姓名 → 先「采纳」：React fiber 成对姓名优先（自带 id），
+ *    刮到的姓名并集走成员映射反查兜底；成功则改写本岗记录的分配对象并盖确认章。
+ *    之后关弹窗/换页面都不丢，批量推进重放即按这组人。
+ * 2) 有姓名但解析不到 id → 面板常驻提示两条路：弹窗点一次确认 / 点开下拉框让
+ *    插件记录成员 id。
+ * 3) 无姓名（弹窗没开）→ 常驻提示先开弹窗，不盖章不静默。
+ * 4) 其余一切失败（记录缺失/识别异常/未知返回/连不上）→ 常驻 ✗ + 警告 toast，
+ *    绝不静默清空、绝不误盖「已确认」章。
+ */
+async function confirmAssigneeForCurrentJob() {
+  const jobId = currentJobId() || effectiveJobId();
+  if (!jobId) return;
+  // 跨职位防护：Moka 页面在别的职位上时，页面弹窗人选属于那个职位，
+  // 绝不能采纳进当前选中的职位；此时只对「该职位已记录的分配对象」盖章
+  let probe = null;
+  try { probe = await sendToMoka({ action: 'getAssigneeForJob', jobId, jobLabel: currentJobLabel() }); } catch (e) { probe = null; }
+  if (probe && probe.ok && probe.isPageJob === false) {
+    if (probe.ready) {
+      await stampAssigneeConfirmed(jobId);
+      lastAdoptNote = '';
+      showDockToast('已确认本岗分配对象（该职位已记录的分配对象，开筛后批量推进按此执行）', 'ok');
+    } else {
+      lastAdoptNote = '✗ 该职位尚未记录分配对象：请在 Moka 打开该职位的候选人列表，'
+        + '批量分配一次（插件自动记录）后回本页再点确认';
+      showDockToast('该职位尚未记录分配对象', 'warn');
+    }
+    renderAssigneeStatus();
+    return;
+  }
+  let adopted = null;
+  try {
+    adopted = await sendToMoka({ action: 'adoptScrapedAssignees' });
+  } catch (e) { adopted = null; }
+  if (adopted && adopted.ok && adopted.adopted) {
+    await stampAssigneeConfirmed(jobId);
+    // 成功后不叠加置顶说明：绿色状态行「✓ 已确认本岗分配对象：姓名，记录于 …」
+    // 本身就是结果，避免同一句话重复两遍
+    lastAdoptNote = '';
+    showDockToast('本岗分配对象已更新并确认为：' + adopted.names.join('、'), 'ok');
+    renderAssigneeStatus();
+    return;
+  }
+  if (adopted && adopted.ok && Array.isArray(adopted.names) && adopted.names.length
+    && (adopted.reason === 'unknown-names' || adopted.reason === 'ambiguous-names')) {
+    const detail = adopted.reason === 'ambiguous-names'
+      ? '存在同名成员（' + (adopted.ambiguous || []).join('、') + '）'
+      : '成员 id 未知（' + (adopted.missing || []).join('、') + '）';
+    lastAdoptNote = '✗ 刚刚未采纳（' + detail + '）。两条路任选其一：'
+      + '① 在该弹窗点一次「推荐并进入用人部门筛选」完成确认，插件自动记录后回来再点一次本按钮；'
+      + '② 在弹窗里点开「推荐到」的选择框展开成员列表（插件会自动记录成员 id），再回来点一次本按钮';
+    showDockToast('无法采纳：' + detail + '，面板上有两种解决办法', 'warn');
+    renderAssigneeStatus();
+    return;
+  }
+  if (adopted && adopted.ok && adopted.reason === 'no-names') {
+    lastAdoptNote = '✗ 刚刚未采纳：没读到弹窗姓名（弹窗未打开或已关闭）。'
+      + '请先打开「推荐给用人部门」弹窗，点「重新读取」看到姓名后再点本按钮';
+    renderAssigneeStatus();
+    return;
+  }
+  if (adopted && adopted.ok && adopted.reason === 'no-record') {
+    lastAdoptNote = '✗ 刚刚未采纳：本岗记录缺失或职位识别失败（弹窗姓名已读到：'
+      + (adopted.names || []).join('、') + '）。请在本职位的 Moka 列表页点「重新读取」，'
+      + '确认下方能显示「已记录」后，再开弹窗点本按钮';
+    showDockToast('无法采纳：本岗记录缺失或职位识别失败', 'warn');
+    renderAssigneeStatus();
+    return;
+  }
+  if (adopted && adopted.ok && adopted.reason === 'error') {
+    lastAdoptNote = '✗ 刚刚未采纳：页面识别异常（' + (adopted.error || '未知')
+      + '）。请到 chrome://extensions 重载插件并刷新 Moka 页面后重试';
+    showDockToast('无法采纳：页面识别异常', 'warn');
+    renderAssigneeStatus();
+    return;
+  }
+  if (adopted && adopted.ok && adopted.adopted !== true) {
+    // 未知返回兜底：原样展示，绝不静默清空、绝不误盖「已确认」章
+    let detail = '';
+    try { detail = JSON.stringify(adopted).slice(0, 140); } catch (e) { detail = String(adopted); }
+    lastAdoptNote = '✗ 刚刚未采纳（未知返回：' + detail + '）';
+    showDockToast('无法采纳：未知返回', 'warn');
+    renderAssigneeStatus();
+    return;
+  }
+  lastAdoptNote = '✗ 刚刚未采纳：无法连接 Moka 页面（内容脚本可能未更新，请重载扩展并刷新 Moka）';
+  showDockToast('无法采纳：无法连接 Moka 页面', 'warn');
+  renderAssigneeStatus();
+}
+
+async function openBatchPanel() {
+  const panel = document.getElementById('batch-panel');
+  if (!panel) return;
+  const views = selectedBatchViews();
+  const summary = document.getElementById('batch-summary');
+  const assignee = document.getElementById('batch-assignee');
+  const confirmBtn = document.getElementById('confirm-batch');
+  const result = document.getElementById('batch-result');
+  if (result) {
+    result.classList.add('hidden');
+    result.textContent = '';
+  }
+
+  if (!views.length) {
+    summary.textContent = '尚未勾选候选人：在结果卡片左侧勾选，或点「勾选可推进」快捷全选。';
+    assignee.textContent = '';
+    confirmBtn.disabled = true;
+    panel.classList.remove('hidden');
+    return;
+  }
+
+  const names = views.slice(0, 5).map((v) => v.name || v.id).join('、');
+  const over = views.length > MokaBatch.BATCH_ASSIGN_LIMIT;
+  summary.textContent = `已勾选 ${views.length} 人：${names}${views.length > 5 ? ' 等' : ''}`
+    + (over ? `（超出单次上限 ${MokaBatch.BATCH_ASSIGN_LIMIT} 人，请减少勾选）` : '');
+
+  assignee.textContent = '读取分配对象…';
+  confirmBtn.disabled = true;
+  panel.classList.remove('hidden');
+
+  const { ctx } = await fetchAssigneeContextWithLiveScrape(currentJobId() || effectiveJobId());
+  if (ctx && ctx.ok && ctx.ready) {
+    const who = formatAssigneeWho(ctx.assigneeCount, ctx.assigneeNames);
+    const confirmedAt = currentAssigneeConfirmedAt
+      || await readAssigneeConfirmedAt(currentJobId() || effectiveJobId());
+    const namesKnown = who.indexOf('：') !== -1;
+    if (confirmedAt && namesKnown) {
+      assignee.textContent = '将全部推进给本岗已确认的分配对象' + who
+        + '——与该岗位分配对象一致，确认无误即可执行；如需更换请回「配置」页重新记录';
+    } else if (confirmedAt) {
+      assignee.textContent = '将推进给本岗已确认的分配对象' + who
+        + '（姓名可在「配置」页开着推荐弹窗点「重新读取」带出）；如需更换请回「配置」页重新记录';
+    } else {
+      assignee.textContent = '已记录本职位的分配对象' + who
+        + '——与你在本职位手动批量分配时选的人一致，不同职位不会串用；建议先到「配置」页确认';
+    }
+    confirmBtn.disabled = over;
+  } else {
+    assignee.textContent = '本职位还没有记录分配对象：请先在本职位的 Moka 列表手动批量分配一次（每个职位的分配对象各自记录），或到「配置」页点「重新读取」。';
+  }
+}
+
+async function executeBatchAdvance() {
+  const views = selectedBatchViews();
+  if (!views.length) return;
+  const btn = document.getElementById('confirm-batch');
+  const result = document.getElementById('batch-result');
+  const show = (msg, type) => {
+    result.textContent = msg;
+    result.className = `test-result ${type}`;
+    result.classList.remove('hidden');
+  };
+
+  btn.disabled = true;
+  const prevText = btn.textContent;
+  btn.textContent = '推进中…';
+  try {
+    const resp = await sendToMoka({
+      action: 'batchAssign',
+      appIds: views.map((v) => v.id)
+    });
+    if (!resp) {
+      show('❌ 无法连接 Moka 页面，请刷新后重试', 'error');
+      return;
+    }
+    if (!resp.ok) {
+      show('❌ ' + (resp.error || '批量推进失败'), 'error');
+      return;
+    }
+    show(`✅ 已推进 ${resp.count} 人，正在移入「已决策」并刷新 Moka…`, 'success');
+    // 处理联动：批量推进 = 批量「推荐给用人部门」。成功的候选人记入已决策存档，
+    // 自动从「待处理 / 推荐」移出，与单点推荐按钮的处理链路保持一致。
+    views.forEach((v) => {
+      saveCandidateFeedback(v.id, 'recommend', v, { mokaSynced: true, syncFailed: false });
+    });
+    batchSelected.clear();
+    updateBatchButton();
+    renderResults();
+    // 让接口写库先落定，再刷新 Moka 页面，避免用户看到旧列表
+    setTimeout(async () => {
+      try {
+        const tab = await getMokaTab();
+        if (tab && isMokaTab(tab)) chrome.tabs.reload(tab.id);
+      } catch (e) { /* 刷新失败不影响结果提示 */ }
+      closeBatchPanel();
+      renderResults();
+    }, 1200);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prevText;
+  }
+}
+
+document.getElementById('batch-advance')?.addEventListener('click', openBatchPanel);
+document.getElementById('close-batch-panel')?.addEventListener('click', closeBatchPanel);
+document.getElementById('batch-pick-advance')?.addEventListener('click', pickAdvanceable);
+document.getElementById('batch-clear')?.addEventListener('click', clearBatchSelection);
+document.getElementById('confirm-batch')?.addEventListener('click', executeBatchAdvance);
+document.getElementById('refresh-assignee')?.addEventListener('click', renderAssigneeStatus);
+document.getElementById('confirm-assignee')?.addEventListener('click', confirmAssigneeForCurrentJob);
 
 function setViewRescoring(appId, rescoring) {
   const id = String(appId);
