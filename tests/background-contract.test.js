@@ -77,10 +77,18 @@ describe('screening usage tracking contract', () => {
 
 describe('plugin run log (会话级运行日志) contract', () => {
   it('imports the shared log lib and reloads the session-scoped ring on SW start', () => {
-    assert.match(bg, /importScripts\('lib\/plugin-log\.js'\)/);
+    assert.match(bg, /(?:importScripts|safeImportScripts)\('lib\/plugin-log\.js'\)/);
     assert.match(bg, /let pluginLog = \[\];/);
     assert.match(bg, /chrome\.storage\.session\.get\(MokaPluginLog\.LOG_KEY/);
     assert.match(bg, /MokaPluginLog\.trimEntries\(saved, MokaPluginLog\.LOG_LIMIT\)/);
+  });
+
+  it('importScripts 逐个容错加载（1.6.20）：safeImportScripts 包裹 + console.error 定位失败文件', () => {
+    assert.match(bg, /function safeImportScripts\(scriptPath\)[\s\S]{0,160}importScripts\(scriptPath\)[\s\S]{0,120}console\.error/);
+    for (const lib of ['lib/contracts.js', 'lib/score.js', 'lib/persist.js', 'lib/feedback.js',
+      'lib/screening-job.js', 'lib/usage.js', 'lib/plugin-log.js']) {
+      assert.match(bg, new RegExp(`safeImportScripts\\('${lib.replace(/\//g, '\\/')}'\\)`), `${lib} 经 safeImportScripts 加载`);
+    }
   });
 
   it('addPluginLog accepts a single entry or a batch array and broadcasts live to the panel', () => {

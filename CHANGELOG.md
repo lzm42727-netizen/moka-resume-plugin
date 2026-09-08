@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.6.20 - 2026-09-08
+
+- 分页抓取加重试退避（P1-5）：`fetchAllApplications` 单页请求对超时/断网/HTTP 429/5xx 做指数退避重试（最多 3 次，600ms 起、上限 6s、带抖动），其余 4xx（会话失效等）立即失败不空转；筛选被停止时中止重试优雅收尾。此前任一页偶发超时/限流都会让整轮抓取（已完成页结果）全部作废
+- 热更新幂等守卫（P1-6）：inject.js 顶部加 `window.__mokaInjectLoaded` 一次性守卫，fetch/XHR 劫持各自带 `__mokaWrapped` 标记，重复注入不再二次包裹页面请求、不叠加消息监听；content.js `init()` 加 `contentBooted` 守卫，`startPageContextWatch` 的 popstate 只绑一次（interval 本就先清再设）
+- importScripts 逐个容错（P1-7）：background.js 七个 lib 改为逐个 `safeImportScripts()` try/catch 加载，单个文件加载失败不再中断后续脚本，SW 仍能启动且 console.error 定位到失败文件（config.local.js 维持静默忽略）
+- 并发评分 in-flight 去重（P1-8）：`handleScoreCandidate` 对同一 cacheKey 的并发请求共享同一次 LLM 调用，结果一致且不产生第二次扣费（共享方 meta 标记 cacheHit/inFlightShared，不重复累计 usage）；成功/失败都会移除占位，保证换参/重试可重新发起
+- 契约收口：`flushPluginLog`（popup 发送、content 处理、此前漏登记）补进 ACTIONS；新增 `BRIDGE_UP`（inject→content 10 类上行）/ `BRIDGE_DOWN`（content→inject 4 类下行）与两侧 source 常量，作为 MAIN↔ISOLATED 桥接的权威登记表；content 侧 hasLastResults/showLastResults/getRequestLog/getBatchAssignContext 四个动作 popup 已不再发送，契约保留登记、content 保留处理作数据源与旧版兼容
+- 测试：新增 bridge-contract.test.js（契约对称校验：ACTIONS 登记 / 上行下行类型 inject 发、content 收一一对应 / source 对称）；background-contract 增补 safeImportScripts 容错用例并更新 importScripts 断言
+
 ## 1.6.19 - 2026-09-08
 
 - 修复「左侧切换完岗位后岗位理解/门槛关键词不自动填充」的真正根因（快照实锤 A↔B 交叉错位）：切岗保存「离开岗」存档时，职位名锚取的是**已经切到的新岗名字**——下拉 change 触发时 select 已更新，函数内读 `currentJobLabel()` 会把新岗名盖到旧岗 key 上（如 ba2d225a 存成 JAVA 名、efaa1e46 存成 Golang 名）。现 `switchJobPreset` 增加 `prevLabel` 参数、`saveJobPresetFor` 支持显式 `opts.label`，离开岗存档一律用旧岗名盖锚

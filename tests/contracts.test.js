@@ -30,7 +30,7 @@ describe('message contracts', () => {
     const content = source('content.js');
     const popupHtml = source('popup/popup.html');
     const manifest = source('manifest.json');
-    assert.match(bg, /importScripts\('lib\/contracts\.js'\)/);
+    assert.match(bg, /(?:importScripts|safeImportScripts)\('lib\/contracts\.js'\)/);
     assert.match(manifest, /lib\/contracts\.js/);
     assert.match(popupHtml, /lib\/contracts\.js/);
     assert.match(content, /MokaContracts/);

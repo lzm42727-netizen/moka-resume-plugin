@@ -11,6 +11,11 @@
  * 通过 window.postMessage 与 content script（ISOLATED world）通信。
  */
 (function () {
+  // 幂等守卫：同一页面重复注入（热更新/脚本重放）时只劫持一次，
+  // 避免 fetch/XHR 二次包裹、消息监听器翻倍导致请求被重复捕获。
+  if (window.__mokaInjectLoaded) return;
+  window.__mokaInjectLoaded = true;
+
   const MATCH_SEARCH = 'search-candidate/v2';
   // 单个候选人详情：/api/applications/814701185(?scene=...)，且不能是列表搜索接口
   const DETAIL_RE = /\/api\/applications\/(\d+)(?:[/?#]|$)/;
@@ -324,9 +329,9 @@
     post('detail-data', { url, text });
   }
 
-  // 1) 劫持 fetch
+  // 1) 劫持 fetch（wrapper 自带 __mokaWrapped 标记：即使全局守卫标志丢失也不二次劫持）
   const origFetch = window.fetch;
-  if (origFetch) {
+  if (origFetch && !window.fetch.__mokaWrapped) {
     window.fetch = function (input, init) {
       let url = '';
       let method = 'GET';
@@ -354,11 +359,12 @@
       } catch (e) { /* ignore */ }
       return p;
     };
+    window.fetch.__mokaWrapped = true;
   }
 
-  // 2) 劫持 XMLHttpRequest
+  // 2) 劫持 XMLHttpRequest（原型方法打标记，防二次劫持叠加）
   const XHR = window.XMLHttpRequest;
-  if (XHR) {
+  if (XHR && !XHR.prototype.send.__mokaWrapped) {
     const open = XHR.prototype.open;
     const send = XHR.prototype.send;
     const setHeader = XHR.prototype.setRequestHeader;
@@ -392,6 +398,7 @@
 
       return send.apply(this, arguments);
     };
+    XHR.prototype.send.__mokaWrapped = true;
   }
 
   // 3) content script 晚加载时，可主动索要最近一次捕获

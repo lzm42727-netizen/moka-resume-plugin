@@ -19,13 +19,19 @@ chrome.runtime.onStartup.addListener(enableSidePanelOnActionClick);
 
 // 本地私有配置（config.local.js，已 gitignore）：如存在则强制覆盖对应设置
 try { importScripts('config.local.js'); } catch (e) { /* 无本地配置时忽略 */ }
-importScripts('lib/contracts.js');
-importScripts('lib/score.js');
-importScripts('lib/persist.js');
-importScripts('lib/feedback.js');
-importScripts('lib/screening-job.js');
-importScripts('lib/usage.js');
-importScripts('lib/plugin-log.js');
+// lib 逐个容错加载：单个文件加载失败不会中断后续脚本，SW 仍能启动；
+// 失败会被 console.error 定位到具体文件，方便排查。
+function safeImportScripts(scriptPath) {
+  try { importScripts(scriptPath); }
+  catch (e) { console.error(`[Moka 筛选] 加载 ${scriptPath} 失败，依赖它的功能将不可用`, e); }
+}
+safeImportScripts('lib/contracts.js');
+safeImportScripts('lib/score.js');
+safeImportScripts('lib/persist.js');
+safeImportScripts('lib/feedback.js');
+safeImportScripts('lib/screening-job.js');
+safeImportScripts('lib/usage.js');
+safeImportScripts('lib/plugin-log.js');
 function localForcedSettings() {
   return (typeof self !== 'undefined' && self.MOKA_LOCAL_SETTINGS) ? self.MOKA_LOCAL_SETTINGS : {};
 }
@@ -49,6 +55,7 @@ const CACHE_LIMIT = 500;
 // 评分 / JD 缓存：内存 Map + chrome.storage.local，避免 SW 重启后重复扣费
 const scoreCache = new Map();
 const jdCache = new Map();
+const scoreInflight = new Map(); // cacheKey → Promise：并发同 key 评分共享一次 LLM 调用
 let scoreRecord = {};
 let jdRecord = {};
 
@@ -545,37 +552,53 @@ async function handleScoreCandidate({ profile, config }) {
     return { score: scoreCache.get(cacheKey), meta: { cacheHit: true } };
   }
 
-  const systemPrompt =
-    '你是资深招聘专家，擅长客观评估候选人与岗位的匹配度。'
-    + '严格只输出一个 JSON 对象，禁止输出任何思考过程、前言、分析说明或 markdown。'
-    + '门槛 reason 控制在 40 字以内，highlights/concerns 每条不超过 30 字。';
-  const userPrompt = buildDimensionPrompt(
-    profile, jobSpec, config.jobType, config.jobJD, hardText, feedbackContext
-  );
+  // 并发 in-flight 去重：同 cacheKey 的评分已在进行中（重启/续筛竞态），
+  // 直接共享同一次 LLM 调用——结果一致，且不产生第二次扣费。
+  if (scoreInflight.has(cacheKey)) {
+    const shared = await scoreInflight.get(cacheKey);
+    return { score: shared.score, meta: { cacheHit: true, inFlightShared: true } };
+  }
 
-  // 推理型模型会先输出思考，需给足 token，避免 JSON 被截断
-  const llmRes = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: 4000, temperature: 0 });
-  const parsed = parseDimensionResponse(llmRes.content);
-  const expectedGates = []
-    .concat(jobSpec.languages || [])
-    .concat(jobSpec.customGates || []);
-  const raw = parsed.parseError
-    ? parsed
-    : MokaScore.ensureBonusKeywordResults(
-        MokaScore.ensureHandwrittenGateResults(parsed, expectedGates),
-        jobSpec.bonusKeywords || jobSpec.niceToHaves || []
-      );
+  const task = (async () => {
+    const systemPrompt =
+      '你是资深招聘专家，擅长客观评估候选人与岗位的匹配度。'
+      + '严格只输出一个 JSON 对象，禁止输出任何思考过程、前言、分析说明或 markdown。'
+      + '门槛 reason 控制在 40 字以内，highlights/concerns 每条不超过 30 字。';
+    const userPrompt = buildDimensionPrompt(
+      profile, jobSpec, config.jobType, config.jobJD, hardText, feedbackContext
+    );
 
-  // 解析失败不写缓存，避免把错误结果固化，下一轮可重试
-  if (!raw.parseError) rememberScore(cacheKey, raw);
-  const llmUsage = llmRes.usage || {};
-  const meta = {
-    cacheHit: false,
-    model: settings.modelName,
-    inTok: Number(llmUsage.inTok) > 0 ? Number(llmUsage.inTok) : 0,
-    outTok: Number(llmUsage.outTok) > 0 ? Number(llmUsage.outTok) : 0
-  };
-  return { score: raw, meta };
+    // 推理型模型会先输出思考，需给足 token，避免 JSON 被截断
+    const llmRes = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: 4000, temperature: 0 });
+    const parsed = parseDimensionResponse(llmRes.content);
+    const expectedGates = []
+      .concat(jobSpec.languages || [])
+      .concat(jobSpec.customGates || []);
+    const raw = parsed.parseError
+      ? parsed
+      : MokaScore.ensureBonusKeywordResults(
+          MokaScore.ensureHandwrittenGateResults(parsed, expectedGates),
+          jobSpec.bonusKeywords || jobSpec.niceToHaves || []
+        );
+
+    // 解析失败不写缓存，避免把错误结果固化，下一轮可重试
+    if (!raw.parseError) rememberScore(cacheKey, raw);
+    const llmUsage = llmRes.usage || {};
+    const meta = {
+      cacheHit: false,
+      model: settings.modelName,
+      inTok: Number(llmUsage.inTok) > 0 ? Number(llmUsage.inTok) : 0,
+      outTok: Number(llmUsage.outTok) > 0 ? Number(llmUsage.outTok) : 0
+    };
+    return { score: raw, meta };
+  })();
+  scoreInflight.set(cacheKey, task);
+  try {
+    return await task;
+  } finally {
+    // 无论成功失败都移除占位，保证后续（重试/换参）能重新发起
+    if (scoreInflight.get(cacheKey) === task) scoreInflight.delete(cacheKey);
+  }
 }
 
 /** 当前生效模型与单价（自定义价优先于内置表），供 content 端本地估算费用 */

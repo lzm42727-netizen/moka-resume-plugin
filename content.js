@@ -13,6 +13,9 @@ const CONCURRENCY = 4;
 const DEFAULT_LIMIT = 30;
 const MAX_PAGES = 300; // 安全上限：300 页 × 30 ≈ 9000 人
 const MOKA_TIMEOUT_MS = 25000;
+const FETCH_RETRIES = 3; // 单页抓取失败最多重试次数
+const FETCH_BASE_DELAY_MS = 600; // 指数退避基数
+const FETCH_MAX_DELAY_MS = 6000; // 单次退避上限（防止长时间占用筛选窗口）
 
 /** fetch + 超时 */
 async function fetchWithTimeout(url, options = {}, timeoutMs = MOKA_TIMEOUT_MS) {
@@ -28,6 +31,40 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = MOKA_TIMEOUT_MS) 
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * 单页抓取 + 重试：对超时/断网/429/5xx 做指数退避重试，
+ * 其余 4xx（如 401/403 会话失效）立即失败，避免无意义重试。
+ * 筛选被停止（isAlive 为 false）时返回 null，由分页循环优雅收尾。
+ */
+async function fetchPageWithRetry(url, options, isAlive) {
+  let lastErr = null;
+  let lastStatus = 0;
+  for (let attempt = 0; attempt <= FETCH_RETRIES; attempt++) {
+    if (isAlive && !isAlive()) return null; // 用户已停止：不再重试
+    let resp = null;
+    try {
+      resp = await fetchWithTimeout(url, options);
+    } catch (e) {
+      lastErr = e;
+      resp = null;
+    }
+    if (resp && resp.ok) return resp;
+    lastStatus = resp ? resp.status : 0;
+    // 非限流类 4xx：会话失效/参数错误重试无意义
+    if (resp && lastStatus !== 429 && lastStatus < 500) {
+      throw new Error(`候选人接口错误: ${lastStatus}`);
+    }
+    if (attempt >= FETCH_RETRIES) break;
+    const base = FETCH_BASE_DELAY_MS * Math.pow(2, attempt);
+    const delay = Math.min(base, FETCH_MAX_DELAY_MS) + Math.round(base * 0.25 * Math.random());
+    await sleep(delay);
+  }
+  if (lastErr) {
+    throw new Error(`候选人接口多次请求失败（已重试 ${FETCH_RETRIES} 次，最后错误：${lastErr.message}）`);
+  }
+  throw new Error(`候选人接口错误: ${lastStatus || '无响应'}（已重试 ${FETCH_RETRIES} 次）`);
 }
 
 let isScreening = false;
@@ -1109,7 +1146,10 @@ try {
 
 // init() 放在文件末尾调用：这里的 let/const 模块级变量必须全部初始化完成，
 // 否则 init 里同步调用的函数会命中 TDZ，整个顶层脚本中断（后半段声明全部失效）
+let contentBooted = false; // 幂等守卫：同页面上下文重复执行只做一次初始化
 function init() {
+  if (contentBooted) return;
+  contentBooted = true;
   console.log('[Moka 筛选] Content script 已加载');
   const leftover = document.getElementById('moka-panel');
   if (leftover) leftover.remove();
@@ -1358,6 +1398,7 @@ function notifyContentReady() {
 
 let lastPageContextKey = '';
 let pageContextWatchTimer = null;
+let pageContextPopstateBound = false;
 let pageJobNotifyTimer = null;
 
 function pageContextKey() {
@@ -1400,7 +1441,11 @@ function maybeNotifyPageJobChanged(reason) {
 
 function startPageContextWatch() {
   lastPageContextKey = pageContextKey();
-  window.addEventListener('popstate', () => maybeNotifyPageJobChanged('popstate'));
+  // popstate 只绑一次：重复执行/重复调用时不叠加监听
+  if (!pageContextPopstateBound) {
+    pageContextPopstateBound = true;
+    window.addEventListener('popstate', () => maybeNotifyPageJobChanged('popstate'));
+  }
   // 不用 patch history：isolated world 补丁不可靠，且可能干扰页面；靠 poll 即可
   if (pageContextWatchTimer) clearInterval(pageContextWatchTimer);
   pageContextWatchTimer = setInterval(() => maybeNotifyPageJobChanged('poll'), 1500);
@@ -1556,9 +1601,13 @@ async function fetchAllApplications(onProgress, maxCount = 0, epoch) {
 
     const body = MokaCapture.buildSearchPageBody(baseBody, limit, cursor);
 
-    const resp = await fetchWithTimeout(url, { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) });
-    if (!alive()) break;
-    if (!resp.ok) throw new Error(`候选人接口错误: ${resp.status}`);
+    // 单页抓取带重试退避：超时/断网/429/5xx 自动重试，停止时返回 null 收尾
+    const resp = await fetchPageWithRetry(
+      url,
+      { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) },
+      alive
+    );
+    if (!alive() || !resp) break;
 
     const json = await resp.json();
     const data = json.data || {};
