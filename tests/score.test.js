@@ -306,6 +306,7 @@ describe('PROMPT_VERSION', () => {
     assert.notEqual(PROMPT_VERSION, 'gate-ai-match-v1');
     assert.match(PROMPT_VERSION, /evidence-first/);
     assert.notEqual(PROMPT_VERSION, 'evidence-first-bonus-cal-v3');
+    assert.notEqual(PROMPT_VERSION, 'evidence-first-bonus-cal-v4');
   });
 });
 
@@ -331,6 +332,13 @@ describe('AI match scoring contract', () => {
     assert.match(prompt, /不得.{0,12}低于\s*50|不得.{0,12}50\s*以下/);
     assert.doesNotMatch(prompt, /education|综合分约\s*50/);
     assert.doesNotMatch(prompt, /重点看缺失会拉低匹配分/);
+    // 岗位相关性校准：证据只写岗位相关、亮点必须挂靠 JD 职责/重点看
+    assert.ok(prompt.indexOf('只写与岗位职责/重点看直接相关的经历证据') !== -1);
+    assert.ok(prompt.indexOf('highlights 只能写与岗位职责/重点看直接对应的亮点') !== -1);
+    // 语言类条件接受可核对的行为证据（英文翻译/英文文档）
+    assert.ok(prompt.indexOf('语言类硬性门槛') !== -1);
+    assert.match(prompt, /英文翻译、英文文档\/邮件产出/);
+    assert.ok(prompt.indexOf('加分看里的语言类条件') !== -1);
   });
 
   it('normalizes model match score and handwritten gate results', () => {

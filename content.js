@@ -766,6 +766,13 @@ function getAssigneeForJob(jobId, jobLabel) {
         // ② 映射/页面 pipeline 兜底
         if (!entry && mappedPid) entry = captures[String(mappedPid)];
         const pid = entry ? String(entry.pipelineId || mappedPid || '') : String(mappedPid || '');
+        // 自愈：命中页面自身 pipeline 下缺职位名章的旧记录（round15 之前的存档），
+        // 当场补章——同源（页面 pipeline + 页面名）才写，绝不猜
+        if (entry && !normalizeJobName(entry.jobName) && pagePipelineId && pageName
+          && String(entry.pipelineId || '') === String(pagePipelineId)) {
+          entry.jobName = normalizeJobName(pageName);
+          persistAssignmentEntry(entry);
+        }
         if (entry || mappedPid || isPageJob) {
           logAdoptTrace('查询', 'label=' + label + '；pagePid=' + (pagePipelineId || '空')
             + '；pageName=' + (pageName || '空') + '；resolvedPid=' + (pid || '空')
@@ -779,6 +786,41 @@ function getAssigneeForJob(jobId, jobLabel) {
           savedAt: entry ? Number(entry.savedAt) || 0 : 0,
           pipelineId: pid,
           isPageJob: isPageJob || (!!pid && !!pagePipelineId && pid === String(pagePipelineId))
+        });
+      });
+    });
+  });
+}
+
+/** 分配对象排查快照：页面上下文 + 职位名映射 + 分配存档摘要 + [adopt] 流水，
+ *  一键导出便于定位「串岗/查不到」类问题（设置页「复制排查快照」按钮调用） */
+function getAssigneeDiagnostics() {
+  return new Promise((resolve) => {
+    const ctx = parsePageContext();
+    const page = {
+      url: String(location.href || '').slice(0, 400),
+      pipelineId: currentPipelineId(),
+      jobName: pageJobName(),
+      urlJobIds: ctx && Array.isArray(ctx.jobIds) ? ctx.jobIds : []
+    };
+    readJobPipelineMap((map) => {
+      readAssignmentStore((captures) => {
+        const list = Object.keys(captures).map((pid) => {
+          const e = captures[pid] || {};
+          return {
+            pipelineId: pid,
+            jobName: e.jobName || '',
+            assigneeCount: Array.isArray(e.assigneeIds) ? e.assigneeIds.length : 0,
+            assigneeNames: Array.isArray(e.assigneeNames) ? e.assigneeNames : [],
+            savedAt: Number(e.savedAt) || 0
+          };
+        }).sort((a, b) => b.savedAt - a.savedAt);
+        resolve({
+          ok: true,
+          page,
+          map,
+          captures: list,
+          log: requestLog.slice()
         });
       });
     });
@@ -1162,6 +1204,10 @@ function init() {
       // 配置页「分配对象」跟职位走：按下拉框选中的 jobId 查该职位自己的记录，
       // 而不是 Moka 页面当前职位的（两者可能不同步）
       getAssigneeForJob(request.jobId, request.jobLabel).then((r) => sendResponse(r));
+      return true;
+    } else if (request.action === 'getAssigneeDiagnostics') {
+      // 分配对象排查快照（设置页「复制排查快照」）
+      getAssigneeDiagnostics().then((r) => sendResponse(r));
       return true;
     } else if (request.action === 'scrapeAssigneeNames') {
       // 配置页「重新读取」：弹窗开着时直接从页面 DOM 实时刮「推荐到」姓名；
@@ -3433,6 +3479,7 @@ if (typeof module !== 'undefined' && module.exports) {
     adoptScrapedAssignees,
     rememberJobPipeline,
     getAssigneeForJob,
+    getAssigneeDiagnostics,
     detailSeenAppsForTest: () => Object.fromEntries(detailSeenApps),
     memberNamesForTest: () => Object.fromEntries(memberNames)
   };

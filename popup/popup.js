@@ -1159,6 +1159,42 @@ document.getElementById('copy-request-log').addEventListener('click', async () =
   }
 });
 
+// 分配对象排查快照：页面上下文 + 职位名映射 + 存档摘要 + 流水，一键复制定位串岗/查不到
+document.getElementById('copy-assignee-snapshot')?.addEventListener('click', async () => {
+  const btn = document.getElementById('copy-assignee-snapshot');
+  const resultDiv = document.getElementById('request-log-result');
+  const show = (message, type) => {
+    resultDiv.textContent = message;
+    resultDiv.className = `test-result ${type}`;
+    resultDiv.classList.remove('hidden');
+    if (type === 'success') setTimeout(() => resultDiv.classList.add('hidden'), 4000);
+  };
+  const tab = await getMokaTab();
+  if (!isMokaTab(tab)) {
+    show('❌ 请先打开 Moka 候选人列表页', 'error');
+    return;
+  }
+  if (btn) btn.disabled = true;
+  const response = await sendMessageToTab(tab.id, { action: 'getAssigneeDiagnostics' });
+  if (btn) btn.disabled = false;
+  if (!response || !response.ok) {
+    show('❌ 未取到快照：请刷新 Moka 页面后重试', 'error');
+    return;
+  }
+  const dump = {
+    page: response.page || {},
+    map: response.map || {},
+    captures: response.captures || [],
+    log: Array.isArray(response.log) ? response.log : []
+  };
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(dump, null, 2));
+    show(`✅ 已复制排查快照（${dump.captures.length} 份存档 · ${dump.log.length} 条流水）`, 'success');
+  } catch (error) {
+    show('❌ 复制失败: ' + error.message, 'error');
+  }
+});
+
 // 加载已保存设置
 async function loadSettings() {
   try {
@@ -1358,6 +1394,7 @@ async function loadJobs() {
     jobSelect.appendChild(option);
   });
   const prevJobId = activePresetJobId || prevSelected || '';
+  const pageJobBefore = lastKnownPageJobId;
   const { targetJobId, label, pageJobId } = resolveTargetJobFromResponse(response, jobs);
   if (pageJobId) lastKnownPageJobId = pageJobId;
   // 表单里已经是这个岗位时只同步下拉，避免刷新风暴反复 restore 覆盖正在编辑的内容；
@@ -1371,6 +1408,10 @@ async function loadJobs() {
   } else {
     await switchJobPreset(prevJobId, targetJobId, label);
   }
+  // Moka 页面切岗（SPA 或整页跳转）后，若表单已装该岗（走了只同步下拉的快路径），
+  // 必须补一次分配对象重渲染——让「分配对象」跟随 Moka 当前页面职位；
+  // 未装该岗的路径由 switchJobPreset 内部已渲染，无需重复
+  if (pageJobId && pageJobId !== pageJobBefore && formHoldsTargetJob) renderAssigneeStatus();
   refreshCalibrationButton();
 
   if (!jobSelectBound) {
@@ -2606,7 +2647,12 @@ function renderResults() {
 
 function buildEvidenceSplit(appId, cols) {
   const split = document.createElement('div');
-  split.className = 'mp-split' + (!cols.left.length || !cols.right.length ? ' mp-split-single' : '');
+  const evidenceList = Array.isArray(cols.evidence) ? cols.evidence : [];
+  const hasRight = cols.right.length > 0;
+  const hasEvidence = evidenceList.length > 0;
+  // 「具备」列没有亮点但存在未体现/经历证据时，用空态占位让对比语义完整
+  const leftVisible = cols.left.length > 0 || (hasRight || hasEvidence);
+  split.className = 'mp-split' + (!(leftVisible && hasRight) ? ' mp-split-single' : '');
 
   if (cols.left.length) {
     const col = document.createElement('div');
@@ -2626,9 +2672,22 @@ function buildEvidenceSplit(appId, cols) {
       col.appendChild(line);
     });
     split.appendChild(col);
+  } else if (leftVisible) {
+    const col = document.createElement('div');
+    col.className = 'mp-col hit empty';
+    const title = document.createElement('div');
+    title.className = 'mp-col-title';
+    title.textContent = '具备';
+    col.appendChild(title);
+    const line = document.createElement('div');
+    line.className = 'mp-hit-empty';
+    line.textContent = 'AI 未找到与岗位直接相关的亮点';
+    line.title = 'AI 未提炼出与岗位职责/重点看直接对应的亮点；如需可重评后再看';
+    col.appendChild(line);
+    split.appendChild(col);
   }
 
-  if (cols.right.length) {
+  if (hasRight) {
     const col = document.createElement('div');
     col.className = 'mp-col miss';
     const title = document.createElement('div');
@@ -2664,6 +2723,41 @@ function buildEvidenceSplit(appId, cols) {
       col.appendChild(line);
     });
     split.appendChild(col);
+  }
+
+  if (hasEvidence) {
+    const box = document.createElement('div');
+    box.className = 'mp-evidence';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'mp-evidence-toggle';
+    const arrow = document.createElement('span');
+    arrow.className = 'mp-evidence-arrow';
+    arrow.textContent = '▸';
+    toggle.appendChild(document.createTextNode('经历证据（' + evidenceList.length + '）'));
+    toggle.appendChild(arrow);
+    const body = document.createElement('div');
+    body.className = 'mp-evidence-body hidden';
+    evidenceList.forEach((text) => {
+      const line = document.createElement('div');
+      line.className = 'mp-hit mp-evidence-item';
+      const mark = document.createElement('span');
+      mark.className = 'mp-mark ev';
+      mark.textContent = '•';
+      line.appendChild(mark);
+      line.appendChild(document.createTextNode(text));
+      body.appendChild(line);
+    });
+    toggle.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation(); // 不能冒泡到结果行，否则会打开候选人详情页
+      const nowHidden = body.classList.toggle('hidden');
+      box.classList.toggle('open', !nowHidden);
+      arrow.textContent = nowHidden ? '▸' : '▾';
+    });
+    box.appendChild(toggle);
+    box.appendChild(body);
+    split.appendChild(box);
   }
 
   return split;
@@ -2880,7 +2974,7 @@ function createResultRow(view) {
 
     if (s.level !== '错误') {
       const cols = MokaMatch.evidenceColumnsFromScore(s);
-      if (cols.left.length || cols.right.length) {
+      if (cols.left.length || cols.right.length || (cols.evidence && cols.evidence.length)) {
         info.appendChild(buildEvidenceSplit(view.id, cols));
       }
     }

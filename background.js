@@ -792,10 +792,12 @@ ${JOB_TYPE_TEXT[jobType] || JOB_TYPE_TEXT['full-time']}
 
 ${scoringRules}
 
-仅依据候选人信息判断，逐条阅读每段经历（含实习、项目）的具体描述；尽量在理由中引用具体证据。
-只返回以下 JSON，不要输出多余文字：
+  仅依据候选人信息判断，逐条阅读每段经历（含实习、项目）的具体描述；尽量在理由中引用具体证据。
+  experienceEvidence 只写与岗位职责/重点看直接相关的经历证据，与岗位无关的经历不要写入；
+  highlights 只写与 JD 职责/重点看对应的亮点，格式「能力点＋简历对应证据」，不要罗列与岗位无关的泛泛优点。
+  只返回以下 JSON，不要输出多余文字：
 {
-  "experienceEvidence": ["实习证据1"],
+  "experienceEvidence": ["与岗位职责直接相关的经历证据"],
   "matchScore": 0,
   "handwrittenGateResults": [{"item": "日语 N1", "met": false, "reason": "简历未提及日语能力"}],
   "bonusKeywordResults": [{"item": "作品集", "met": true, "reason": "简历附有可核对作品集"}],

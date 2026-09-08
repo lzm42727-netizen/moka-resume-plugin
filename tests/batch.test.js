@@ -281,6 +281,7 @@ describe('batch wiring', () => {
     // 不再读 Moka 页面当前职位的（换职位不串岗）
     assert.match(js, /action: 'getAssigneeForJob', jobId/);
     assert.match(content, /function getAssigneeForJob/);
+    assert.match(content, /function getAssigneeDiagnostics/);
     assert.match(content, /function rememberJobPipeline/);
     assert.match(content, /function readJobPipelineMap/);
     assert.match(content, /function persistAssignmentEntry/);
@@ -296,6 +297,14 @@ describe('batch wiring', () => {
     // 存档盖职位名章 + 按职位名匹配优先（错配直接暴露为「未记录」，绝不串岗）
     assert.match(content, /jobNameMatches\(label, e\.jobName\)/);
     assert.match(content, /jobName: normalizeJobName\(pageJobName\(\)\)/);
+    // 旧记录自愈：查询命中页面自身 pipeline 下缺职位名章的存档时当场补章（同源才写）
+    assert.match(content, /self-heal|自愈/);
+    assert.match(content, /entry\.jobName = normalizeJobName\(pageName\)/);
+    assert.match(content, /request\.action === 'getAssigneeDiagnostics'/);
+    assert.ok(Object.values(require('../lib/contracts.js').ACTIONS).includes('getAssigneeDiagnostics'));
+    // 一键排查快照：popup 按钮处理（按钮本体在 popup-ui 套件里断言）
+    assert.match(js, /action: 'getAssigneeDiagnostics'/);
+    assert.match(js, /已复制排查快照/);
     assert.match(content, /request\.action === 'getAssigneeForJob'/);
     assert.ok(Object.values(require('../lib/contracts.js').ACTIONS).includes('getAssigneeForJob'));
     // popup 查询时带上选中职位的展示名

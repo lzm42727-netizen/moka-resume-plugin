@@ -802,6 +802,72 @@ body {
   grid-template-columns: 1fr;
 }
 
+.mp-evidence {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+  border-top: 1px dashed #e8e8e8;
+  padding-top: 5px;
+}
+
+.mp-evidence-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: none;
+  padding: 0;
+  font-size: 10px;
+  color: #8c8c8c;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.mp-evidence-toggle:hover {
+  color: var(--primary);
+}
+
+.mp-evidence-arrow {
+  display: inline-block;
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+
+.mp-evidence.open .mp-evidence-arrow {
+  transform: rotate(90deg);
+}
+
+.mp-evidence-body {
+  margin-top: 4px;
+}
+
+.mp-evidence-body.hidden {
+  display: none;
+}
+
+.mp-evidence-item {
+  color: #595959;
+  margin-bottom: 3px;
+}
+
+.mp-evidence-item:last-child {
+  margin-bottom: 0;
+}
+
+.mp-evidence-item .mp-mark.ev {
+  color: #bfbfbf;
+}
+
+.mp-hit-empty {
+  font-size: 11px;
+  line-height: 1.45;
+  color: #bfbfbf;
+  word-break: break-word;
+}
+
+.mp-col.hit.empty .mp-col-title {
+  color: #8c8c8c;
+}
+
 .mp-col-title {
   font-size: 10px;
   font-weight: 600;

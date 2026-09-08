@@ -110,7 +110,11 @@ describe('screening configuration UI', () => {
     assert.match(js, /prefillHardFromJD\(\)\.then\(\(bits\) =>/);
     assert.doesNotMatch(js, /id="autofill-hard"|autofill-hard'\)/);
     assert.doesNotMatch(html, /autofill-hard|按 JD 预填硬性/);
-  });
+    // 设置页分配对象排查快照按钮
+    assert.match(html, /id="copy-assignee-snapshot"/);
+    // Moka 页面切岗后分配对象跟随页面职位：快路径（表单已装该岗）也强制重渲染
+    assert.match(js, /const pageJobBefore = lastKnownPageJobId/);
+    assert.match(js, /pageJobId !== pageJobBefore && formHoldsTargetJob\) renderAssigneeStatus\(\)/);  });
 
   it('drops a model reply that came back after the user switched jobs', () => {
     assert.match(js, /const targetJobId = currentJobId\(\) \|\| effectiveJobId\(\)/);
@@ -159,6 +163,20 @@ describe('screening configuration UI', () => {
   it('renders the actual unmet gate list on result cards', () => {
     assert.match(js, /mp-gate-list/);
     assert.match(js, /s\.unmet/);
+  });
+
+  it('renders an empty 具备 hint and a collapsible 经历证据 section', () => {
+    // 「具备」列只在有与岗位直接相关的亮点时填内容；无亮点给空态提示
+    assert.match(js, /AI 未找到与岗位直接相关的亮点/);
+    assert.match(js, /title\.textContent = '具备'/);
+    // 经历证据从「具备」列拆出为独立折叠区（默认收起，带条数）
+    assert.match(js, /经历证据（' \+ evidenceList\.length \+ '）/);
+    assert.match(js, /mp-evidence-body hidden/);
+    assert.match(js, /evidenceList\.forEach/);
+    // 折叠按钮必须阻断冒泡：否则点击会触发结果行 openCandidate 跳详情页
+    assert.match(js, /toggle\.addEventListener\('click', \(e\) => \{[\s\S]{0,160}stopPropagation/);
+    // 「具备」列内容只来自 highlights：不给证据混入左列留任何入口
+    assert.doesNotMatch(js, /cols\.left[\s\S]{0,60}experienceEvidence/);
   });
 });
 

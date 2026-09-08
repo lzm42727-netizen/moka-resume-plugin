@@ -519,24 +519,48 @@ describe('buildEvidenceColumns', () => {
     assert.deepEqual(cols.right, []);
   });
 
-  it('fills the left column from experience evidence when highlights are empty', () => {
+  it('keeps experience evidence in its own list instead of filling the left column', () => {
     const cols = buildEvidenceColumns({
       highlights: [],
       experienceEvidence: ['澳启教育：海外用户访谈'],
       concerns: [],
       unmet: []
     });
-    assert.deepEqual(cols.left, ['澳启教育：海外用户访谈']);
+    assert.deepEqual(cols.left, []);
+    assert.deepEqual(cols.evidence, ['澳启教育：海外用户访谈']);
   });
 
-  it('appends experience evidence without dropping existing highlights', () => {
+  it('keeps the left column highlights-only and moves evidence aside', () => {
     const cols = buildEvidenceColumns({
       highlights: ['有增长实习'],
       experienceEvidence: ['澳启教育：小红书内容优化', '有增长实习'],
       concerns: [],
       unmet: []
     });
-    assert.deepEqual(cols.left, ['有增长实习', '澳启教育：小红书内容优化']);
+    assert.deepEqual(cols.left, ['有增长实习']);
+    assert.deepEqual(cols.evidence, ['澳启教育：小红书内容优化']);
+  });
+
+  it('returns empty evidence list when nothing overlaps and no evidence given', () => {
+    const cols = buildEvidenceColumns({
+      highlights: ['内容运营实习'],
+      concerns: [],
+      unmet: []
+    });
+    assert.deepEqual(cols.left, ['内容运营实习']);
+    assert.deepEqual(cols.evidence, []);
+  });
+
+  it('reports empty left when highlights and evidence are both absent', () => {
+    const cols = buildEvidenceColumns({
+      highlights: [],
+      concerns: ['行业经验短'],
+      unmet: []
+    });
+    assert.deepEqual(cols.left, []);
+    assert.deepEqual(cols.evidence, []);
+    assert.equal(cols.right.length, 1);
+    assert.equal(cols.right[0].kind, 'concern');
   });
 
   it('does not put unmet nice into the未体现 column', () => {
