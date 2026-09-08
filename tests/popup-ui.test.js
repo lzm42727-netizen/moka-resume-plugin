@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const html = fs.readFileSync(path.join(__dirname, '../popup/popup.html'), 'utf8');
 const js = fs.readFileSync(path.join(__dirname, '../popup/popup.js'), 'utf8');
+const css = fs.readFileSync(path.join(__dirname, '../popup/popup.css'), 'utf8');
 
 describe('screening configuration UI', () => {
   it('shows handwritten hard gates and removes the legacy must row', () => {
@@ -13,6 +14,68 @@ describe('screening configuration UI', () => {
     assert.match(html, /id="gate-chips"/);
     assert.doesNotMatch(html, /id="must-chips"/);
     assert.doesNotMatch(html, /id="must-input"/);
+  });
+
+  it('renames 分配对象 to 简历推荐对象 across the config/batch/log copy', () => {
+    // 配置页面板标题与确认按钮
+    assert.match(html, />简历推荐对象</);
+    assert.match(html, /id="confirm-assignee"[^>]*>确认本岗简历推荐对象</);
+    // 批量推进面板分区标题
+    assert.match(html, /mp-cal-section-label">简历推荐对象</);
+    // 运行日志「推荐」分类按钮与排查快照说明
+    assert.match(html, /data-cat="adopt"[^>]*title="[^"]*简历推荐对象[^"]*">推荐</);
+    assert.match(html, /已记录的简历推荐对象摘要/);
+    assert.doesNotMatch(html, /分配对象/);
+    // popup.js 文案同步：确认/采纳/状态行/批量面板/引导全部换新词
+    assert.doesNotMatch(js, /分配对象/);
+    assert.match(js, /确认本岗简历推荐对象/);
+    assert.match(js, /将推进给本岗已确认的简历推荐对象/);
+  });
+
+  it('offers age tiers as a click-to-open multi-select dropdown in the gate grid gap', () => {
+    // 位置：紧跟实习经验之后（学历|性别 / 经验|实习 / 年龄填右侧空位），先于整行的院校区
+    const iIntern = html.indexOf('id="row-internship"');
+    const iAge = html.indexOf('id="cond-age"');
+    const iSchool = html.indexOf('院校要求');
+    assert.ok(iIntern > -1 && iAge > iIntern && iSchool > iAge, '年龄下拉应在实习经验之后、院校区之前');
+    // 唯一一个 #cond-age，且是下拉式多选（details 壳：收起显示已选档位，点开胶囊勾选，4 档）
+    assert.equal(html.split('id="cond-age"').length - 1, 1);
+    assert.match(html, /<details class="cond-dd" id="cond-age">/);
+    assert.match(html, /<summary class="cond-dd-summary"/);
+    assert.match(html, /<span class="cond-dd-text">不限<\/span>/);
+    assert.match(html, /<label class="choice-pill"><input type="checkbox" value="20-25"> 20-25<\/label>/);
+    assert.match(html, /<label class="choice-pill"><input type="checkbox" value="25-30"> 25-30<\/label>/);
+    assert.match(html, /<label class="choice-pill"><input type="checkbox" value="30-35"> 30-35<\/label>/);
+    assert.match(html, /<label class="choice-pill"><input type="checkbox" value="35\+"> 35 岁以上<\/label>/);
+    // 原生 listbox（select multiple）形态已废弃；旧全行 6 档 checkbox（含 35-40/40-50/50+）也已移除
+    assert.doesNotMatch(html, /<select multiple/);
+    assert.doesNotMatch(html, /value="35-40"/);
+    assert.doesNotMatch(html, /value="50\+"/);
+    // JS：读写走 #cond-age 内的 checkbox；旧档回填经 AGE_TIER_MIN 归一并入 35+；按钮文案随勾选刷新
+    assert.match(js, /function ageTierSelection[\s\S]{0,200}#cond-age input\[type="checkbox"\]:checked/);
+    assert.match(js, /function setAgeTierOptions[\s\S]{0,120}setCheckboxGroup\('cond-age', normalizeAgeTierValues\(values\)\)[\s\S]{0,80}refreshAgeDdLabel\(\)/);
+    assert.match(js, /AGE_TIER_MIN = \{ '20-25': 20, '25-30': 25, '30-35': 30, '35\+': 35 \}/);
+    assert.match(js, /r\.min >= 35 && !out\.includes\('35\+'\)/);
+    assert.match(js, /function refreshAgeDdLabel[\s\S]{0,200}cond-dd-text/);
+    assert.match(js, /details\.cond-dd\[open\]/);
+    // CSS：下拉壳与单行下拉同外观（含箭头），展开面板悬浮于网格之上
+    assert.match(css, /#screening-tab \.cond-dd-summary \{[\s\S]{0,400}background-image: url\(/);
+    assert.match(css, /#screening-tab \.cond-dd-menu \{[\s\S]{0,300}position: absolute;[\s\S]{0,200}z-index: 30;/);
+  });
+
+  it('resets the age dropdown through the checkbox helper that still exists', () => {
+    // 回归：v1.6.12 迁移为 details 下拉壳后，writeHardConditions 曾残留对已删除的
+    // setMultiSelectOptions 的调用——运行时在写入「学历」后抛 ReferenceError，
+    // 导致 applyJobPreset 中重点看/加分看/岗位理解整段恢复被中断（只回填出学历）。
+    assert.doesNotMatch(js, /setMultiSelectOptions\(/);
+    assert.doesNotMatch(js, /readMultiSelectValues\(/);
+    // 写入门槛的入口必须走现存的下拉复位 helper：先复位 checkbox 勾选，再刷新按钮文案
+    assert.match(js, /function writeHardConditions[\s\S]{0,700}setAgeTierOptions\(hard\.ageRangeValues/);
+    assert.match(js, /function setAgeTierOptions[\s\S]{0,180}setCheckboxGroup\('cond-age', normalizeAgeTierValues\(values\)\)[\s\S]{0,120}refreshAgeDdLabel\(\)/);
+    // 恢复/重置即使中途抛错也必须在 finally 中解锁 applyingPreset，否则后续保存全部被拒
+    assert.match(js, /function applyJobPreset[\s\S]{0,1400}finally \{[\s\S]{0,200}applyingPreset = false;/);
+    assert.match(js, /function resetJobPresetForm[\s\S]{0,1200}finally \{[\s\S]{0,200}applyingPreset = false;/);
+    assert.match(js, /function applyJobPreset[\s\S]{0,1600}reconcileJobTypeWithLabel\(activePresetJobLabel\)/);
   });
 
   it('labels focus and bonus keywords without arithmetic hints', () => {
@@ -45,6 +108,55 @@ describe('screening configuration UI', () => {
     assert.match(js, /niceEditor/);
     assert.match(js, /switchTab\('screening'\)/);
     assert.match(js, /自行新增重点看/);
+  });
+
+  it('recovers same-name presets by newest savedAt when the job id drifted', () => {
+    // 存档 key = Moka 页面 jobId，页面刷新/换入口后 id 可能漂移 → 按 id 找回失败时，
+    // 兜底按「职位名」恢复：同名多份（旧 id + 新 id 各存过）优先取有可用内容的最新，
+    // 全为空壳才退回空档交给空壳防线；不允许退回「同名必须唯一」的旧逻辑。
+    assert.match(js, /同职位的存档找不到时[\s\S]{0,300}优先取「有可用内容」的/);
+    assert.match(js, /全为空壳才退回最新空档/);
+    assert.doesNotMatch(js, /matches\.length === 1/);
+    assert.match(js, /bestUsable \|\| bestAny/);
+    assert.match(js, /bestUsable = \{ rowDiag, cand \};/);
+  });
+
+  it('stamps a top-level job anchor on save and reads it first on restore', () => {
+    // 保存：每次落盘都盖「当前职位」的 id + 名锚点，不依赖「按 JD 刷新」产物，
+    // 纯手配门槛/关键词的存档（无 jobSpec）也能在 jobId 漂移时按名找回；
+    // 切岗保存旧岗时调用方显式传 opts.label（旧岗名），不再读已切到新岗的下拉
+    assert.match(js, /const raw = collectJobPreset\(\);[\s\S]{0,80}raw\.jobIdAnchor = id;[\s\S]{0,260}raw\.jobNameAnchor = String\(label\)\.trim\(\)/);
+    assert.match(js, /盖上「当前职位」身份锚点/);
+    // 恢复：同名匹配优先读顶层 jobNameAnchor，再回退老存档 jobSpec.sourceJobName
+    assert.match(js, /clean\.jobNameAnchor \|\| \(clean\.jobSpec && clean\.jobSpec\.sourceJobName\)/);
+  });
+
+  it('records a restore diagnosis and ships it in the snapshot for回填 issues', () => {
+    // 每次恢复尝试都落诊断（no-job/exact/name/none/empty/anchor-mismatch），
+    // 排查快照带 presetRestore + 存档锚点清单，「保存了却不自动回填」凭快照即可定位
+    assert.match(js, /let lastPresetRestoreDiag = null;/);
+    assert.match(js, /hit: 'no-job'[\s\S]{0,200}未识别到当前职位（jobId 为空）/);
+    assert.match(js, /diag\.hit = preset \? \(byName \? 'name' : 'exact'\)[\s\S]{0,160}anchor-mismatch' : \(emptyHit \? 'empty' : 'none'\)\);/);
+    assert.match(js, /（诊断：存档 [\s\S]{0,200}同名命中 /);
+    assert.match(js, /presetRestore: lastPresetRestoreDiag/);
+    assert.match(js, /presets: presetRows/);
+    assert.match(js, /anchorName: \(clean && clean\.jobNameAnchor\) \|\| ''/);
+  });
+
+  it('blocks cross-job preset saves and refuses anchor-mismatched archives on restore', () => {
+    // 真实事故：快速切岗期间，防抖/切岗保存把「系统研发工程师」的表单内容写进了
+    // 「商务运营实习生」的 key，此后每次精确命中都回填出错误内容。
+    // 保存闸门（表单绑定职位 ≠ 目标职位 → 拒绝落盘）+ 恢复拒收（锚名不符 → 不填充）双保险。
+    assert.match(js, /跨岗防污染：只允许把「当前装在表单里的这份配置」存回它自己对应的职位/);
+    assert.match(js, /if \(!presetFormJobId \|\| String\(presetFormJobId\) !== id\) \{[\s\S]{0,120}lastPresetSaveBlock/);
+    // 确认章只盖章：不再用 collectJobPreset 兜底覆盖存档（表单可能装着别的职位）
+    assert.doesNotMatch(js, /getJobPreset\(record, jobId\) \|\| collectJobPreset\(\)/);
+    assert.match(js, /只盖确认章：绝不用当前表单内容兜底覆盖存档/);
+    // 恢复：键命中但锚名与当前职位不符 → 拒绝填充（anchor-mismatch），等用户重存覆盖
+    assert.match(js, /anchor-mismatch/);
+    assert.match(js, /已拒绝填充——请重新配置本岗后点「保存当前筛选条件」覆盖它/);
+    // 职位类型随职位名校正：实习生的存档不允许以「正式员工」形态恢复
+    assert.match(js, /function applyJobPreset[\s\S]{0,1600}reconcileJobTypeWithLabel\(activePresetJobLabel\)/);
   });
 
   it('shows why scoring failed on error cards', () => {
@@ -178,6 +290,150 @@ describe('screening configuration UI', () => {
     // 「具备」列内容只来自 highlights：不给证据混入左列留任何入口
     assert.doesNotMatch(js, /cols\.left[\s\S]{0,60}experienceEvidence/);
   });
+
+  it('renders a usage line fed by snapshots and optional custom prices in settings', () => {
+    // 结果头部用量行：来自 content 快照 usageText，渲染函数名与元素都在
+    assert.match(html, /id="usage-line"/);
+    assert.match(js, /function renderUsageLine/);
+    assert.match(js, /snap\.usageText/);
+    assert.match(js, /setResultUsageLine/);
+    // 设置页自定义单价（元/百万 tokens，留空走内置表）
+    assert.match(html, /id="model-input-price"/);
+    assert.match(html, /id="model-output-price"/);
+    assert.match(js, /modelInputPrice/);
+    assert.match(js, /modelOutputPrice/);
+    assert.match(html, /留空用内置|内置价目表/);
+  });
+});
+
+describe('screening tab card layout and gate two-column grid', () => {
+  it('tags every config panel with a section class for per-zone tinting', () => {
+    assert.match(html, /<section class="panel sec-job">/);
+    assert.match(html, /<section class="panel sec-assignee">/);
+    assert.match(html, /<section class="panel sec-understand">/);
+    assert.match(html, /<section class="panel sec-gate">/);
+    assert.match(html, /<section class="panel sec-keyword panel-last">/);
+    assert.match(css, /#screening-tab \.sec-job \.panel-icon \{ background: #e6f7ff; \}/);
+    assert.match(css, /#screening-tab \.panel \{[\s\S]{0,300}border-radius: 8px/);
+  });
+
+  it('pairs the four dropdown gates in a 2-column grid and keeps multi-select rows full width', () => {
+    // 学历|性别、经验|实习 进 cond-grid；院校/年龄/语言/专业 仍是整行
+    const gridStart = html.indexOf('class="cond-grid"');
+    assert.ok(gridStart !== -1, '硬性门槛应有两列网格');
+    const gridBlock = html.slice(gridStart, gridStart + 1600);
+    ['cond-degree', 'cond-gender', 'row-exp', 'row-internship'].forEach((id) => {
+      assert.ok(gridBlock.includes('id="' + id + '"'), id + ' 应位于两列网格内');
+    });
+    assert.ok(gridStart < html.indexOf('id="cond-school"'), '院校要求应在网格之后整行展示');
+    assert.match(css, /#screening-tab \.cond-grid \{[\s\S]{0,200}repeat\(2, minmax\(0, 1fr\)\)/);
+  });
+
+  it('titles the gate card with 空项不参与筛选 and trims long helper copy', () => {
+    assert.match(html, /panel-icon">🔒<\/span>硬性门槛[\s\S]{0,80}空项不参与筛选/);
+    // 旧长文案收进 title / 精简，不再整段摊在面板里
+    assert.doesNotMatch(html, /改完点「保存当前筛选条件」，或开筛时自动保存/);
+    assert.match(html, /条件会随开筛\/保存自动存，下次进入本岗自动回填/);
+    assert.doesNotMatch(html, /重点看定义经历匹配；加分看有证据时每项 \+3/);
+    assert.match(html, /重点看=经历硬匹配；加分看=有证据每项 \+3（最多 \+15）/);
+  });
+});
+
+describe('settings 运行日志 panel', () => {
+  it('rebrands the API card to 连接与模型 and replaces 接口观测 with 运行日志', () => {
+    assert.match(html, /<span class="panel-icon">🔗<\/span>连接与模型/);
+    assert.doesNotMatch(html, /panel-icon">🔗<\/span>API 配置/);
+    assert.doesNotMatch(html, /接口观测（排查用）/);
+    assert.match(html, /<span class="panel-icon">🛠️<\/span>运行日志/);
+  });
+
+  it('keeps a single snapshot button inside the collapsed 排查工具 details', () => {
+    // 流水 ⊂ 快照：独立的「复制接口流水」按钮已移除，只留一键排查快照
+    assert.match(html, /<details class="log-diag">[\s\S]{0,200}<summary>排查工具（一键复制排查快照）<\/summary>/);
+    assert.doesNotMatch(html, /id="copy-request-log"/);
+    assert.doesNotMatch(html, /复制接口流水/);
+    assert.match(html, /id="copy-assignee-snapshot"/);
+  });
+
+  it('exposes the log toolbar, list, footer, and empty state', () => {
+    assert.match(html, /id="log-filters"[\s\S]{0,700}data-cat="all"[\s\S]{0,700}data-cat="err"/);
+    assert.match(html, /id="log-pause"/);
+    assert.match(html, /id="log-clear"/);
+    assert.match(html, /id="log-copy"/);
+    assert.match(html, /id="log-export"/);
+    assert.match(html, /id="log-list"/);
+    assert.match(html, /id="log-empty"/);
+    assert.match(html, /id="log-count"/);
+  });
+
+  it('maps every badge label and treats 错误 as warn+err in the filter', () => {
+    assert.match(js, /req: \{ label: '请求'/);
+    assert.match(js, /adopt: \{ label: '推荐'/);
+    assert.match(js, /screen: \{ label: '筛选'/);
+    assert.match(js, /score: \{ label: '评分'/);
+    assert.match(js, /err: \{ label: '错误'/);
+    assert.match(js, /err: \['warn', 'err'\]/);
+  });
+
+  it('loads, renders, appends live, clears, copies, and exports the log', () => {
+    assert.match(js, /function renderPluginLog/);
+    assert.match(js, /function appendPluginLogEntry/);
+    assert.match(js, /function reloadPluginLog[\s\S]{0,200}action: 'getPluginLog'/);
+    assert.match(js, /function clearPluginLogPanel[\s\S]{0,120}action: 'clearPluginLog'/);
+    assert.match(js, /async function copyCurrentLog[\s\S]{0,200}navigator\.clipboard\.writeText/);
+    assert.match(js, /function exportCurrentLog[\s\S]{0,900}\.txt/);
+    // 后台广播实时追加 + 进设置页补拉一次
+    assert.match(js, /request\.action === 'pluginLogEntry'[\s\S]{0,120}appendPluginLogEntry/);
+    assert.match(js, /if \(tabName === 'settings'\) reloadPluginLog\(\);/);
+    // 清空/查看前先把 content 本地队列冲给 background，防止旧日志清完后复活
+    assert.match(js, /function flushContentLogQueues[\s\S]{0,500}action: 'flushPluginLog'/);
+    assert.match(js, /clearPluginLogPanel[\s\S]{0,200}await flushContentLogQueues\(\);/);
+    assert.match(js, /reloadPluginLog[\s\S]{0,200}await flushContentLogQueues\(\);/);
+  });
+
+  it('styles the log list as a monospace scrolling terminal with level colors', () => {
+    assert.match(css, /\.log-list \{[\s\S]{0,300}font-family: ui-monospace/);
+    assert.match(css, /\.log-list \{[\s\S]{0,400}overflow-y: auto/);
+    assert.match(css, /\.log-row\.cat-err \.log-text/);
+    assert.match(css, /\.log-badge\.cat-adopt/);
+    assert.match(css, /\.log-empty\.hidden/);
+  });
+});
+
+describe('settings UI de-clutter (endpoint visibility / advanced fold / save-and-test / icon toolbar)', () => {
+  it('hides the Endpoint group unless 自定义 API is selected', () => {
+    assert.match(html, /<div class="form-group" id="endpoint-group" hidden>/);
+    assert.match(js, /function applyProviderVisibility[\s\S]{0,200}group\.hidden = provider !== 'custom'/);
+    assert.match(js, /api-provider'\)\?\.addEventListener\('change', applyProviderVisibility\)/);
+    assert.match(js, /applyLocalForced\(\);[\s\S]{0,80}applyProviderVisibility\(\);/);
+  });
+
+  it('folds the optional custom price into an 高级 · 费用估算 details', () => {
+    assert.match(html, /<details class="adv-group">[\s\S]{0,120}<summary>高级 · 费用估算单价（可选）<\/summary>/);
+    assert.match(html, /id="model-input-price"/);
+    assert.match(html, /id="model-output-price"/);
+    assert.match(html, /留空用内置|内置价目表/);
+  });
+
+  it('merges 保存 and 测试 into one save-and-test action', () => {
+    assert.doesNotMatch(html, /id="test-api"/);
+    assert.match(html, /id="save-settings"[\s\S]{0,120}保存并测试/);
+    // 保存成功后自动测一次连接，而不是只提示「已保存」
+    assert.match(js, /chrome\.storage\.local\.set\(\{ mokaSettings: settings \}\)[\s\S]{0,400}action: 'testApi', settings/);
+    assert.doesNotMatch(js, /getElementById\('test-api'\)/);
+  });
+
+  it('turns the log toolbar actions into icon buttons with a toggle pause', () => {
+    assert.match(html, /id="log-pause" class="log-icon-btn"[\s\S]{0,160}aria-pressed="false">⏸</);
+    assert.match(html, /id="log-clear" class="log-icon-btn"/);
+    assert.match(html, /id="log-copy" class="log-icon-btn"/);
+    assert.match(html, /id="log-export" class="log-icon-btn"/);
+    assert.match(js, /pluginLogState\.paused = !pluginLogState\.paused/);
+    assert.match(js, /setAttribute\('aria-pressed'/);
+    assert.doesNotMatch(js, /log-pause'\)\?\.addEventListener\('change'/);
+    assert.match(css, /\.log-icon-btn \{[^}]*\}/);
+    assert.match(css, /\.log-icon-btn\.on/);
+  });
 });
 
 describe('about tab copy', () => {
@@ -196,5 +452,48 @@ describe('about tab copy', () => {
   it('does not advertise scoring weights that the UI no longer has', () => {
     assert.doesNotMatch(html, /权重自定义/);
     assert.doesNotMatch(html, /选择职位和权重/);
+  });
+});
+
+describe('切岗/恢复稳健性（1.6.18/1.6.19）', () => {
+  it('switchJobPreset 整段串行：快速 A→B→C 切岗不得用空表单覆盖存档', () => {
+    // 防的正是「保存旧岗 → 清空 → 恢复新岗」被并发切岗打散：B→C 的保存
+    // 在表单已被清空、B 内容未填回的窗口期执行会把空表单覆盖进 B 的存档。
+    assert.match(js, /let switchJobQueue = Promise\.resolve\(\);/);
+    assert.match(js, /function switchJobPreset\(prevJobId, prevLabel, targetJobId, label\) \{[\s\S]{0,2600}switchJobQueue\.then\(runSwitch\)/);
+    assert.match(js, /switchJobQueue = result\.then\(\(\) => \{\}, \(\) => \{\}\);/);
+    // 手动切岗调用方补失败兜底，不再产生未处理 rejection
+    assert.match(js, /switchJobPreset\(prevId, prevLabel, nextId, nextLabel\)\.then\([\s\S]{0,200}\.catch\(\(e\) => \{/);
+  });
+
+  it('保存离开岗时用 prevLabel 盖锚名，禁止把新岗名写到旧岗 key 上', () => {
+    // 快照实锤的交叉错位：ba2d225a(Golang key) 锚名=JAVA、efaa1e46(JAVA key) 锚名=Golang。
+    // 根因：change 触发后下拉已切到新岗，函数内读 currentJobLabel() 盖到旧岗存档上。
+    assert.match(js, /saveJobPresetFor\(prevJobId, \{ label: prevLabel \}\)/);
+    assert.match(js, /function saveJobPresetFor\(jobId, opts\)/);
+    assert.match(js, /const label = \(opts && opts\.label\) \|\| currentJobLabel\(\) \|\| activePresetJobLabel \|\| '';/);
+    assert.match(js, /switchJobPreset\(prevJobId, activePresetJobLabel, targetJobId, label\)/);
+    // 空表单离开岗时不保存（无可保存内容直接跳过，防空白覆盖真存档）
+    assert.match(js, /const leaving = collectJobPreset\(\);[\s\S]{0,160}presetHasUsableContent\(leaving\)[\s\S]{0,80}saveJobPresetFor\(prevJobId/);
+  });
+
+  it('空壳存档防线：纯空档视为未恢复，按首次进入重新生成并保留确认章', () => {
+    // 空壳（无门槛/关键词/理解，jobSpec 不可用）恢复后只会显示空表单，还会挡住
+    // 「首次进入自动生成理解」；命中空壳应走 emptyHit 分支触发重新生成。
+    assert.match(js, /function presetHasUsableContent\(p\)/);
+    assert.match(js, /preset && !presetHasUsableContent\(preset\)/);
+    assert.match(js, /emptyPresetAssigneeAt = Number\(preset\.assigneeConfirmedAt\) \|\| 0;/);
+    assert.match(js, /if \(emptyHit && emptyPresetAssigneeAt\) currentAssigneeConfirmedAt = emptyPresetAssigneeAt;/);
+    assert.match(js, /已拒绝填充——请重新配置本岗后点「保存当前筛选条件」覆盖它/);
+    assert.match(js, /检测到本岗存档是空档（没有门槛\/关键词\/理解），将按首次进入自动重新生成并保存/);
+    // 同名多份时优先选有可用内容的最新档
+    assert.match(js, /presetHasUsableContent\(cand\)[\s\S]{0,200}bestUsable = \{ rowDiag, cand \}/);
+  });
+
+  it('window load 初始化分步容错：任一步失败也要保证结果区交互绑定执行', () => {
+    // 防的是一次 storage 读取 reject 让 bindResultFilters 永不绑定 → 搜索/导出失绑
+    assert.match(js, /const bootSteps = \[[\s\S]{0,400}刷新页面职位上下文', refreshResultsAndJobContext\]/);
+    assert.match(js, /for \(const \[name, fn\] of bootSteps\) \{[\s\S]{0,120}await fn\(\);[\s\S]{0,80}catch \(e\) \{/);
+    assert.match(js, /try \{ bindResultFilters\(\); \} catch \(e\) \{ console\.warn\('\[初始化\] 结果区交互绑定失败', e\);/);
   });
 });

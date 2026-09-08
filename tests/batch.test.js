@@ -168,7 +168,7 @@ describe('batch wiring', () => {
     assert.match(content, /function loadAssignmentForCurrentPipeline/);
     assert.match(content, /capturedAssignmentPipelineId === pipelineId/);
     // handleBatchAssign 明确拒绝未记录分配对象的职位
-    assert.match(content, /本职位尚未记录分配对象/);
+    assert.match(content, /本职位尚未记录简历推荐对象/);
   });
 
   it('reports the capture time so the config tab can show it', () => {
@@ -189,7 +189,7 @@ describe('batch wiring', () => {
     assert.match(js, /async function renderAssigneeStatus\(\)/);
     assert.match(js, /function confirmAssigneeForCurrentJob/);
     // 确认流程：采纳弹窗人选（adoptScrapedAssignees）→ stampAssigneeConfirmed 落确认章
-    assert.match(js, /confirmAssigneeForCurrentJob[\s\S]{0,800}adoptScrapedAssignees/);
+    assert.match(js, /confirmAssigneeForCurrentJob[\s\S]{0,1000}adoptScrapedAssignees/);
     assert.match(js, /function stampAssigneeConfirmed[\s\S]{0,800}putJobPreset/);
     // 确认动作经 stampAssigneeConfirmed 把时间戳写进本岗存档；收集表单时随存档持久化
     assert.match(js, /stampAssigneeConfirmed\(jobId\)/);
@@ -197,7 +197,7 @@ describe('batch wiring', () => {
     // 切到配置页 / 进岗时刷新状态
     assert.match(js, /if \(tabName === 'screening'\) renderAssigneeStatus\(\)/);
     // 批量面板文案区分「已确认 / 未确认」
-    assert.match(js, /将推进给本岗已确认的分配对象/);
+    assert.match(js, /将推进给本岗已确认的简历推荐对象/);
     assert.match(js, /建议先到「配置」页确认/);
     // 勾选变化时面板同步刷新（修复分配对象区域空白/滞留旧状态）
     assert.match(js, /function refreshBatchPanelIfOpen[\s\S]{0,200}openBatchPanel\(\)/);
@@ -249,7 +249,7 @@ describe('batch wiring', () => {
     assert.match(inject, /pageWideNames/);
     // popup：弹窗人选与已记录不一致时，给出双方名单和两种对齐方式
     assert.match(js, /与本岗已记录的 ' \+ ctx\.assigneeCount/);
-    assert.match(js, /直接点下方「确认本岗分配对象」即可采纳并永久记住/);
+    assert.match(js, /直接点下方「确认本岗简历推荐对象」即可采纳并永久记住/);
 
     // 采纳链路：确认本岗分配对象 = 把弹窗当前人选写进本岗记录（姓名→id 反查），
     // 批量推进重放的 assigneeIds 随之与确认的姓名严格一致
@@ -259,12 +259,12 @@ describe('batch wiring', () => {
     assert.match(content, /function bindSingleAssigneeName/);
     assert.match(content, /action === 'adoptScrapedAssignees'/);
     assert.match(js, /action: 'adoptScrapedAssignees'/);
-    assert.match(js, /本岗分配对象已更新并确认为：/);
+    assert.match(js, /本岗简历推荐对象已更新并确认为：/);
     // 采纳结果常驻面板置顶（toast 只有 3 秒，用户会以为「点了没反应」）
     assert.match(js, /let lastAdoptNote/);
     assert.match(js, /el\.textContent = lastAdoptNote \+ '\\n' \+ el\.textContent/);
     // 成功确认走绿色状态行，不叠加置顶说明（避免同一句重复两遍）
-    assert.match(js, /✓ 已确认本岗分配对象：/);
+    assert.match(js, /✓ 已确认本岗简历推荐对象：/);
     assert.match(js, /开筛后批量推进按此执行/);
     assert.ok(!/✓ 刚刚已采纳弹窗人选/.test(js));
     // 状态行不带 build 标记（用户要求：成功状态只留姓名+时间）
@@ -272,7 +272,7 @@ describe('batch wiring', () => {
     assert.ok(!/〔build /.test(js));
     assert.match(js, /✗ 刚刚未采纳（/);
     // 批量推进面板：已确认且姓名已知 → 明示「与该岗位分配对象一致，可执行」
-    assert.match(js, /与该岗位分配对象一致，确认无误即可执行/);
+    assert.match(js, /与该岗位简历推荐对象一致，确认无误即可执行/);
     // popup：重新读取时名字缺失 → 走实时刮取兜底；仍缺失时显示诊断原因
     //（标签数/两遍扫描结果），并识别「内容脚本未更新」提醒重载扩展
     assert.match(js, /function fetchAssigneeContextWithLiveScrape\(jobId\)/);
@@ -311,7 +311,7 @@ describe('batch wiring', () => {
     assert.match(js, /action: 'getAssigneeForJob', jobId, jobLabel: currentJobLabel\(\)/);
     // 跨职位防护：页面在别的职位时绝不采纳页面弹窗人选
     assert.match(js, /probe\.isPageJob === false/);
-    assert.match(js, /✗ 该职位尚未记录分配对象/);
+    assert.match(js, /✗ 该职位尚未记录简历推荐对象/);
     // 重新读取必须永远比对「弹窗当前 vs 已存记录」：已有姓名也只读比对，
     // 不一致立即提示并可采纳（旧记录可能被跨职位操作污染，绝不静默沿用）
     assert.match(content, /request\.readOnly/);
@@ -321,7 +321,7 @@ describe('batch wiring', () => {
     // popup：弹窗没开时不倒诊断杂项，一句干净指引 + 强调「确认后关弹窗也不丢」
     assert.match(js, /function summarizeScrapeDebug\(debug\)/);
     assert.match(js, /推荐弹窗当前未打开，读不到页面上的姓名/);
-    assert.match(js, /识别到姓名后点「确认本岗分配对象」即可永久记住，关掉弹窗也不会丢/);
+    assert.match(js, /识别到姓名后点「确认本岗简历推荐对象」即可永久记住，关掉弹窗也不会丢/);
     assert.match(js, /内容脚本版本过旧：请到 chrome:\/\/extensions 重新加载插件/);
     // content：收割 id→姓名 并随 getBatchAssignContext 一并返回
     assert.match(content, /function harvestMemberNames/);
@@ -370,7 +370,7 @@ describe('batch wiring', () => {
     assert.match(js, /✗ 刚刚未采纳：本岗记录缺失或职位识别失败/);
     assert.match(js, /✗ 刚刚未采纳：页面识别异常/);
     assert.match(js, /✗ 刚刚未采纳（未知返回：/);
-    assert.ok(!/已确认本岗分配对象，开筛后批量推进将直接使用/.test(js));
+    assert.ok(!/已确认本岗简历推荐对象，开筛后批量推进将直接使用/.test(js));
 
     // popup：姓名凑得齐就显示名字，否则退回「N 人」
     assert.match(js, /function formatAssigneeWho/);

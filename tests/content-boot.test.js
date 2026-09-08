@@ -80,6 +80,7 @@ describe('content.js 顶层加载', () => {
     require('../lib/persist.js');
     require('../lib/feedback.js');
     require('../lib/screening-job.js');
+    require('../lib/usage.js');
     require('../lib/moka-actions.js');
     require('../lib/match.js');
     require('../lib/candidate-profile.js');

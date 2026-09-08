@@ -14,6 +14,7 @@ const sharedGlobals = {
   MokaMatch: 'readonly',
   MokaCalibrate: 'readonly',
   MokaContracts: 'readonly',
+  MokaUsage: 'readonly',
   MokaMokaSource: 'readonly',
   MokaCandidateProfile: 'readonly',
   MokaResultSession: 'readonly',

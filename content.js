@@ -34,6 +34,36 @@ let isScreening = false;
 let screeningStartedAt = 0;
 let screeningEpoch = 0;
 let screeningHeartbeat = 0; // 最近一次筛选活动时间；用于识别「卡死的旧任务」
+let runUsage = MokaUsage.emptyUsage(); // 本轮筛选的 LLM 用量/费用（续筛时从任务快照恢复）
+
+function resetRunUsage() {
+  runUsage = MokaUsage.emptyUsage();
+}
+
+function seedRunUsageFromJob(job) {
+  runUsage = MokaUsage.normalizeUsage(job && job.usage);
+}
+
+/** 向后台取当前生效模型单价（自定义价优先于内置表），写入 runUsage 供本地估算 */
+function refreshRunPriceInfo() {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ action: 'modelPriceInfo' }, (response) => {
+        if (chrome.runtime.lastError || !response || !response.ok) {
+          resolve(null);
+          return;
+        }
+        runUsage.price = response.price
+          ? { inputPerM: response.price.inputPerM, outputPerM: response.price.outputPerM, priced: true }
+          : null;
+        if (response.model) runUsage.model = String(response.model);
+        resolve(response);
+      });
+    } catch (e) {
+      resolve(null);
+    }
+  });
+}
 
 function touchScreeningHeartbeat() {
   screeningHeartbeat = Date.now();
@@ -69,6 +99,33 @@ const detailDataCache = new Map(); // id(string) -> 已含经历的详情响应 
 // 未识别接口。仅存内存，页面刷新即清空；上限截断防止筛选分页时无限膨胀。
 const REQUEST_LOG_LIMIT = 80;
 const requestLog = [];
+
+// 插件运行日志（会话级，background 统一沉淀最近 100 条，设置页「运行日志」面板可看）：
+// 高频请求流水先入队按批发送，避免每条都开一次消息通道；低频事件顺带搭同一趟车。
+const PLUGIN_LOG_FLUSH_MS = 500;
+const PLUGIN_LOG_BATCH_MAX = 12;
+const pluginLogQueue = [];
+let pluginLogFlushTimer = null;
+
+function flushPluginLog() {
+  pluginLogFlushTimer = null;
+  if (!pluginLogQueue.length) return;
+  const batch = pluginLogQueue.splice(0, pluginLogQueue.length);
+  try {
+    chrome.runtime.sendMessage({ action: 'pluginLog', entry: batch }).catch(() => {});
+  } catch (e) { /* 日志通道失败不影响主流程 */ }
+}
+
+function pushPluginLog(raw) {
+  if (!raw || !raw.cat || raw.text == null) return;
+  pluginLogQueue.push(raw);
+  if (pluginLogQueue.length >= PLUGIN_LOG_BATCH_MAX) {
+    if (pluginLogFlushTimer) { clearTimeout(pluginLogFlushTimer); pluginLogFlushTimer = null; }
+    flushPluginLog();
+    return;
+  }
+  if (!pluginLogFlushTimer) pluginLogFlushTimer = setTimeout(flushPluginLog, PLUGIN_LOG_FLUSH_MS);
+}
 
 // 批量分配（本 org 的推进动作）捕获：模板 + 分配对象，按职位分桶持久化，
 // 跨页面刷新恢复；换职位必须用该职位自己的分配对象，防止跨职位串用
@@ -401,6 +458,10 @@ function seedMemberNamesFromPairs(pairs) {
 function logAdoptTrace(outcome, detail) {
   requestLog.push({ url: '[adopt] ' + outcome, body: String(detail || ''), at: Date.now() });
   while (requestLog.length > REQUEST_LOG_LIMIT) requestLog.shift();
+  pushPluginLog({
+    cat: 'adopt',
+    text: '[adopt] ' + outcome + (detail ? ' ｜ ' + String(detail) : '')
+  });
 }
 
 /** 配置页「确认本岗分配对象」时采纳弹窗当前人选。采信顺序（系统性）：
@@ -600,6 +661,12 @@ function logCapturedRequest(entry) {
   if (Array.isArray(entry.names)) item.names = entry.names;
   requestLog.push(item);
   while (requestLog.length > REQUEST_LOG_LIMIT) requestLog.shift();
+  // 同步进插件运行日志：只记接口地址与分配对象名，不记请求体（避免刷屏/夹带大段数据）
+  let text = String(entry.url);
+  if (Array.isArray(entry.names) && entry.names.length) {
+    text += ' · 分配对象=' + entry.names.slice(0, 10).join('/');
+  }
+  pushPluginLog({ cat: 'req', text, at: item.at });
 }
 
 /** 记住批量分配请求模板与分配对象，供「批量推进」直接重放。
@@ -1099,6 +1166,10 @@ function init() {
         touchScreeningHeartbeat();
         performScreening(request, epoch).catch((err) => {
           console.error('[Moka 筛选] performScreening 异常:', err);
+          pushPluginLog({
+            cat: 'err',
+            text: 'performScreening 异常：' + ((err && err.message) || '未知错误')
+          });
         }).finally(() => {
           if (epoch === screeningEpoch) {
             isScreening = false;
@@ -1110,6 +1181,10 @@ function init() {
         // 绝不能让消息通道无响应关闭，否则侧栏只会看到「无法连接页面」
         isScreening = false;
         console.error('[Moka 筛选] startScreening 失败:', err);
+        pushPluginLog({
+          cat: 'err',
+          text: '启动筛选失败：' + ((err && err.message) || '未知错误')
+        });
         sendResponse({ ok: false, error: (err && err.message) || '启动筛选失败' });
       }
       return false;
@@ -1188,6 +1263,11 @@ function init() {
       return true;
     } else if (request.action === 'getRequestLog') {
       sendResponse({ ok: true, log: requestLog.slice() });
+      return false;
+    } else if (request.action === 'flushPluginLog') {
+      // 设置页「清空/查看」前先把本地队列冲给 background，避免清完又有旧日志冒出来
+      flushPluginLog();
+      sendResponse({ ok: true });
       return false;
     } else if (request.action === 'getBatchAssignContext') {
       loadAssignmentForCurrentPipeline().then((tpl) => {
@@ -2022,8 +2102,31 @@ function saveScreeningJob(job) {
 
 function patchScreeningJob(patch) {
   const base = activeScreeningJob || {};
-  return saveScreeningJob(Object.assign({}, base, patch || {}, { updatedAt: Date.now() }));
+  const merged = Object.assign({}, base, patch || {}, { updatedAt: Date.now() });
+  // 停止/暂停守卫：会话已结束（isScreening=false）后，在途 worker 的进度心跳
+  // 不得把任务状态从 stopped/paused_mismatch/awaiting_resume 改回 running。
+  // 触发场景：用户点「停止」或页面切岗触发暂停的瞬间，仍有 worker 卡在
+  // scoreViaBackgroundWithRetry（最长 120s），返回后会带着 status:'running'
+  // 走到这里，把刚冻结的终态覆盖回 running，导致侧栏/后台误判任务还在跑、
+  // 断点续筛错误恢复。
+  // 处理：此时只允许更新 completed/usage 等进度字段；状态保持内存态已有的
+  // 终态。若停止方的 finish 落盘尚未完成（内存态仍是 running），先给一个
+  // 安全的非 running 兜底，随后必到的 finishScreeningJob('stopped'/'paused_mismatch')
+  // 会覆盖成正确终态，最终落盘状态不受影响。
+  if (patch && patch.status === 'running' && !isScreening) {
+    delete merged.status;
+    if (!merged.status || merged.status === 'running') merged.status = 'awaiting_resume';
+  }
+  return saveScreeningJob(merged);
 }
+
+/** finishScreeningJob 是筛选状态流转的收口：所有终止/暂停都从这过，运行日志记一屏 */
+const SCREEN_STATUS_LABEL = {
+  done: '筛选完成',
+  stopped: '筛选已停止',
+  awaiting_resume: '已暂停（可在侧栏选择是否继续）',
+  paused_mismatch: '已暂停：Moka 职位与当前任务不一致'
+};
 
 async function finishScreeningJob(status, extra) {
   if (activeScreeningJob) {
@@ -2034,6 +2137,14 @@ async function finishScreeningJob(status, extra) {
     ));
   }
   chrome.runtime.sendMessage({ action: 'screeningKeepaliveStop' }).catch(() => {});
+  const c = extra ? Number(extra.completed) : NaN;
+  const t = extra ? Number(extra.total) : NaN;
+  const counts = Number.isFinite(c) && Number.isFinite(t) && t > 0 ? `：${c}/${t} 位` : '';
+  const label = SCREEN_STATUS_LABEL[status] || ('筛选状态：' + status);
+  pushPluginLog({
+    cat: 'screen',
+    text: label + counts + (lastKnownJobName ? ' · ' + lastKnownJobName : '')
+  });
 }
 
 function startScreeningKeepalive() {
@@ -2105,7 +2216,9 @@ async function offerResumeIfNeeded() {
 
 async function discardScreeningJob() {
   chrome.runtime.sendMessage({ action: 'screeningKeepaliveStop' }).catch(() => {});
+  pushPluginLog({ cat: 'screen', text: '已丢弃未完成筛选任务' + (lastKnownJobName ? ' · ' + lastKnownJobName : '') });
   activeScreeningJob = null;
+  resetRunUsage();
   await saveScreeningJob(null);
 }
 
@@ -2145,10 +2258,26 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
         applyKeywordTags(item);
 
         setRowStage(item.app.id, 'score');
-        const raw = await scoreViaBackgroundWithRetry(item.profile, scoreConfig);
-        applyScoreResult(item, raw);
+        const scoredRes = await scoreViaBackgroundWithRetry(item.profile, scoreConfig);
+        applyScoreResult(item, scoredRes.score);
+        if (scoredRes.usage && (scoredRes.usage.calls || scoredRes.usage.cacheHits)) {
+          runUsage = MokaUsage.mergeUsage(runUsage, scoredRes.usage);
+        }
+        const sc = item.score;
+        const uBit = scoredRes.usage
+          ? (scoredRes.usage.cacheHits ? ' · 缓存命中'
+            : scoredRes.usage.calls ? ` · LLM ${scoredRes.usage.inTok}/${scoredRes.usage.outTok} tokens` : '')
+          : '';
+        pushPluginLog({
+          cat: 'score',
+          text: `评分 ${(item.app && item.app.name) || '#' + (index + 1)}：${(sc && sc.level) || '无结果'}（${Number(sc && sc.score) || 0} 分）` + uBit
+        });
       } catch (err) {
         console.error('[Moka 筛选] 候选人处理失败:', item.app && item.app.name, err);
+        pushPluginLog({
+          cat: 'err',
+          text: `候选人处理失败：${(item.app && item.app.name) || '#' + (index + 1)} · ${(err && err.message) || '未知错误'}`
+        });
         applyScoreResult(item, {
           dimensions: null,
           error: (err && err.message) ? err.message : '处理失败'
@@ -2164,20 +2293,23 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
       await patchScreeningJob({
         status: 'running',
         completed,
-        total
+        total,
+        usage: runUsage
       });
       updatePanelStatus(`评分 ${completed}/${total} · 已补全经历 ${enrichedExp} 位 · Moka 标签请保持打开（可切去其他浏览器标签）`);
+      const progressMsg = MokaScreeningJob.formatScreeningProgress({
+        name: item.app && item.app.name,
+        current: completed,
+        total,
+        startedAt: screeningStartedAt,
+        now: Date.now()
+      });
+      const usageMsg = MokaUsage.summaryText(runUsage);
       reportProgress(
         completed,
         total,
         Math.round((completed / Math.max(total, 1)) * 100),
-        MokaScreeningJob.formatScreeningProgress({
-          name: item.app && item.app.name,
-          current: completed,
-          total,
-          startedAt: screeningStartedAt,
-          now: Date.now()
-        })
+        usageMsg ? (progressMsg + ' · ' + usageMsg) : progressMsg
       );
     }
   }
@@ -2233,10 +2365,18 @@ async function resumeScreeningFromJob() {
 
   isScreening = true;
   startScreeningKeepalive();
+  // 续筛接上之前的用量与单价口径，不因刷新断账
+  seedRunUsageFromJob(job);
+  await refreshRunPriceInfo();
   await patchScreeningJob({
     status: 'running',
     total: results.length,
-    completed: countScoredResults()
+    completed: countScoredResults(),
+    usage: runUsage
+  });
+  pushPluginLog({
+    cat: 'screen',
+    text: `恢复筛选：继续评分（已完成 ${countScoredResults()}/${results.length}）` + (job.jobName ? ' · ' + job.jobName : '')
   });
   updatePanelStatus('已恢复筛选，继续评分未完成的候选人… · Moka 标签请保持打开');
   publishResults(undefined, undefined, { flush: true });
@@ -2275,6 +2415,7 @@ async function performScreening(config, epoch) {
   lastScreenConfig = null;
   activeWeights = null;
   screeningStartedAt = 0;
+  resetRunUsage();
   resetResultUi();
   updatePanelStatus('正在准备筛选… · Moka 标签请保持打开（可切去其他浏览器标签）');
   reportProgress(0, 0, 0, '正在准备筛选…');
@@ -2385,6 +2526,8 @@ async function performScreening(config, epoch) {
 
     const pipelineId = (ctx && ctx.pipelineId) || lastKnownPipelineId || '';
     if (pipelineId) lastKnownPipelineId = String(pipelineId);
+    // 提前取一次单价，写入任务快照；续筛/暂停恢复后可直接沿用估算口径
+    await refreshRunPriceInfo();
     await saveScreeningJob({
       status: 'running',
       pipelineId,
@@ -2400,9 +2543,14 @@ async function performScreening(config, epoch) {
       total,
       completed: 0,
       startedAt: Date.now(),
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
+      usage: runUsage
     });
     startScreeningKeepalive();
+    pushPluginLog({
+      cat: 'screen',
+      text: `开始筛选：共 ${total} 位候选人` + (lastKnownJobName ? ' · ' + lastKnownJobName : '')
+    });
 
     // 先建占位行；画像/硬条件在补全详情后于 worker 内生成，保证经历数据完整
     results = apps.map((app) => ({ app, profile: null, jobJD, hard: null, score: null }));
@@ -2452,6 +2600,10 @@ async function performScreening(config, epoch) {
     }
   } catch (error) {
     console.error('[Moka 筛选] 错误:', error);
+    pushPluginLog({
+      cat: 'err',
+      text: '筛选异常：' + ((error && error.message) || '未知错误')
+    });
     updatePanelStatus('❌ 出错: ' + error.message);
     await finishScreeningJob('awaiting_resume');
   }
@@ -2496,7 +2648,7 @@ function scoreViaBackground(profile, config) {
       resolve(value);
     };
     const timer = setTimeout(() => {
-      done({ dimensions: null, error: '评分超时（后台无响应），请重试' });
+      done({ score: { dimensions: null, error: '评分超时（后台无响应），请重试' }, meta: null });
     }, SCORE_RESPONSE_TIMEOUT_MS);
     chrome.runtime.sendMessage(
       {
@@ -2513,11 +2665,11 @@ function scoreViaBackground(profile, config) {
       },
       (response) => {
         if (chrome.runtime.lastError) {
-          done({ dimensions: null, error: chrome.runtime.lastError.message });
+          done({ score: { dimensions: null, error: chrome.runtime.lastError.message }, meta: null });
         } else if (response && response.ok) {
-          done(response.score);
+          done({ score: response.score, meta: response.meta || null });
         } else {
-          done({ dimensions: null, error: (response && response.error) || '评分失败' });
+          done({ score: { dimensions: null, error: (response && response.error) || '评分失败' }, meta: null });
         }
       }
     );
@@ -2526,14 +2678,28 @@ function scoreViaBackground(profile, config) {
 
 const SCORE_RETRY_DELAY_MS = 1000;
 
+/**
+ * 带自动重试的评分。命中缓存不调模型，按 cacheHits 计；
+ * 真实调用（含解析失败触发的重试）逐次累计 token，避免漏算成本。
+ * @returns {Promise<{score: object, usage: object}>} usage 为 MokaUsage 计数（calls/cacheHits 等）
+ */
 async function scoreViaBackgroundWithRetry(profile, config) {
-  let raw = await scoreViaBackground(profile, config);
-  for (let attempt = 0; attempt < MokaScore.SCORE_AUTO_RETRY_MAX; attempt++) {
-    if (!MokaScore.isRetryableScoreFailure(raw)) return raw;
-    await sleep(SCORE_RETRY_DELAY_MS * (attempt + 1));
-    raw = await scoreViaBackground(profile, config);
+  let last = null;
+  let usage = MokaUsage.emptyUsage();
+  for (let attempt = 0; attempt < 1 + MokaScore.SCORE_AUTO_RETRY_MAX; attempt++) {
+    const res = await scoreViaBackground(profile, config);
+    last = res.score;
+    if (res.meta) {
+      usage = res.meta.cacheHit
+        ? MokaUsage.addCacheHit(usage)
+        : MokaUsage.addUsage(usage, res.meta);
+    }
+    if (!MokaScore.isRetryableScoreFailure(last)) return { score: last, usage };
+    if (attempt < MokaScore.SCORE_AUTO_RETRY_MAX) {
+      await sleep(SCORE_RETRY_DELAY_MS * (attempt + 1));
+    }
   }
-  return raw;
+  return { score: last, usage };
 }
 
 const WEIGHT_KEYS = MokaScore.WEIGHT_KEYS;
@@ -3125,7 +3291,7 @@ async function handleBatchAssign(appIds) {
   if (!template || template.url == null || !lastAssigneeIds.length) {
     return {
       ok: false,
-      error: '本职位尚未记录分配对象：请先在本职位手动批量分配一次（每个职位的分配对象各自记录，不会串用）'
+      error: '本职位尚未记录简历推荐对象：请先在本职位手动批量分配一次（每个职位的简历推荐对象各自记录，不会串用）'
     };
   }
   const built = MokaBatch.buildBatchAssignmentBody(
@@ -3360,6 +3526,7 @@ function buildResultsSnapshot() {
     resultJobId,
     resultContextKey: MokaPersist.resultContextKey(pipelineId, resultJobId),
     resultMismatch: !!(pageJobId && resultJobId && pageJobId !== resultJobId),
+    usageText: MokaUsage.summaryText(runUsage),
     items: MokaMatch.sortResultViews(results.map((item) => MokaMatch.toResultView(item)))
   };
 }

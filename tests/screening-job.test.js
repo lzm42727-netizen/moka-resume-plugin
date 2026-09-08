@@ -27,6 +27,40 @@ describe('sanitizeScreeningJob', () => {
     assert.equal(sanitizeScreeningJob({ status: 'running', jobId: '' }), null);
     assert.equal(sanitizeScreeningJob({ status: 'weird', jobId: 'x' }), null);
   });
+
+  it('carries a sanitized usage counter so resume keeps cost totals', () => {
+    const job = sanitizeScreeningJob({
+      status: 'awaiting_resume',
+      jobId: 'job-1',
+      total: 10,
+      completed: 4,
+      usage: {
+        calls: 7,
+        inTok: 21000,
+        outTok: 6000,
+        cacheHits: 3,
+        model: 'MiniMax-M2.7-MT',
+        price: { inputPerM: 2.1, outputPerM: 8.4, priced: true }
+      }
+    });
+    assert.deepEqual(job.usage, {
+      calls: 7,
+      inTok: 21000,
+      outTok: 6000,
+      cacheHits: 3,
+      model: 'MiniMax-M2.7-MT',
+      price: { inputPerM: 2.1, outputPerM: 8.4, priced: true }
+    });
+    // 非法数字被夹到 0，不污染续筛统计
+    const bad = sanitizeScreeningJob({
+      status: 'running',
+      jobId: 'j',
+      total: 1,
+      usage: { calls: -3, inTok: 'x', outTok: 5, cacheHits: 2 }
+    });
+    assert.deepEqual(bad.usage, { calls: 0, inTok: 0, outTok: 5, cacheHits: 2, model: '', price: null });
+    assert.equal(sanitizeScreeningJob({ status: 'running', jobId: 'j', total: 1 }).usage, null);
+  });
 });
 
 describe('isResumableJob', () => {

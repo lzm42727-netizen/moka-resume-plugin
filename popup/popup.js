@@ -5,8 +5,10 @@ function switchTab(tabName) {
   document.querySelectorAll('.tab-content').forEach((c) => {
     c.classList.toggle('active', c.id === `${tabName}-tab`);
   });
-  // 回到配置页时刷新分配对象状态（Moka 里手动分配后可能已有新记录）
+  // 回到配置页时刷新简历推荐对象状态（Moka 里手动分配后可能已有新记录）
   if (tabName === 'screening') renderAssigneeStatus();
+  // 打开设置页时同步一次运行日志（漏掉的后台广播在这里补上）
+  if (tabName === 'settings') reloadPluginLog();
 }
 
 document.querySelectorAll('.tab-btn').forEach((btn) => {
@@ -37,9 +39,7 @@ function parseAgeRange(val) {
 // 读取硬性条件表单
 function readHardConditions() {
   const schools = Array.from(document.querySelectorAll('#cond-school input[type="checkbox"]:checked')).map((c) => c.value);
-  const ageRanges = Array.from(document.querySelectorAll('#cond-age input[type="checkbox"]:checked'))
-    .map((c) => parseAgeRange(c.value))
-    .filter(Boolean);
+  const ageRanges = ageTierSelection().map((v) => parseAgeRange(v)).filter(Boolean);
   return {
     degree: document.getElementById('cond-degree').value,
     schools,
@@ -258,30 +258,33 @@ function setWeights(w) {
 
 function resetJobPresetForm(opts) {
   applyingPreset = true;
-  currentAssigneeConfirmedAt = 0;
-  const internSuggested = !!(opts && opts.internSuggested);
-  const typeVal = internSuggested ? 'intern' : 'full-time';
-  const type = document.querySelector('input[name="job-type"][value="' + typeVal + '"]');
-  if (type) type.checked = true;
-  applyJobTypeVisibility();
-  writeHardConditions({
-    degree: '',
-    schools: [],
-    exp: '',
-    gender: '',
-    internship: '',
-    ageRangeValues: [],
-    languages: [],
-    customGates: []
-  });
-  languageEditor.set([]);
-  customGateEditor.set([]);
-  importantEditor.set([]);
-  niceEditor.set([]);
-  setWeights(DEFAULT_WEIGHTS);
-  lastJobSpec = null;
-  setJobUnderstandingText('', '进入本岗后将自动生成岗位理解摘要（首次会解读 JD）');
-  applyingPreset = false;
+  try {
+    currentAssigneeConfirmedAt = 0;
+    const internSuggested = !!(opts && opts.internSuggested);
+    const typeVal = internSuggested ? 'intern' : 'full-time';
+    const type = document.querySelector('input[name="job-type"][value="' + typeVal + '"]');
+    if (type) type.checked = true;
+    applyJobTypeVisibility();
+    writeHardConditions({
+      degree: '',
+      schools: [],
+      exp: '',
+      gender: '',
+      internship: '',
+      ageRangeValues: [],
+      languages: [],
+      customGates: []
+    });
+    languageEditor.set([]);
+    customGateEditor.set([]);
+    importantEditor.set([]);
+    niceEditor.set([]);
+    setWeights(DEFAULT_WEIGHTS);
+    lastJobSpec = null;
+    setJobUnderstandingText('', '进入本岗后将自动生成岗位理解摘要（首次会解读 JD）');
+  } finally {
+    applyingPreset = false;
+  }
 }
 
 function resolveTargetJobFromResponse(response, jobs) {
@@ -323,35 +326,54 @@ function reconcileJobTypeWithLabel(label) {
   return true;
 }
 
-async function switchJobPreset(prevJobId, targetJobId, label) {
-  if (prevJobId && targetJobId && String(prevJobId) !== String(targetJobId)) {
-    await saveJobPresetFor(prevJobId);
-    resultState.items = [];
-    resultState.status = '';
-    resultState.banner = null;
-    lastJobSpec = null;
-    resetJobPresetForm({ internSuggested: /实习/.test(label || '') });
-  }
-  if (targetJobId) {
-    syncActiveJobFromSnapshot(targetJobId, label);
-    lastKnownPageJobId = targetJobId;
-  }
-  const restored = await restoreCurrentJobPreset();
-  const fixedType = reconcileJobTypeWithLabel(label || activePresetJobLabel);
-  if (!restored && jobTypeSuggestedByLabel(label || activePresetJobLabel) === 'intern') {
-    applyJobTypeVisibility();
-  }
-  if (fixedType && restored) {
-    scheduleSaveJobPreset();
-  }
-  // 进岗稳定规则：理解已就位或本岗已有存档时，绝不自动调 AI 重解读
-  // （清单纠错请点「按 JD 刷新」，会整表重写）
-  await ensureJobUnderstandingOnEnter(restored);
-  renderAssigneeStatus();
-  if (prevJobId && targetJobId && String(prevJobId) !== String(targetJobId)) {
-    await pullResults();
-  }
-  return restored;
+/** 切岗互斥队列：switchJobPreset 的「保存旧岗 → 清空表单 → 恢复新岗」必须整段串行。
+ *  手动切岗（下拉 change）与 loadJobs（页面 SPA 切岗）会并发触发本函数；若无互斥，
+ *  快速 A→B→C 时后一轮的保存可能在上一轮刚清空表单、还没填回 B 内容的窗口期执行，
+ *  把空/半成品表单覆盖进 B 的真实存档（历史跨岗串档同源）。
+ *  队列吞掉上一轮错误后仍放行后续轮次，但首个调用者照常拿到拒绝（可自行降级）。
+ *  prevLabel：离开岗位的名字。保存旧岗存档时必须用它盖锚名——若在函数内读
+ *  currentJobLabel()，下拉往往已切到新岗，会把新岗名盖到旧岗 key 上（快照实锤的
+ *  A↔B 交叉错位：ba2d225a 存的是 JAVA 名、efaa1e46 存的是 Golang 名）。 */
+let switchJobQueue = Promise.resolve();
+function switchJobPreset(prevJobId, prevLabel, targetJobId, label) {
+  const runSwitch = async () => {
+    if (prevJobId && targetJobId && String(prevJobId) !== String(targetJobId)) {
+      // 保存离开岗：表单此刻仍装着旧岗内容。空表单（前一轮恢复失败/从未加载出内容）
+      // 没有任何可保存价值，跳过以免把空白覆盖进旧岗真实存档。
+      const leaving = collectJobPreset();
+      if (presetHasUsableContent(leaving)) {
+        await saveJobPresetFor(prevJobId, { label: prevLabel });
+      }
+      resultState.items = [];
+      resultState.status = '';
+      resultState.banner = null;
+      lastJobSpec = null;
+      resetJobPresetForm({ internSuggested: /实习/.test(label || '') });
+    }
+    if (targetJobId) {
+      syncActiveJobFromSnapshot(targetJobId, label);
+      lastKnownPageJobId = targetJobId;
+    }
+    const restored = await restoreCurrentJobPreset();
+    const fixedType = reconcileJobTypeWithLabel(label || activePresetJobLabel);
+    if (!restored && jobTypeSuggestedByLabel(label || activePresetJobLabel) === 'intern') {
+      applyJobTypeVisibility();
+    }
+    if (fixedType && restored) {
+      scheduleSaveJobPreset();
+    }
+    // 进岗稳定规则：理解已就位或本岗已有存档时，绝不自动调 AI 重解读
+    // （清单纠错请点「按 JD 刷新」，会整表重写）
+    await ensureJobUnderstandingOnEnter(restored);
+    renderAssigneeStatus();
+    if (prevJobId && targetJobId && String(prevJobId) !== String(targetJobId)) {
+      await pullResults();
+    }
+    return restored;
+  };
+  const result = switchJobQueue.then(runSwitch);
+  switchJobQueue = result.then(() => {}, () => {});
+  return result;
 }
 
 WEIGHT_KEYS.forEach((k) => {
@@ -367,10 +389,14 @@ let activePresetJobId = '';
 let activePresetJobLabel = '';
 /** 表单当前装着哪个岗位的配置；仅本次侧栏会话有效，不持久化 */
 let presetFormJobId = '';
-/** 本岗分配对象的确认时间（随存档持久化；0 = 未确认，批量推进前置确认用） */
+/** 本岗简历推荐对象的确认时间（随存档持久化；0 = 未确认，批量推进前置确认用） */
 let currentAssigneeConfirmedAt = 0;
-let lastAdoptNote = ''; // 最近一次「确认本岗分配对象」未采纳的原因（面板常驻显示）
+let lastAdoptNote = ''; // 最近一次「确认本岗简历推荐对象」未采纳的原因（面板常驻显示）
 let lastKnownPageJobId = '';
+/** 最近一次「本岗存档恢复」的诊断（目标身份/存档清单/命中方式），进排查快照定位回填问题 */
+let lastPresetRestoreDiag = null;
+/** 最近一次被跨岗防污染闸门拦截的保存（表单绑定职位 ≠ 目标职位），供保存按钮给出解释 */
+let lastPresetSaveBlock = null;
 let loadJobsInFlight = null;
 let startingScreen = false;
 const ACTIVE_JOB_STORAGE_KEY = 'mokaActivePresetJobId';
@@ -468,7 +494,7 @@ function showDockToast(text, tone) {
 
 function collectJobPreset() {
   const hard = readHardConditions();
-  const ageRangeValues = Array.from(document.querySelectorAll('#cond-age input[type="checkbox"]:checked')).map((c) => c.value);
+  const ageRangeValues = ageTierSelection();
   const requirements = {
     must: [],
     important: importantEditor.get(),
@@ -502,7 +528,10 @@ function writeHardConditions(hard) {
   document.getElementById('cond-gender').value = hard.gender || '';
   document.getElementById('cond-internship').value = hard.internship || '';
   setCheckboxGroup('cond-school', hard.schools);
-  setCheckboxGroup('cond-age', hard.ageRangeValues || []);
+  // 年龄是 details 下拉壳 + 胶囊勾选（原生 select multiple 会渲染成常开列表框），
+  // 必须用 setAgeTierOptions 复位勾选与按钮文案；setMultiSelectOptions 已随迁移删除，
+  // 若沿用旧调用会在写入门槛后抛 ReferenceError，导致重点看/岗位理解整段恢复被中断。
+  setAgeTierOptions(hard.ageRangeValues || []);
   languageEditor.set(hard.languages || []);
   customGateEditor.set(hard.customGates || []);
 }
@@ -594,35 +623,58 @@ function applyRequirementsToEditors(requirements, hard) {
 function applyJobPreset(preset) {
   if (!preset) return false;
   applyingPreset = true;
-  const type = document.querySelector('input[name="job-type"][value="' + preset.jobType + '"]');
-  if (type) type.checked = true;
-  applyJobTypeVisibility();
-  writeHardConditions(preset.hard);
-  // 只认本岗存档的 jobSpec，绝不用上一岗残留的 lastJobSpec
-  lastJobSpec = preset.jobSpec || null;
-  currentAssigneeConfirmedAt = Number(preset.assigneeConfirmedAt) || 0;
-  let req = preset.requirements || { must: preset.mustHaves || [], important: [], nice: [] };
-  if ((!req.important || !req.important.length || !req.nice || !req.nice.length) && preset.jobSpec) {
-    req = MokaPersist.fillRequirementsFromJobSpec(req, preset.jobSpec);
+  try {
+    const type = document.querySelector('input[name="job-type"][value="' + preset.jobType + '"]');
+    if (type) type.checked = true;
+    applyJobTypeVisibility();
+    writeHardConditions(preset.hard);
+    // 只认本岗存档的 jobSpec，绝不用上一岗残留的 lastJobSpec
+    lastJobSpec = preset.jobSpec || null;
+    currentAssigneeConfirmedAt = Number(preset.assigneeConfirmedAt) || 0;
+    let req = preset.requirements || { must: preset.mustHaves || [], important: [], nice: [] };
+    if ((!req.important || !req.important.length || !req.nice || !req.nice.length) && preset.jobSpec) {
+      req = MokaPersist.fillRequirementsFromJobSpec(req, preset.jobSpec);
+    }
+    applyRequirementsToEditors(req, preset.hard);
+    setWeights(preset.weights);
+    if (preset.jobSpec && window.MokaPersist && MokaPersist.formatJobUnderstandingParts) {
+      applyJobUnderstandingFromSpec(preset.jobSpec, '已恢复本岗理解');
+    } else {
+      setJobUnderstandingText(String(preset.jobUnderstanding || '').trim(), '已恢复本岗理解');
+    }
+  } finally {
+    // 无论恢复过程是否抛错都要解锁：卡在 true 会让之后的保存/自动保存全部被拒
+    applyingPreset = false;
   }
-  applyRequirementsToEditors(req, preset.hard);
-  setWeights(preset.weights);
-  if (preset.jobSpec && window.MokaPersist && MokaPersist.formatJobUnderstandingParts) {
-    applyJobUnderstandingFromSpec(preset.jobSpec, '已恢复本岗理解');
-  } else {
-    setJobUnderstandingText(String(preset.jobUnderstanding || '').trim(), '已恢复本岗理解');
-  }
-  applyingPreset = false;
+  // 职位名含「实习」等强信号时以名字校正职位类型：串档/旧档可能把实习生的存档
+  // 带上「正式员工」，恢复后必须拉回实习生，否则经验/实习行显示与筛选口径全错
+  if (reconcileJobTypeWithLabel(activePresetJobLabel)) scheduleSaveJobPreset();
   return true;
 }
 
-function saveJobPresetFor(jobId) {
+function saveJobPresetFor(jobId, opts) {
   if (applyingPreset || !window.MokaPersist) return Promise.resolve(false);
   const id = MokaPersist.jobPresetKey(jobId);
   if (!id) return Promise.resolve(false);
+  // 跨岗防污染：只允许把「当前装在表单里的这份配置」存回它自己对应的职位。
+  // 表单没绑定职位（本会话从未加载过存档，存下去会用空表单覆盖真存档）
+  // 或绑定的是别的职位（快速切岗时把 A 岗内容写进 B 岗）时，一律拒绝落盘。
+  if (!presetFormJobId || String(presetFormJobId) !== id) {
+    lastPresetSaveBlock = { at: Date.now(), wanted: id, formHolds: String(presetFormJobId || '') };
+    return Promise.resolve(false);
+  }
   const key = MokaPersist.JOB_PRESET_STORAGE_KEY;
   return chrome.storage.local.get(key).then((res) => {
-    const next = MokaPersist.putJobPreset(res[key] || {}, id, collectJobPreset(), Date.now());
+    // 盖上「当前职位」身份锚点：jobId 是存档 key，职位名是刷新后 jobId 漂移时的兜底索引。
+    // 不依赖「按 JD 刷新」产物——纯手配门槛/关键词的存档也要能按名找回。
+    const raw = collectJobPreset();
+    raw.jobIdAnchor = id;
+    // 职位名锚默认取下拉当前项；但切岗「保存离开岗」时必须由调用方显式传旧岗名
+    // （opts.label）——否则此刻下拉已切到新岗，会把新岗名盖到旧岗存档的 key 上，
+    // 造成 A↔B 交叉错位、恢复按名兜底时串岗/命中空壳。
+    const label = (opts && opts.label) || currentJobLabel() || activePresetJobLabel || '';
+    if (label) raw.jobNameAnchor = String(label).trim();
+    const next = MokaPersist.putJobPreset(res[key] || {}, id, raw, Date.now());
     return chrome.storage.local.set({ [key]: next });
   }).then(() => {
     setPresetNote('已保存本岗配置，下次打开会自动填充', '#52c41a');
@@ -652,8 +704,15 @@ async function saveJobPresetFromButton(opts) {
       setPresetNote(okNote, '#52c41a');
       showDockToast(okToast, 'ok');
     } else {
-      setPresetNote('保存失败，请稍后重试', '#fa8c16');
-      showDockToast('保存失败，请稍后重试', 'warn');
+      const blk = lastPresetSaveBlock && (Date.now() - lastPresetSaveBlock.at < 3000) ? lastPresetSaveBlock : null;
+      if (blk) {
+        setPresetNote('已拦截一次跨岗保存：表单当前装的是「' + (blk.formHolds || '未绑定职位') + '」的配置，'
+          + '拒绝覆盖目标职位的存档；请确认职位下拉与表单内容一致后再保存', '#fa8c16');
+        showDockToast('已拦截跨岗保存（表单与目标职位不一致）', 'warn');
+      } else {
+        setPresetNote('保存失败，请稍后重试', '#fa8c16');
+        showDockToast('保存失败，请稍后重试', 'warn');
+      }
     }
   } catch (e) {
     setPresetNote('保存失败，请稍后重试', '#fa8c16');
@@ -663,41 +722,144 @@ async function saveJobPresetFromButton(opts) {
   }
 }
 
+function presetHasUsableContent(p) {
+  if (!p || typeof p !== 'object') return false;
+  const h = p.hard || {};
+  if (h.degree || (h.schools && h.schools.length) || h.exp || h.gender || h.internship
+    || (h.ageRangeValues && h.ageRangeValues.length)
+    || (h.languages && h.languages.length) || (h.customGates && h.customGates.length)) return true;
+  const r = p.requirements || {};
+  if ((r.must && r.must.length) || (r.important && r.important.length) || (r.nice && r.nice.length)) return true;
+  if (Array.isArray(p.focusKeywords) && p.focusKeywords.length) return true;
+  if (String(p.jobUnderstanding || '').trim()) return true;
+  if (p.jobSpec && window.MokaPersist && MokaPersist.jobSpecIsUsable) {
+    return !!MokaPersist.jobSpecIsUsable(p.jobSpec);
+  }
+  return false;
+}
+
 function restoreCurrentJobPreset() {
   if (!window.MokaPersist) return Promise.resolve(false);
   const jobId = currentJobId();
-  if (!jobId) return Promise.resolve(false);
+  if (!jobId) {
+    // 没识别到职位身份就谈不上去查存档：留诊断 + 状态行提示，别让「没恢复」看起来像「没保存」
+    lastPresetRestoreDiag = { at: Date.now(), hit: 'no-job', targetJobId: '', label: String(activePresetJobLabel || ''), rows: [] };
+    window.__mokaPresetRestoreDiag = lastPresetRestoreDiag;
+    setPresetNote('未识别到当前职位（jobId 为空），本次未尝试恢复存档；请回到该职位的候选人列表页', '#fa8c16');
+    return Promise.resolve(false);
+  }
   const key = MokaPersist.JOB_PRESET_STORAGE_KEY;
   return chrome.storage.local.get(key).then((res) => {
     const record = res[key] || {};
     let preset = MokaPersist.getJobPreset(record, jobId);
     presetFormJobId = String(jobId);
+    // 恢复诊断：目标身份 + 全部存档行（key/锚点名/时间），未命中时状态行直接给摘要
+    const diag = {
+      at: Date.now(),
+      hit: 'none',
+      targetJobId: String(jobId),
+      label: String(activePresetJobLabel || ''),
+      rows: []
+    };
+    Object.keys(record || {}).forEach((rowKey) => {
+      const row = record[rowKey] || {};
+      const clean = MokaPersist.sanitizeJobPreset(row.value);
+      diag.rows.push({
+        key: String(rowKey),
+        savedAt: Number(row.savedAt) || 0,
+        name: (clean && (clean.jobNameAnchor || (clean.jobSpec && clean.jobSpec.sourceJobName))) || '',
+        hasSpec: !!(clean && clean.jobSpec)
+      });
+    });
+    // 串档防线：键对得上但身份锚是别的职位（快速切岗期间被污染的存档），
+    // 绝不能自动填进当前岗——落到同名兜底或未保存提示，等用户重新配置保存覆盖。
+    let mismatchName = '';
+    if (preset) {
+      const anchorName = String(preset.jobNameAnchor
+        || (preset.jobSpec && preset.jobSpec.sourceJobName) || '').trim();
+      const wanted = String(activePresetJobLabel || '').trim();
+      if (anchorName && wanted && anchorName !== wanted) {
+        mismatchName = anchorName;
+        preset = null;
+      }
+    }
     // 同职位的存档找不到时，兜底按「职位名」找回一份：
     // 同一职位在不同入口/管道下 jobId 可能不同（存档仍在，只是键对不上），
-    // 找到唯一同名存档就恢复，避免「已保存却变回初始」。
+    // 同名存档可能有多份（旧 id 与当前 id 各存过），优先取「有可用内容」的
+    // 最新一份；全为空壳才退回最新空档（交给下方空壳防线统一处理），
+    // 避免「已保存却变回初始」。
     let byName = false;
+    let bestUsable = null;
+    let bestAny = null;
     if (!preset && activePresetJobLabel) {
-      const matches = [];
-      Object.keys(record || {}).forEach((rowKey) => {
-        const clean = MokaPersist.sanitizeJobPreset(record[rowKey] && record[rowKey].value);
-        const name = clean && clean.jobSpec && clean.jobSpec.sourceJobName;
-        if (name && name === String(activePresetJobLabel)) matches.push({ rowKey, clean });
+      const wantedName = String(activePresetJobLabel).trim();
+      diag.rows.forEach((rowDiag) => {
+        if (!rowDiag.name || rowDiag.name.trim() !== wantedName) return;
+        const cand = MokaPersist.getJobPreset(record, rowDiag.key);
+        if (!cand) return;
+        if (presetHasUsableContent(cand)) {
+          if (!bestUsable || rowDiag.savedAt > bestUsable.rowDiag.savedAt) bestUsable = { rowDiag, cand };
+        } else if (!bestAny || rowDiag.savedAt > bestAny.rowDiag.savedAt) {
+          bestAny = { rowDiag, cand };
+        }
       });
-      if (matches.length === 1) {
-        preset = matches[0].clean;
+      const pick = bestUsable || bestAny;
+      if (pick) {
+        preset = pick.cand;
         byName = true;
       }
     }
+    // 空壳存档防线：命中的存档若是纯空档（没有门槛/关键词/理解，jobSpec 也不可用），
+    // 恢复它只会显示一张空表单，还会挡住「首次进入自动生成理解」——历史事故中
+    // 交叉盖错锚名/被空表单覆盖的存档正是这种空壳。命中空壳一律视为「未恢复」，
+    // 让 ensureJobUnderstandingOnEnter 走首次进入路径重新生成并保存。
+    let emptyHit = false;
+    let emptyPresetAssigneeAt = 0;
+    if (preset && !presetHasUsableContent(preset)) {
+      emptyHit = true;
+      emptyPresetAssigneeAt = Number(preset.assigneeConfirmedAt) || 0;
+      preset = null;
+    }
+    diag.hit = preset ? (byName ? 'name' : 'exact')
+      : (mismatchName ? 'anchor-mismatch' : (emptyHit ? 'empty' : 'none'));
+    if (mismatchName) diag.mismatchName = mismatchName;
+    if (emptyHit) diag.emptyHit = true;
+    lastPresetRestoreDiag = diag;
+    window.__mokaPresetRestoreDiag = diag;
     if (!preset) {
       resetJobPresetForm({ internSuggested: /实习/.test(activePresetJobLabel || '') });
-      setPresetNote('本岗尚未保存配置。首次会自动生成理解并保存。', '#8c8c8c');
+      // 空壳命中不算「未保存」：保留原确认章，后续自动生成落盘不会丢
+      if (emptyHit && emptyPresetAssigneeAt) currentAssigneeConfirmedAt = emptyPresetAssigneeAt;
+      const wantedName = String(activePresetJobLabel || '').trim();
+      const sameName = diag.rows.filter((r) => r.name && r.name.trim() === wantedName).length;
+      const emptyTip = emptyHit
+        ? '；检测到本岗存档是空档（没有门槛/关键词/理解），将按首次进入自动重新生成并保存'
+        : '';
+      const mismatchTip = mismatchName
+        ? '；发现一条键匹配但身份不符（锚名「' + mismatchName + '」）的存档，已拒绝填充——请重新配置本岗后点「保存当前筛选条件」覆盖它'
+        : '';
+      setPresetNote('本岗尚未保存可用配置。首次会自动生成理解并保存。'
+        + '（诊断：存档 ' + diag.rows.length + ' 条，目标「' + (diag.label || diag.targetJobId || '?') + '」'
+        + '/id 尾 ' + String(diag.targetJobId).slice(-6) + '，同名命中 ' + sameName + '）'
+        + emptyTip + mismatchTip, '#fa8c16');
       return false;
     }
     // 岗位理解盖章来自其它职位 ≠ 这份存档不是本岗的：存档键就是职位身份。
     // 门槛/关键词是招聘官按本岗手配的，绝不能因为理解戳对不上就整表清空。
     const crossJob = byName ? false : (MokaPersist.jobSpecMatchesJob
       && !MokaPersist.jobSpecMatchesJob(preset.jobSpec, jobId));
-    applyJobPreset(preset);
+    try {
+      applyJobPreset(preset);
+    } catch (e) {
+      // 恢复渲染中途抛错（如字段渲染异常）不能静默中断链路：
+      // 记录诊断并把结果降级为「未恢复」，让 ensureJobUnderstandingOnEnter 兜底提示
+      diag.applyError = String((e && e.message) || e);
+      lastPresetRestoreDiag = diag;
+      window.__mokaPresetRestoreDiag = diag;
+      resetJobPresetForm({ internSuggested: /实习/.test(activePresetJobLabel || '') });
+      setPresetNote('自动填充本岗配置时出错（' + diag.applyError + '），已重置表单；请重新配置后点「保存当前筛选条件」', '#fa8c16');
+      return false;
+    }
     if (byName) {
       setPresetNote('已按同名职位恢复本岗配置（存档职位与当前职位 id 不同，条件已带出）', '#52c41a');
     } else if (crossJob) {
@@ -1024,7 +1186,8 @@ function readSettingsForm() {
     apiEndpoint: document.getElementById('api-endpoint').value.trim(),
     apiKey: document.getElementById('api-key').value,
     modelName: document.getElementById('model-name').value.trim(),
-    notifyOnComplete: !!document.getElementById('notify-on-complete')?.checked,
+    modelInputPrice: String(document.getElementById('model-input-price')?.value || '').trim(),
+    modelOutputPrice: String(document.getElementById('model-output-price')?.value || '').trim(),
     ...LOCAL_FORCED // 强制覆盖 provider/endpoint/model
   };
 }
@@ -1057,7 +1220,7 @@ async function ensureHostPermission(endpoint) {
   }
 }
 
-// 保存设置
+// 保存并测试：一次完成落盘 + 连接校验（中转地址仍需在弹窗里点「允许」）
 document.getElementById('save-settings').addEventListener('click', async () => {
   const settings = readSettingsForm();
 
@@ -1074,41 +1237,34 @@ document.getElementById('save-settings').addEventListener('click', async () => {
 
   try {
     await chrome.storage.local.set({ mokaSettings: settings });
-    showTestResult('✅ 设置已保存', 'success');
   } catch (error) {
     showTestResult('❌ 保存失败: ' + error.message, 'error');
-  }
-});
-
-// 测试 API（通过 background 统一调用，正确适配各 provider）
-document.getElementById('test-api').addEventListener('click', async () => {
-  const settings = readSettingsForm();
-
-  if (!settings.apiKey) {
-    showTestResult('❌ 请输入 API Key', 'error');
     return;
   }
 
-  const granted = await ensureHostPermission(settings.apiEndpoint);
-  if (!granted) {
-    showTestResult('❌ 未授权访问该 API 地址，请在弹窗中点「允许」后重试', 'error');
-    return;
-  }
-
-  showTestResult('⏳ 测试中...', 'info');
-
+  showTestResult('✅ 已保存 · 正在测试连接…', 'info');
   chrome.runtime.sendMessage({ action: 'testApi', settings }, (response) => {
     if (chrome.runtime.lastError) {
-      showTestResult('❌ 连接失败: ' + chrome.runtime.lastError.message, 'error');
+      showTestResult('✅ 已保存；连接测试未通过：' + chrome.runtime.lastError.message, 'error');
       return;
     }
     if (response && response.ok) {
-      showTestResult('✅ API 连接成功！', 'success');
+      showTestResult('✅ 已保存 · API 连接成功', 'success');
     } else {
-      showTestResult('❌ ' + (response?.error || 'API 连接失败'), 'error');
+      showTestResult('✅ 已保存；连接测试未通过：' + (response?.error || 'API 连接失败'), 'error');
     }
   });
 });
+
+/** Endpoint 只在「自定义 API」时需要改：OpenAI/Claude 隐藏整组，减少界面干扰 */
+function applyProviderVisibility() {
+  const group = document.getElementById('endpoint-group');
+  if (!group) return;
+  const provider = document.getElementById('api-provider')?.value || 'openai';
+  group.hidden = provider !== 'custom';
+}
+
+document.getElementById('api-provider')?.addEventListener('change', applyProviderVisibility);
 
 function showTestResult(message, type) {
   const resultDiv = document.getElementById('test-result');
@@ -1121,45 +1277,221 @@ function showTestResult(message, type) {
   }
 }
 
-// 接口观测流水：复制 Moka 页面最近发出的 POST 请求（排查批量操作等未识别接口）
-document.getElementById('copy-request-log').addEventListener('click', async () => {
-  const btn = document.getElementById('copy-request-log');
-  const resultDiv = document.getElementById('request-log-result');
-  const show = (message, type) => {
-    resultDiv.textContent = message;
-    resultDiv.className = `test-result ${type}`;
-    resultDiv.classList.remove('hidden');
-    if (type === 'success') setTimeout(() => resultDiv.classList.add('hidden'), 3000);
-  };
+/* ==================== 运行日志面板（设置页） ==================== */
+const LOG_CAT_META = {
+  req: { label: '请求', cls: 'req' },
+  adopt: { label: '推荐', cls: 'adopt' },
+  screen: { label: '筛选', cls: 'screen' },
+  score: { label: '评分', cls: 'score' },
+  warn: { label: '警告', cls: 'warn' },
+  err: { label: '错误', cls: 'err' },
+  info: { label: '信息', cls: 'info' }
+};
+// 筛选按钮 → 命中的 cat 集合；「错误」含可恢复的重试警告
+const LOG_FILTER_CATS = {
+  all: null,
+  req: ['req'],
+  adopt: ['adopt'],
+  screen: ['screen'],
+  score: ['score'],
+  err: ['warn', 'err']
+};
+const PLUGIN_LOG_LOCAL_MAX = 400; // background 环只留 100，本地防御性多留一点
 
-  const tab = await getMokaTab();
-  if (!isMokaTab(tab)) {
-    show('❌ 请先打开 Moka 候选人列表页', 'error');
-    return;
-  }
+const pluginLogState = { entries: [], filter: 'all', paused: false, stick: true };
+let logFlashTimer = null;
 
-  btn.disabled = true;
-  const response = await sendMessageToTab(tab.id, { action: 'getRequestLog' });
-  btn.disabled = false;
+function logListEl() { return document.getElementById('log-list'); }
+function logEmptyEl() { return document.getElementById('log-empty'); }
+function logCountEl() { return document.getElementById('log-count'); }
 
-  if (!response || !response.ok) {
-    show('❌ 未取到流水：请刷新 Moka 页面后重试', 'error');
-    return;
-  }
-  const log = Array.isArray(response.log) ? response.log : [];
-  if (!log.length) {
-    show('⚠️ 流水为空：刷新 Moka 页面后做一次手动操作，再回来复制', 'error');
-    return;
-  }
+function visibleLogEntries() {
+  const cats = LOG_FILTER_CATS[pluginLogState.filter] || null;
+  if (!cats) return pluginLogState.entries;
+  return pluginLogState.entries.filter((e) => cats.indexOf(e.cat) !== -1);
+}
+
+function formatLogTime(at) {
   try {
-    await navigator.clipboard.writeText(JSON.stringify(log, null, 2));
-    show(`✅ 已复制最近 ${log.length} 条 POST 请求`, 'success');
-  } catch (error) {
-    show('❌ 复制失败: ' + error.message, 'error');
+    const d = new Date(Number(at) || Date.now());
+    const p = (n) => String(n).padStart(2, '0');
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  } catch (e) {
+    return '';
   }
-});
+}
 
-// 分配对象排查快照：页面上下文 + 职位名映射 + 存档摘要 + 流水，一键复制定位串岗/查不到
+function buildLogRow(entry) {
+  const meta = LOG_CAT_META[entry.cat] || LOG_CAT_META.info;
+  const row = document.createElement('div');
+  row.className = 'log-row cat-' + meta.cls;
+  const time = document.createElement('span');
+  time.className = 'log-time';
+  time.textContent = formatLogTime(entry.at);
+  const badge = document.createElement('span');
+  badge.className = 'log-badge cat-' + meta.cls;
+  badge.textContent = meta.label;
+  const text = document.createElement('span');
+  text.className = 'log-text';
+  text.textContent = entry.text || '';
+  row.appendChild(time);
+  row.appendChild(badge);
+  row.appendChild(text);
+  return row;
+}
+
+function updateLogCount() {
+  const el = logCountEl();
+  if (!el) return;
+  const total = pluginLogState.entries.length;
+  const visible = visibleLogEntries().length;
+  el.textContent = total
+    ? (visible === total ? `共 ${total} 条` : `共 ${total} 条 · 筛选后显示 ${visible} 条`)
+    : '';
+}
+
+function isLogStick() {
+  const list = logListEl();
+  if (!list || !list.scrollHeight) return true;
+  return list.scrollHeight - list.scrollTop - list.clientHeight < 24;
+}
+
+function renderPluginLog() {
+  const list = logListEl();
+  const empty = logEmptyEl();
+  if (!list) return;
+  list.textContent = '';
+  const visible = visibleLogEntries();
+  const frag = document.createDocumentFragment();
+  visible.forEach((e) => frag.appendChild(buildLogRow(e)));
+  list.appendChild(frag);
+  if (empty) empty.classList.toggle('hidden', visible.length > 0);
+  updateLogCount();
+  if (pluginLogState.stick) list.scrollTop = list.scrollHeight;
+}
+
+function appendPluginLogEntry(entry) {
+  if (!entry || !entry.cat || entry.text == null) return;
+  pluginLogState.entries.push({
+    at: Number(entry.at) || Date.now(),
+    cat: String(entry.cat),
+    text: String(entry.text).slice(0, 500)
+  });
+  while (pluginLogState.entries.length > PLUGIN_LOG_LOCAL_MAX) pluginLogState.entries.shift();
+  if (pluginLogState.paused) { updateLogCount(); return; }
+  const cats = LOG_FILTER_CATS[pluginLogState.filter] || null;
+  if (!cats || cats.indexOf(entry.cat) !== -1) {
+    const list = logListEl();
+    if (list) {
+      const empty = logEmptyEl();
+      if (empty) empty.classList.add('hidden');
+      list.appendChild(buildLogRow(pluginLogState.entries[pluginLogState.entries.length - 1]));
+      if (pluginLogState.stick) list.scrollTop = list.scrollHeight;
+    }
+  }
+  updateLogCount();
+}
+
+function setLogFilter(cat) {
+  pluginLogState.filter = cat || 'all';
+  document.querySelectorAll('#log-filters .log-filter').forEach((b) => {
+    b.classList.toggle('on', b.dataset.cat === pluginLogState.filter);
+  });
+  pluginLogState.stick = isLogStick();
+  renderPluginLog();
+}
+
+async function flushContentLogQueues() {
+  // 先让所有 Moka 页把 content 本地队列冲给 background，保证下面读取/清空不漏不残留
+  try {
+    const tabs = await chrome.tabs.query({ url: 'https://app.mokahr.com/*' });
+    await Promise.all(tabs.map((t) => sendMessageToTab(t.id, { action: 'flushPluginLog' }).catch(() => null)));
+  } catch (e) { /* 没有打开的 Moka 页时忽略 */ }
+}
+
+async function reloadPluginLog() {
+  await flushContentLogQueues();
+  try {
+    const resp = await chrome.runtime.sendMessage({ action: 'getPluginLog' });
+    if (resp && resp.ok && Array.isArray(resp.entries)) {
+      pluginLogState.entries = resp.entries.slice(-PLUGIN_LOG_LOCAL_MAX);
+    }
+  } catch (e) { /* 拿不到就用当前内存 */ }
+  pluginLogState.stick = true;
+  renderPluginLog();
+}
+
+async function clearPluginLogPanel() {
+  await flushContentLogQueues();
+  try { await chrome.runtime.sendMessage({ action: 'clearPluginLog' }); } catch (e) { /* 忽略 */ }
+  pluginLogState.entries = [];
+  renderPluginLog();
+}
+
+function currentLogText() {
+  return visibleLogEntries()
+    .map((e) => '[' + formatLogTime(e.at) + '] ['
+      + ((LOG_CAT_META[e.cat] || LOG_CAT_META.info).label) + '] ' + (e.text || ''))
+    .join('\n');
+}
+
+function flashLogCount(message) {
+  const el = logCountEl();
+  if (!el) return;
+  el.textContent = message;
+  if (logFlashTimer) clearTimeout(logFlashTimer);
+  logFlashTimer = setTimeout(updateLogCount, 2200);
+}
+
+async function copyCurrentLog() {
+  const text = currentLogText();
+  const n = visibleLogEntries().length;
+  if (!text) { flashLogCount('暂无可复制的日志'); return; }
+  try {
+    await navigator.clipboard.writeText(text);
+    flashLogCount(`已复制 ${n} 条`);
+  } catch (err) {
+    flashLogCount('复制失败：' + ((err && err.message) || '未知错误'));
+  }
+}
+
+function exportCurrentLog() {
+  const text = currentLogText();
+  const n = visibleLogEntries().length;
+  if (!text) { flashLogCount('暂无可导出的日志'); return; }
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `moka-运行日志-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  flashLogCount(`已导出 ${n} 条`);
+}
+
+document.getElementById('log-filters')?.addEventListener('click', (e) => {
+  const btn = e.target.closest('.log-filter');
+  if (btn && btn.dataset.cat) setLogFilter(btn.dataset.cat);
+});
+document.getElementById('log-pause')?.addEventListener('click', () => {
+  pluginLogState.paused = !pluginLogState.paused;
+  const btn = document.getElementById('log-pause');
+  if (btn) {
+    btn.classList.toggle('on', pluginLogState.paused);
+    btn.setAttribute('aria-pressed', String(pluginLogState.paused));
+    btn.title = pluginLogState.paused ? '继续跟读：恢复自动滚动' : '暂停跟读：新日志只入队、不自动滚动';
+  }
+  if (!pluginLogState.paused) renderPluginLog(); // 恢复后把暂停期间的新日志补绘
+});
+document.getElementById('log-clear')?.addEventListener('click', () => clearPluginLogPanel());
+document.getElementById('log-copy')?.addEventListener('click', () => copyCurrentLog());
+document.getElementById('log-export')?.addEventListener('click', () => exportCurrentLog());
+logListEl()?.addEventListener('scroll', () => { pluginLogState.stick = isLogStick(); }, { passive: true });
+
+// 排查快照：页面上下文 + 职位名映射 + 各职位分配存档摘要 + 完整请求流水，一键复制。
+// （接口流水已并入快照：流水 ⊂ 快照，不再单独设「复制接口流水」按钮）
 document.getElementById('copy-assignee-snapshot')?.addEventListener('click', async () => {
   const btn = document.getElementById('copy-assignee-snapshot');
   const resultDiv = document.getElementById('request-log-result');
@@ -1181,11 +1513,40 @@ document.getElementById('copy-assignee-snapshot')?.addEventListener('click', asy
     show('❌ 未取到快照：请刷新 Moka 页面后重试', 'error');
     return;
   }
+  // 快照追加侧栏侧诊断：最近一次存档恢复的命中情况 + 全部职位存档的身份锚点清单。
+  // 「保存了却不自动回填」类问题凭这一段即可定位（目标 id/名 vs 存档 key/锚名）。
+  const presetRows = [];
+  try {
+    const storeKey = (window.MokaPersist && MokaPersist.JOB_PRESET_STORAGE_KEY) || 'mokaJobPresets';
+    const storeRes = await chrome.storage.local.get(storeKey);
+    const store = storeRes[storeKey] || {};
+    Object.keys(store).forEach((rowKey) => {
+      const row = store[rowKey] || {};
+      const clean = window.MokaPersist ? MokaPersist.sanitizeJobPreset(row.value) : null;
+      presetRows.push({
+        key: String(rowKey),
+        savedAt: Number(row.savedAt) || 0,
+        anchorId: (clean && clean.jobIdAnchor) || '',
+        anchorName: (clean && clean.jobNameAnchor) || '',
+        hasJobSpec: !!(clean && clean.jobSpec),
+        hardDegree: (clean && clean.hard && clean.hard.degree) || '',
+        focusCount: clean && Array.isArray(clean.focusKeywords) ? clean.focusKeywords.length : 0,
+        // 恢复渲染读的是 requirements.important，而非顶层 focusKeywords——两个数都打出来，
+        // 避免再出现「focusCount 有值但表单回填空」时无法分辨存档里到底缺哪份
+        reqImportant: clean && clean.requirements && Array.isArray(clean.requirements.important)
+          ? clean.requirements.important.length : 0,
+        hasUnderstanding: !!(clean && (clean.jobUnderstanding || (clean.jobSpec && clean.jobSpec.summary)))
+      });
+    });
+  } catch (e) { /* 诊断失败不阻断快照 */ }
+  presetRows.sort((a, b) => b.savedAt - a.savedAt);
   const dump = {
     page: response.page || {},
     map: response.map || {},
     captures: response.captures || [],
-    log: Array.isArray(response.log) ? response.log : []
+    log: Array.isArray(response.log) ? response.log : [],
+    presetRestore: lastPresetRestoreDiag,
+    presets: presetRows
   };
   try {
     await navigator.clipboard.writeText(JSON.stringify(dump, null, 2));
@@ -1205,13 +1566,14 @@ async function loadSettings() {
       document.getElementById('api-endpoint').value = s.apiEndpoint || 'https://api.openai.com/v1/chat/completions';
       document.getElementById('api-key').value = s.apiKey || '';
       document.getElementById('model-name').value = s.modelName || 'gpt-4o';
-      const notifyEl = document.getElementById('notify-on-complete');
-      if (notifyEl) notifyEl.checked = s.notifyOnComplete !== false;
+      document.getElementById('model-input-price').value = s.modelInputPrice != null ? s.modelInputPrice : '';
+      document.getElementById('model-output-price').value = s.modelOutputPrice != null ? s.modelOutputPrice : '';
     }
   } catch (error) {
     console.error('加载设置失败:', error);
   }
   applyLocalForced(); // 本地私有配置：覆盖并锁定 provider/endpoint/model
+  applyProviderVisibility(); // 按当前提供商决定是否显示 Endpoint
 }
 
 // 获取当前窗口活动标签；侧栏点操作时活动标签通常仍是 Moka
@@ -1406,10 +1768,12 @@ async function loadJobs() {
     ensureJobSelectOption(targetJobId, label || activePresetJobLabel);
     jobSelect.value = targetJobId;
   } else {
-    await switchJobPreset(prevJobId, targetJobId, label);
+    // prevLabel 取 activePresetJobLabel（此刻仍是「离开岗」的名字，target 的 label
+    // 尚未写入），保证保存旧岗存档时盖的是旧岗名而不是新岗名
+    await switchJobPreset(prevJobId, activePresetJobLabel, targetJobId, label);
   }
   // Moka 页面切岗（SPA 或整页跳转）后，若表单已装该岗（走了只同步下拉的快路径），
-  // 必须补一次分配对象重渲染——让「分配对象」跟随 Moka 当前页面职位；
+  // 必须补一次简历推荐对象重渲染——让「简历推荐对象」跟随 Moka 当前页面职位；
   // 未装该岗的路径由 switchJobPreset 内部已渲染，无需重复
   if (pageJobId && pageJobId !== pageJobBefore && formHoldsTargetJob) renderAssigneeStatus();
   refreshCalibrationButton();
@@ -1421,9 +1785,14 @@ async function loadJobs() {
       const selected = jobSelect.options[jobSelect.selectedIndex];
       const nextLabel = selected && selected.textContent ? selected.textContent : activePresetJobLabel;
       const prevId = activePresetJobId;
-      switchJobPreset(prevId, nextId, nextLabel).then(() => {
+      const prevLabel = activePresetJobLabel; // change 事件触发时 select 已切到新岗，旧岗名只能取全局镜像
+      switchJobPreset(prevId, prevLabel, nextId, nextLabel).then(() => {
         refreshCalibrationButton();
         hideCalibrationPanel();
+      }).catch((e) => {
+        // 切岗失败不静默：状态行提示 + 复位按钮；错误已被队列吞掉不会拖垮后续切岗
+        setPresetNote('切换职位时出错（' + String((e && e.message) || e) + '），请重试', '#fa8c16');
+        refreshCalibrationButton();
       });
     });
   }
@@ -1451,6 +1820,51 @@ function setCheckboxGroup(rootId, values) {
   });
 }
 
+/** 年龄档位下拉（details 壳 + 胶囊勾选）：读取当前勾选档位 value 列表 */
+function ageTierSelection() {
+  return Array.from(document.querySelectorAll('#cond-age input[type="checkbox"]:checked')).map((c) => c.value);
+}
+
+/** 年龄档位归一：4 档下拉，≥35 旧档（35-40/40-50/50+）一律并入「35+」 */
+const AGE_TIER_MIN = { '20-25': 20, '25-30': 25, '30-35': 30, '35+': 35 };
+const AGE_TIER_LABEL = { '20-25': '20-25', '25-30': '25-30', '30-35': '30-35', '35+': '35 岁以上' };
+function normalizeAgeTierValues(values) {
+  const out = [];
+  (values || []).forEach((v) => {
+    const s = String(v);
+    if (Object.prototype.hasOwnProperty.call(AGE_TIER_MIN, s)) {
+      if (!out.includes(s)) out.push(s);
+      return;
+    }
+    const r = parseAgeRange(s);
+    if (r && r.min >= 35 && !out.includes('35+')) out.push('35+');
+  });
+  return out;
+}
+
+/** 下拉按钮文案：已选档位拼接展示，空选显示「不限」 */
+function refreshAgeDdLabel() {
+  const textEl = document.querySelector('#cond-age .cond-dd-text');
+  if (!textEl) return;
+  const vals = ageTierSelection();
+  textEl.textContent = vals.length ? vals.map((v) => AGE_TIER_LABEL[v] || v).join('、') : '不限';
+}
+
+function setAgeTierOptions(values) {
+  setCheckboxGroup('cond-age', normalizeAgeTierValues(values));
+  refreshAgeDdLabel();
+}
+
+// 年龄下拉：勾选即刷新按钮文案；点击面板外自动收起
+document.addEventListener('change', (e) => {
+  if (e.target && e.target.closest && e.target.closest('#cond-age')) refreshAgeDdLabel();
+});
+document.addEventListener('click', (e) => {
+  document.querySelectorAll('details.cond-dd[open]').forEach((d) => {
+    if (!(e.target instanceof Node) || !d.contains(e.target)) d.removeAttribute('open');
+  });
+});
+
 function applyHardAutofill(af, { fromButton }) {
   const isIntern = document.querySelector('input[name="job-type"]:checked')?.value === 'intern';
   const bits = [];
@@ -1471,11 +1885,15 @@ function applyHardAutofill(af, { fromButton }) {
     bits.push('性别' + af.gender);
   }
   if (Array.isArray(af.schools) && af.schools.length) {
-    setCheckboxGroup('cond-school', af.schools);
-    bits.push(af.schools.join('/'));
+    // 只保留表单上存在的院校胶囊（QS500 档已下线，旧 JD 文案提取值不再展示/提示）
+    const schools = af.schools.filter((s) => document.querySelector('#cond-school input[type="checkbox"][value="' + s + '"]'));
+    if (schools.length) {
+      setCheckboxGroup('cond-school', schools);
+      bits.push(schools.join('/'));
+    }
   }
   if (Array.isArray(af.ageRangeValues) && af.ageRangeValues.length) {
-    setCheckboxGroup('cond-age', af.ageRangeValues);
+    setAgeTierOptions(af.ageRangeValues);
     bits.push(af.ageRangeValues.join('、'));
   }
   if (Array.isArray(af.languages) && af.languages.length && (fromButton || !languageEditor.get().length)) {
@@ -1686,6 +2104,9 @@ chrome.runtime.onMessage.addListener((request) => {
     showResumeBanner(request.job, null, 'mismatch');
   } else if (request.action === 'screeningCompleteToast') {
     showScreeningCompleteToast(request);
+  } else if (request.action === 'pluginLogEntry') {
+    // 后台新落一条运行日志 → 实时追加到设置页面板
+    appendPluginLogEntry(request.entry);
   } else if (request.action === 'mokaActionComplete') {
     refreshResultsAndJobContext();
   } else if (request.action === 'mokaContentReady') {
@@ -1703,10 +2124,7 @@ function hideResumeBanner() {
 
 function showScreeningCompleteToast(payload) {
   const msg = (payload && payload.message) || '筛选完成';
-  const desktopHint = (payload && payload.desktop === false)
-    ? '桌面通知未弹出（请检查系统通知权限，或到设置确认已开启）'
-    : '';
-  setResultHint(desktopHint ? `${msg} · ${desktopHint}` : msg, { tone: 'ok' });
+  setResultHint(msg, { tone: 'ok' });
   const banner = document.getElementById('result-banner');
   if (banner) {
     banner.classList.add('show');
@@ -1715,9 +2133,6 @@ function showScreeningCompleteToast(payload) {
     ok.className = 'mp-banner-ok';
     ok.textContent = '✓ ' + msg;
     banner.appendChild(ok);
-    if (payload && payload.desktop === false) {
-      banner.appendChild(document.createTextNode('若未看到系统通知：打开 macOS「系统设置 → 通知 → Google Chrome」并允许通知。'));
-    }
     setTimeout(() => {
       if (banner.querySelector('.mp-banner-ok')) {
         banner.classList.remove('show');
@@ -2058,14 +2473,28 @@ function syncAboutVersion() {
 
 window.addEventListener('load', async () => {
   syncAboutVersion();
-  await loadSettings();
-  await loadFeedbackFromStorage();
-  await loadActivePresetJobId();
-  await refreshResultsAndJobContext();
-  await pollScreeningJobOffer();
-  applyJobTypeVisibility();
-  updateWeightLabels();
-  bindResultFilters();
+  // 初始化链分步容错：任一步存储/消息异常都不能拖垮后续步骤。
+  // 历史教训：整链无 try/catch 时，一次 storage 读取 reject 会让
+  // bindResultFilters（搜索/筛选/导出）永不绑定——功能半残且无提示。
+  const bootSteps = [
+    ['读取设置', loadSettings],
+    ['读取反馈存档', loadFeedbackFromStorage],
+    ['读取上次活跃职位', loadActivePresetJobId],
+    ['刷新页面职位上下文', refreshResultsAndJobContext],
+    ['轮询待续筛任务', pollScreeningJobOffer]
+  ];
+  for (const [name, fn] of bootSteps) {
+    try {
+      await fn();
+    } catch (e) {
+      console.warn('[初始化] ' + name + ' 失败（已跳过，继续后续步骤）', e);
+    }
+  }
+  // 以下为必须执行的纯 UI 绑定/刷新，逐一兜底，绝不因前面任何一步失败而缺失
+  try { reloadPluginLog(); } catch (e) { console.warn('[初始化] 预载运行日志失败', e); }
+  try { applyJobTypeVisibility(); } catch (e) { console.warn('[初始化] 职位类型显隐失败', e); }
+  try { updateWeightLabels(); } catch (e) { console.warn('[初始化] 权重标签刷新失败', e); }
+  try { bindResultFilters(); } catch (e) { console.warn('[初始化] 结果区交互绑定失败', e); }
 });
 
 const DIM_LABEL = { experience: '经验', skill: '技能', education: '教育', potential: '潜力' };
@@ -2123,7 +2552,25 @@ function setResultHint(activity, options) {
   if (opts.tone) el.classList.add('is-' + opts.tone);
 }
 
-const resultState = { items: [], status: '', banner: null, screening: false };
+const resultState = { items: [], status: '', banner: null, screening: false, usageText: '' };
+
+function setResultUsageLine(text) {
+  const el = document.getElementById('usage-line');
+  if (!el) return;
+  const clean = String(text || '').trim();
+  if (!clean) {
+    el.classList.add('hidden');
+    el.textContent = '';
+    return;
+  }
+  el.classList.remove('hidden');
+  el.textContent = '用量：' + clean;
+  el.title = '本轮筛选的模型调用次数 / token / 估算费用；命中评分缓存不计费';
+}
+
+function renderUsageLine() {
+  setResultUsageLine(resultState.usageText);
+}
 const resultFilter = { tab: 'all', query: '' };
 let feedbackRecord = {};
 let saveFeedbackTimer = null;
@@ -2532,6 +2979,7 @@ function applySnapshot(snap, opts) {
     return;
   }
   resultState.screening = !!snap.screening;
+  if (typeof snap.usageText === 'string') resultState.usageText = snap.usageText;
   setScreeningUi(resultState.screening);
   updateExportButton();
   if (resultState.screening) {
@@ -2598,6 +3046,7 @@ function renderResults() {
   } else {
     setResultSummary(resultState.screening ? '准备筛选…' : '尚未开始筛选');
   }
+  renderUsageLine();
 
   const raw = resultState.status || '';
   if (!sum.total && !raw && !fb.total) {
@@ -3025,7 +3474,7 @@ function clearBatchSelection() {
   refreshBatchPanelIfOpen();
 }
 
-/** 批量推进面板开着时同步刷新勾选摘要与分配对象状态，避免面板内容停留在旧状态 */
+/** 批量推进面板开着时同步刷新勾选摘要与简历推荐对象状态，避免面板内容停留在旧状态 */
 function refreshBatchPanelIfOpen() {
   const panel = document.getElementById('batch-panel');
   if (panel && !panel.classList.contains('hidden')) openBatchPanel();
@@ -3051,7 +3500,7 @@ function formatAssigneeTime(ts) {
   return (d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
 }
 
-/** 读取本岗存档里的分配对象确认时间 */
+/** 读取本岗存档里的简历推荐对象确认时间 */
 function readAssigneeConfirmedAt(jobId) {
   if (!jobId || !window.MokaPersist) return Promise.resolve(0);
   const key = MokaPersist.JOB_PRESET_STORAGE_KEY;
@@ -3062,14 +3511,14 @@ function readAssigneeConfirmedAt(jobId) {
   }).catch(() => 0);
 }
 
-/** 把分配对象渲染成「（N 人：姓名、姓名）」；姓名凑不齐时退回「（N 人）」 */
+/** 把简历推荐对象渲染成「（N 人：姓名、姓名）」；姓名凑不齐时退回「（N 人）」 */
 function formatAssigneeWho(count, names) {
   const list = Array.isArray(names) ? names.filter(Boolean) : [];
   if (count > 0 && list.length === count) return '（' + count + ' 人：' + list.join('、') + '）';
   return '（' + count + ' 人）';
 }
 
-/** 当前选中职位的展示名（下拉框选项文案）——分配对象按职位名锚定 */
+/** 当前选中职位的展示名（下拉框选项文案）——简历推荐对象按职位名锚定 */
 function currentJobLabel() {
   const jobSelect = document.getElementById('job-select');
   if (jobSelect && jobSelect.selectedIndex >= 0 && jobSelect.options[jobSelect.selectedIndex]) {
@@ -3079,7 +3528,7 @@ function currentJobLabel() {
 }
 
 /**
- * 按选中职位读取分配对象上下文；名字缺失且 Moka 页面正处于该职位时，
+ * 按选中职位读取简历推荐对象上下文；名字缺失且 Moka 页面正处于该职位时，
  * 直接从页面 DOM 实时刮「推荐到」芯片补齐。返回 { ctx, liveNames, scrapeDebug, stale }。
  * - 跟职位走：按「职位名」查该职位自己的存档（与页面 URL title 同源锚定），
  *   而不是 Moka 页面当前职位的——下拉框换职位后显示/确认都不会串岗；
@@ -3130,9 +3579,9 @@ function summarizeScrapeDebug(debug) {
 }
 
 /**
- * 配置页「分配对象」区块：展示本岗记录状态并支持前置确认。
- * - 已记录 + 已确认：绿色状态，开筛后批量推进直接使用，不再处理分配对象；
- * - 已记录 + 未确认：展示「确认本岗分配对象」按钮；
+ * 配置页「简历推荐对象」区块：展示本岗记录状态并支持前置确认。
+ * - 已记录 + 已确认：绿色状态，开筛后批量推进直接使用，不再处理简历推荐对象；
+ * - 已记录 + 未确认：展示「确认本岗简历推荐对象」按钮；
  * - 未记录：引导去本职位的 Moka 列表手动批量分配一次（插件自动捕获）。
  */
 async function renderAssigneeStatusInner() {
@@ -3146,7 +3595,7 @@ async function renderAssigneeStatusInner() {
     if (btn) btn.classList.add('hidden');
     return;
   }
-  el.textContent = '正在读取本岗分配对象…';
+  el.textContent = '正在读取本岗简历推荐对象…';
   el.style.color = '';
   if (btn) btn.classList.add('hidden');
   const { ctx, liveNames, stale, scrapeDebug, popupNames } = await fetchAssigneeContextWithLiveScrape(jobId);
@@ -3160,13 +3609,13 @@ async function renderAssigneeStatusInner() {
   }
   if (!ctx.ready) {
     el.textContent = ctx.isPageJob
-      ? '本岗尚未记录分配对象：请在本职位的 Moka 列表手动批量分配一次（选好人点确认即可，插件会自动记录），完成后回本页点「重新读取」'
-      : '该职位尚未记录分配对象：请在 Moka 打开该职位的候选人列表，批量分配一次（插件自动记录）后回本页点「重新读取」';
+      ? '本岗尚未记录简历推荐对象：请在本职位的 Moka 列表手动批量分配一次（选好人点确认即可，插件会自动记录），完成后回本页点「重新读取」'
+      : '该职位尚未记录简历推荐对象：请在 Moka 打开该职位的候选人列表，批量分配一次（插件自动记录）后回本页点「重新读取」';
     el.style.color = '#fa8c16';
     return;
   }
   const who = formatAssigneeWho(ctx.assigneeCount, ctx.assigneeNames);
-  const recorded = '已记录本岗分配对象' + who
+  const recorded = '已记录本岗简历推荐对象' + who
     + (ctx.savedAt ? '，记录于 ' + formatAssigneeTime(ctx.savedAt) : '');
   if (stale) {
     el.textContent = recorded + '。⚠️ 内容脚本版本过旧：请到 chrome://extensions 重新加载插件并刷新 Moka 页面，再点「重新读取」';
@@ -3180,14 +3629,14 @@ async function renderAssigneeStatusInner() {
       // 弹窗当前人选与已记录的不一致：给双方名单 + 对齐方式
       el.textContent = recorded + '。弹窗当前选了 ' + anchor.length + ' 人（'
         + anchor.join('、') + '），与本岗已记录的 ' + ctx.assigneeCount
-        + ' 人不一致；若以弹窗当前为准，直接点下方「确认本岗分配对象」即可采纳并永久记住，'
+        + ' 人不一致；若以弹窗当前为准，直接点下方「确认本岗简历推荐对象」即可采纳并永久记住，'
         + '或在该弹窗点「推荐并进入用人部门筛选」完成确认自动同步';
     } else {
       // 弹窗没开：页面上没有芯片可读。不倒诊断杂项，给一句干净的行动指引
       const partial = summarizeScrapeDebug(scrapeDebug);
       el.textContent = recorded + '。'
         + (partial ? '（' + partial + '）' : '推荐弹窗当前未打开，读不到页面上的姓名。')
-        + '请打开 Moka 的「推荐给用人部门」弹窗后点「重新读取」，识别到姓名后点「确认本岗分配对象」即可永久记住，关掉弹窗也不会丢';
+        + '请打开 Moka 的「推荐给用人部门」弹窗后点「重新读取」，识别到姓名后点「确认本岗简历推荐对象」即可永久记住，关掉弹窗也不会丢';
     }
     el.style.color = '#fa8c16';
     if (btn) btn.classList.remove('hidden');
@@ -3203,7 +3652,7 @@ async function renderAssigneeStatusInner() {
       el.textContent = recorded + '。弹窗当前选了 ' + popupNames.length + ' 人（'
         + popupNames.join('、') + '）'
         + (storedNames.length ? '，与已记录的（' + storedNames.join('、') + '）不一致' : '')
-        + '；如以弹窗当前为准，点下方「确认本岗分配对象」即可采纳并永久记住';
+        + '；如以弹窗当前为准，点下方「确认本岗简历推荐对象」即可采纳并永久记住';
       el.style.color = '#fa8c16';
       if (btn) btn.classList.remove('hidden');
       return;
@@ -3213,7 +3662,7 @@ async function renderAssigneeStatusInner() {
     // 已确认：一行干净的状态——姓名 + 记录时间，其余说明一律省略
     const nm = Array.isArray(ctx.assigneeNames) && ctx.assigneeNames.length
       ? ctx.assigneeNames.join('、') : '';
-    el.textContent = '✓ 已确认本岗分配对象：' + (nm ? nm + '（' + ctx.assigneeCount + ' 人）' : ctx.assigneeCount + ' 人')
+    el.textContent = '✓ 已确认本岗简历推荐对象：' + (nm ? nm + '（' + ctx.assigneeCount + ' 人）' : ctx.assigneeCount + ' 人')
       + '，记录于 ' + formatAssigneeTime(confirmedAt) + '，开筛后批量推进按此执行';
     el.style.color = '#52c41a';
   } else {
@@ -3224,7 +3673,7 @@ async function renderAssigneeStatusInner() {
   }
 }
 
-/** 配置页分配对象状态渲染：先跑状态，再把最近一次「确认」的结果说明置顶显示
+/** 配置页简历推荐对象状态渲染：先跑状态，再把最近一次「确认」的结果说明置顶显示
  *  （成功确认时 lastAdoptNote 清空，绿色状态行本身就是结果，不叠加冗余说明） */
 async function renderAssigneeStatus() {
   await renderAssigneeStatusInner();
@@ -3244,18 +3693,25 @@ async function stampAssigneeConfirmed(jobId) {
   try {
     const res = await chrome.storage.local.get(key);
     const record = res[key] || {};
-    const existing = MokaPersist.getJobPreset(record, jobId) || collectJobPreset();
+    const existing = MokaPersist.getJobPreset(record, jobId);
     currentAssigneeConfirmedAt = Date.now();
-    const merged = Object.assign({}, existing, { assigneeConfirmedAt: currentAssigneeConfirmedAt });
+    // 只盖确认章：绝不用当前表单内容兜底覆盖存档——表单可能装着别的职位（串档源头之一）。
+    // 没有存档时就建一条只含确认章 + 身份锚点的最小档，其余字段等用户真正保存时再写。
+    const base = existing || {
+      jobType: /实习/.test(currentJobLabel() || '') ? 'intern' : 'full-time',
+      jobIdAnchor: id,
+      jobNameAnchor: String(currentJobLabel() || '').trim()
+    };
+    const merged = Object.assign({}, base, { assigneeConfirmedAt: currentAssigneeConfirmedAt });
     const next = MokaPersist.putJobPreset(record, id, merged, Date.now());
     await chrome.storage.local.set({ [key]: next });
   } catch (e) { /* 存储失败不打断 */ }
 }
 
 /**
- * 配置页点「确认本岗分配对象」：
+ * 配置页点「确认本岗简历推荐对象」：
  * 1) 弹窗开着且有姓名 → 先「采纳」：React fiber 成对姓名优先（自带 id），
- *    刮到的姓名并集走成员映射反查兜底；成功则改写本岗记录的分配对象并盖确认章。
+ *    刮到的姓名并集走成员映射反查兜底；成功则改写本岗记录的简历推荐对象并盖确认章。
  *    之后关弹窗/换页面都不丢，批量推进重放即按这组人。
  * 2) 有姓名但解析不到 id → 面板常驻提示两条路：弹窗点一次确认 / 点开下拉框让
  *    插件记录成员 id。
@@ -3267,18 +3723,18 @@ async function confirmAssigneeForCurrentJob() {
   const jobId = currentJobId() || effectiveJobId();
   if (!jobId) return;
   // 跨职位防护：Moka 页面在别的职位上时，页面弹窗人选属于那个职位，
-  // 绝不能采纳进当前选中的职位；此时只对「该职位已记录的分配对象」盖章
+  // 绝不能采纳进当前选中的职位；此时只对「该职位已记录的简历推荐对象」盖章
   let probe = null;
   try { probe = await sendToMoka({ action: 'getAssigneeForJob', jobId, jobLabel: currentJobLabel() }); } catch (e) { probe = null; }
   if (probe && probe.ok && probe.isPageJob === false) {
     if (probe.ready) {
       await stampAssigneeConfirmed(jobId);
       lastAdoptNote = '';
-      showDockToast('已确认本岗分配对象（该职位已记录的分配对象，开筛后批量推进按此执行）', 'ok');
+      showDockToast('已确认本岗简历推荐对象（该职位已记录的简历推荐对象，开筛后批量推进按此执行）', 'ok');
     } else {
-      lastAdoptNote = '✗ 该职位尚未记录分配对象：请在 Moka 打开该职位的候选人列表，'
+      lastAdoptNote = '✗ 该职位尚未记录简历推荐对象：请在 Moka 打开该职位的候选人列表，'
         + '批量分配一次（插件自动记录）后回本页再点确认';
-      showDockToast('该职位尚未记录分配对象', 'warn');
+      showDockToast('该职位尚未记录简历推荐对象', 'warn');
     }
     renderAssigneeStatus();
     return;
@@ -3289,10 +3745,10 @@ async function confirmAssigneeForCurrentJob() {
   } catch (e) { adopted = null; }
   if (adopted && adopted.ok && adopted.adopted) {
     await stampAssigneeConfirmed(jobId);
-    // 成功后不叠加置顶说明：绿色状态行「✓ 已确认本岗分配对象：姓名，记录于 …」
+    // 成功后不叠加置顶说明：绿色状态行「✓ 已确认本岗简历推荐对象：姓名，记录于 …」
     // 本身就是结果，避免同一句话重复两遍
     lastAdoptNote = '';
-    showDockToast('本岗分配对象已更新并确认为：' + adopted.names.join('、'), 'ok');
+    showDockToast('本岗简历推荐对象已更新并确认为：' + adopted.names.join('、'), 'ok');
     renderAssigneeStatus();
     return;
   }
@@ -3369,7 +3825,7 @@ async function openBatchPanel() {
   summary.textContent = `已勾选 ${views.length} 人：${names}${views.length > 5 ? ' 等' : ''}`
     + (over ? `（超出单次上限 ${MokaBatch.BATCH_ASSIGN_LIMIT} 人，请减少勾选）` : '');
 
-  assignee.textContent = '读取分配对象…';
+  assignee.textContent = '读取简历推荐对象…';
   confirmBtn.disabled = true;
   panel.classList.remove('hidden');
 
@@ -3380,18 +3836,18 @@ async function openBatchPanel() {
       || await readAssigneeConfirmedAt(currentJobId() || effectiveJobId());
     const namesKnown = who.indexOf('：') !== -1;
     if (confirmedAt && namesKnown) {
-      assignee.textContent = '将全部推进给本岗已确认的分配对象' + who
-        + '——与该岗位分配对象一致，确认无误即可执行；如需更换请回「配置」页重新记录';
+      assignee.textContent = '将全部推进给本岗已确认的简历推荐对象' + who
+        + '——与该岗位简历推荐对象一致，确认无误即可执行；如需更换请回「配置」页重新记录';
     } else if (confirmedAt) {
-      assignee.textContent = '将推进给本岗已确认的分配对象' + who
+      assignee.textContent = '将推进给本岗已确认的简历推荐对象' + who
         + '（姓名可在「配置」页开着推荐弹窗点「重新读取」带出）；如需更换请回「配置」页重新记录';
     } else {
-      assignee.textContent = '已记录本职位的分配对象' + who
+      assignee.textContent = '已记录本职位的简历推荐对象' + who
         + '——与你在本职位手动批量分配时选的人一致，不同职位不会串用；建议先到「配置」页确认';
     }
     confirmBtn.disabled = over;
   } else {
-    assignee.textContent = '本职位还没有记录分配对象：请先在本职位的 Moka 列表手动批量分配一次（每个职位的分配对象各自记录），或到「配置」页点「重新读取」。';
+    assignee.textContent = '本职位还没有记录简历推荐对象：请先在本职位的 Moka 列表手动批量分配一次（每个职位的简历推荐对象各自记录），或到「配置」页点「重新读取」。';
   }
 }
 

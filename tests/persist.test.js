@@ -492,6 +492,36 @@ describe('job presets', () => {
     assert.equal(clean.jobSpec.sourceJobName, '党务经理（外联方向）');
   });
 
+  it('keeps a top-level job anchor even when the preset has no jobSpec (hand-configured only)', () => {
+    // 纯手配门槛/关键词、从未「按 JD 刷新」的存档没有 jobSpec；顶层锚让它在
+    // 页面 jobId 漂移时仍能按职位名找回。
+    const clean = sanitizeJobPreset({
+      jobType: 'full-time',
+      jobIdAnchor: 'job-x',
+      jobNameAnchor: '海外产品运营',
+      hard: { degree: '本科' },
+      requirements: { important: ['增长'] }
+    });
+    assert.equal(clean.jobIdAnchor, 'job-x');
+    assert.equal(clean.jobNameAnchor, '海外产品运营');
+    // 老存档没有顶层锚：回退 jobSpec 的来源戳，保证同名恢复对旧数据也有效
+    const legacy = sanitizeJobPreset({
+      jobType: 'full-time',
+      jobSpec: { summary: '社媒运营', sourceJobId: 'job-a', sourceJobName: '党务经理（外联方向）' }
+    });
+    assert.equal(legacy.jobIdAnchor, 'job-a');
+    assert.equal(legacy.jobNameAnchor, '党务经理（外联方向）');
+    // 顶层锚优先于 jobSpec 戳（同一份存读取都应带当前侧栏盖的身份）
+    const overridden = sanitizeJobPreset({
+      jobType: 'full-time',
+      jobIdAnchor: 'job-new',
+      jobNameAnchor: '海外产品运营',
+      jobSpec: { summary: '旧岗位理解', sourceJobId: 'job-old', sourceJobName: '旧岗位名' }
+    });
+    assert.equal(overridden.jobIdAnchor, 'job-new');
+    assert.equal(overridden.jobNameAnchor, '海外产品运营');
+  });
+
   it('keeps the assignee confirmation stamp so it survives later preset saves', () => {
     // 配置页「确认本岗分配对象」的时间戳要随存档持久化；
     // 后续任何一次保存筛选条件都不能把它抹掉。

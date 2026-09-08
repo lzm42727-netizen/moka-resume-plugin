@@ -18,7 +18,7 @@
 
         <!-- 筛选标签页 -->
         <div class="tab-content active" id="screening-tab">
-            <section class="panel">
+            <section class="panel sec-job">
                 <h3 class="panel-title">
                     <span class="panel-icon">📋</span>职位信息
                     <span class="panel-title-paren">（<button type="button" id="reload-panel" class="btn-link" title="重载侧栏（等于关掉再打开）；会先保存本岗配置">点击刷新</button>）</span>
@@ -29,7 +29,7 @@
                     <select id="job-select">
                         <option value="">加载中...</option>
                     </select>
-                    <div id="preset-note" class="cond-hint cond-hint-flush">改完点「保存当前筛选条件」，或开筛时自动保存；下次进入本岗会自动填充</div>
+                    <div id="preset-note" class="cond-hint cond-hint-flush" title="点「保存当前筛选条件」或直接开筛都会保存本岗条件；下次进入本岗自动回填">条件会随开筛/保存自动存，下次进入本岗自动回填</div>
                 </div>
 
                 <div class="form-group">
@@ -52,41 +52,90 @@
                 </div>
             </section>
 
-            <!-- 分配对象：批量推进用，开筛前在本页确认 -->
-            <section class="panel">
+            <!-- 简历推荐对象：批量推进用，开筛前在本页确认 -->
+            <section class="panel sec-assignee">
                 <h3 class="panel-title">
-                    <span class="panel-icon">🎯</span>分配对象
+                    <span class="panel-icon">🎯</span>简历推荐对象
                     <span class="panel-title-paren">（<button type="button" id="refresh-assignee" class="btn-link">重新读取</button>）</span>
                 </h3>
                 <div id="assignee-status" class="cond-hint cond-hint-flush">读取中…</div>
-                <button type="button" id="confirm-assignee" class="btn btn-secondary btn-sm hidden">确认本岗分配对象</button>
+                <button type="button" id="confirm-assignee" class="btn btn-secondary btn-sm hidden">确认本岗简历推荐对象</button>
             </section>
 
             <!-- 岗位理解：沿用原权重区绿色摘要样式 -->
-            <section class="panel">
+            <section class="panel sec-understand">
                 <h3 class="panel-title">
                     <span class="panel-icon">💡</span>岗位理解
                     <span class="panel-title-paren">（<button type="button" id="refresh-job-understanding" class="btn-link">按 JD 刷新</button>）</span>
                 </h3>
                 <div id="jd-understanding" class="jd-understanding hidden"></div>
-                <div id="understanding-note" class="cond-hint cond-hint-flush">只读摘要；点「按 JD 刷新」后会联动预设硬性门槛与筛选关键词</div>
+                <div id="understanding-note" class="cond-hint cond-hint-flush" title="只读摘要；点「按 JD 刷新」会重新解读 JD，并联动预设硬性门槛与筛选关键词">只读摘要；「按 JD 刷新」联动更新门槛与关键词</div>
             </section>
 
             <!-- 硬性门槛：随「按 JD 刷新」联动预填，空项不参与筛选 -->
-            <section class="panel">
+            <section class="panel sec-gate">
                 <h3 class="panel-title">
                     <span class="panel-icon">🔒</span>硬性门槛
+                    <span class="panel-title-paren">（空项不参与筛选）</span>
                 </h3>
                 <div id="autofill-note" class="cond-hint cond-hint-flush"></div>
 
-                <div class="cond-row">
-                    <span class="cond-label">学历要求</span>
-                    <select id="cond-degree" class="cond-select">
-                        <option value="">不限</option>
-                        <option value="本科">本科及以上</option>
-                        <option value="硕士">硕士及以上</option>
-                        <option value="博士">博士</option>
-                    </select>
+                <!-- 下拉类字段两两并排，减少纵向滚动 -->
+                <div class="cond-grid">
+                    <div class="cond-row">
+                        <span class="cond-label">学历要求</span>
+                        <select id="cond-degree" class="cond-select">
+                            <option value="">不限</option>
+                            <option value="本科">本科及以上</option>
+                            <option value="硕士">硕士及以上</option>
+                            <option value="博士">博士</option>
+                        </select>
+                    </div>
+
+                    <div class="cond-row">
+                        <span class="cond-label">性别要求</span>
+                        <select id="cond-gender" class="cond-select">
+                            <option value="">不限</option>
+                            <option value="男">男</option>
+                            <option value="女">女</option>
+                        </select>
+                    </div>
+
+                    <div class="cond-row" id="row-exp">
+                        <span class="cond-label">经验要求</span>
+                        <select id="cond-exp" class="cond-select">
+                            <option value="">不限</option>
+                            <option value="fresh">在校或应届</option>
+                            <option value="1-3">1-3 年</option>
+                            <option value="3-5">3-5 年</option>
+                            <option value="5+">5 年以上</option>
+                        </select>
+                    </div>
+
+                    <div class="cond-row" id="row-internship">
+                        <span class="cond-label">实习经验</span>
+                        <select id="cond-internship" class="cond-select">
+                            <option value="">不限</option>
+                            <option value="required">需要相关实习经验</option>
+                        </select>
+                    </div>
+
+                    <!-- 经验/实习右侧的填空位：年龄用下拉式多选（收起显示已选档位，点开勾选） -->
+                    <div class="cond-row cond-age-box">
+                        <span class="cond-label">年龄要求</span>
+                        <details class="cond-dd" id="cond-age">
+                            <summary class="cond-dd-summary"
+                                     title="点击展开勾选，可多选；选「35 岁以上」表示 ≥35 全收（旧档 35-40/40-50/50+ 已并入该档）">
+                                <span class="cond-dd-text">不限</span>
+                            </summary>
+                            <div class="cond-dd-menu">
+                                <label class="choice-pill"><input type="checkbox" value="20-25"> 20-25</label>
+                                <label class="choice-pill"><input type="checkbox" value="25-30"> 25-30</label>
+                                <label class="choice-pill"><input type="checkbox" value="30-35"> 30-35</label>
+                                <label class="choice-pill"><input type="checkbox" value="35+"> 35 岁以上</label>
+                            </div>
+                        </details>
+                    </div>
                 </div>
 
                 <div class="cond-row cond-row-wrap">
@@ -97,51 +146,9 @@
                         <label class="choice-pill"><input type="checkbox" value="双一流"> 双一流</label>
                         <label class="choice-pill"><input type="checkbox" value="留学生"> 留学生</label>
                         <label class="choice-pill"><input type="checkbox" value="QS100"> QS100</label>
-                        <label class="choice-pill"><input type="checkbox" value="QS500"> QS500</label>
                     </div>
                 </div>
-                <div class="cond-hint">院校多选：满足任一即算符合</div>
-
-                <div class="cond-row" id="row-exp">
-                    <span class="cond-label">经验要求</span>
-                    <select id="cond-exp" class="cond-select">
-                        <option value="">不限</option>
-                        <option value="fresh">在校或应届</option>
-                        <option value="1-3">1-3 年</option>
-                        <option value="3-5">3-5 年</option>
-                        <option value="5+">5 年以上</option>
-                    </select>
-                </div>
-
-                <div class="cond-row">
-                    <span class="cond-label">性别要求</span>
-                    <select id="cond-gender" class="cond-select">
-                        <option value="">不限</option>
-                        <option value="男">男</option>
-                        <option value="女">女</option>
-                    </select>
-                </div>
-
-                <div class="cond-row" id="row-internship">
-                    <span class="cond-label">实习经验</span>
-                    <select id="cond-internship" class="cond-select">
-                        <option value="">不限</option>
-                        <option value="required">需要相关实习经验</option>
-                    </select>
-                </div>
-
-                <div class="cond-row cond-row-wrap">
-                    <span class="cond-label">年龄要求</span>
-                    <div class="chk-group age-options" id="cond-age">
-                        <label class="choice-pill"><input type="checkbox" value="20-25"> 20-25</label>
-                        <label class="choice-pill"><input type="checkbox" value="25-30"> 25-30</label>
-                        <label class="choice-pill"><input type="checkbox" value="30-35"> 30-35</label>
-                        <label class="choice-pill"><input type="checkbox" value="35-40"> 35-40</label>
-                        <label class="choice-pill"><input type="checkbox" value="40-50"> 40-50</label>
-                        <label class="choice-pill"><input type="checkbox" value="50+"> 50以上</label>
-                    </div>
-                </div>
-                <div class="cond-hint">年龄多选：满足任一区间即算符合；不选则不限；仅在有年龄信息时判定</div>
+                <div class="cond-hint">多选：满足任一即算符合</div>
 
                 <div class="cond-row cond-row-wrap">
                     <span class="cond-label">语言</span>
@@ -158,13 +165,13 @@
                         <input id="gate-input" class="chip-input" placeholder="如：设计类专业、会使用 Photoshop（最多 6 项）">
                     </div>
                 </div>
-                <div class="cond-hint">按填写内容逐条核对；简历无证据即视为未过</div>
+                <div class="cond-hint">按填写逐条核对；简历无证据即视为未过</div>
             </section>
 
             <!-- 筛选关键词：重点看定义匹配；加分看仅给已可推进候选人加分 -->
-            <section class="panel panel-last">
+            <section class="panel sec-keyword panel-last">
                 <h3 class="panel-title"><span class="panel-icon">✅</span>筛选关键词</h3>
-                <div class="cond-hint cond-hint-flush">重点看定义经历匹配；加分看有证据时每项 +3，最多 +15，不能把匹配不足 50 的人救进可推进</div>
+                <div class="cond-hint cond-hint-flush" title="重点看：定义经历与 JD 重点直接匹配（只匹配没有证据会挂起）；加分看：有简历证据时每项 +3，最多 +15，且不能把匹配不足 50 的候选人救进可推进">重点看=经历硬匹配；加分看=有证据每项 +3（最多 +15）</div>
                 <div class="cond-row cond-row-wrap">
                     <span class="cond-label">重点看</span>
                     <div class="chip-editor">
@@ -195,6 +202,7 @@
             </div>
             <div class="mp-result-head">
                 <div id="result-summary" class="mp-summary">尚未开始筛选</div>
+                <div id="usage-line" class="mp-usage-line hidden"></div>
                 <div id="result-hint" class="mp-hint">
                     <div class="mp-hint-main">配好条件后点下方「开始筛选」，进度和名单会出现在这里。</div>
                 </div>
@@ -240,7 +248,7 @@
                     </div>
                 </div>
                 <div class="mp-cal-section">
-                    <div class="mp-cal-section-label">分配对象</div>
+                    <div class="mp-cal-section-label">简历推荐对象</div>
                     <div id="batch-assignee" class="mp-batch-text"></div>
                 </div>
                 <div class="mp-cal-section">
@@ -254,10 +262,10 @@
         <!-- 设置标签页 -->
         <div class="tab-content" id="settings-tab">
             <section class="panel">
-                <h3 class="panel-title"><span class="panel-icon">🔗</span>API 配置</h3>
+                <h3 class="panel-title"><span class="panel-icon">🔗</span>连接与模型</h3>
 
                 <div class="form-group">
-                    <label>API 提供商</label>
+                    <label for="api-provider">API 提供商</label>
                     <select id="api-provider">
                         <option value="openai">OpenAI</option>
                         <option value="claude">Claude</option>
@@ -265,57 +273,90 @@
                     </select>
                 </div>
 
-                <div class="form-group">
-                    <label>API Endpoint</label>
+                <!-- 中转/自建才需要改 Endpoint：选 OpenAI/Claude 时整组隐藏，减少干扰 -->
+                <div class="form-group" id="endpoint-group" hidden>
+                    <label for="api-endpoint">API Endpoint</label>
                     <input type="text" id="api-endpoint" placeholder="https://api.openai.com/v1/chat/completions" class="input-field">
-                    <small>支持中转/自建服务：填 OpenAI 兼容的完整地址（如 https://你的中转/v1/chat/completions）。保存时会请求访问该域名的权限，点「允许」即可。</small>
+                    <small>中转/自建服务填 OpenAI 兼容的完整地址；保存时会申请访问该域名</small>
                 </div>
 
                 <div class="form-group">
-                    <label>API Key</label>
+                    <label for="api-key">API Key</label>
                     <div class="api-key-container">
                         <input type="password" id="api-key" placeholder="输入你的 API Key" class="input-field">
                         <button id="toggle-api-key" class="btn-icon" type="button" title="显示/隐藏">👁️</button>
                     </div>
-                    <small>你的 API Key 只保存在本地，不会上传到任何服务器</small>
+                    <small>只保存在本地浏览器，不会上传到任何服务器</small>
                 </div>
 
                 <div class="form-group">
-                    <label>模型名称</label>
-                    <input type="text" id="model-name" placeholder="gpt-4o 或 claude-3-sonnet" class="input-field">
-                    <small>输入你的 API 提供商支持的模型名称</small>
+                    <label for="model-name">模型名称</label>
+                    <input type="text" id="model-name" placeholder="如 gpt-4o / claude-sonnet / minimax-m2.7" class="input-field">
                 </div>
 
-                <div class="form-group">
-                    <label class="checkbox-inline">
-                        <input type="checkbox" id="notify-on-complete" checked>
-                        筛选完成时桌面通知
-                    </label>
-                    <small>筛选在 Moka 标签页运行：请保持该标签打开，可切到其他浏览器标签工作。刷新后若未完成，侧栏会询问是否继续。</small>
-                </div>
+                <!-- 高级 · 费用估算：默认收起，需要自定义单价再展开 -->
+                <details class="adv-group">
+                    <summary>高级 · 费用估算单价（可选）</summary>
+                    <div class="adv-group-body">
+                        <div class="price-row">
+                            <input type="text" id="model-input-price" inputmode="decimal" placeholder="输入价 元/百万（留空用内置）" class="input-field">
+                            <input type="text" id="model-output-price" inputmode="decimal" placeholder="输出价 元/百万（留空用内置）" class="input-field">
+                        </div>
+                        <small>用于筛选费用估算；厂商调价或中转价不同时，填这里覆盖内置价目表（如 MiniMax-M2.7 输入 2.1 / 输出 8.4 元每百万）</small>
+                    </div>
+                </details>
 
                 <div class="button-group button-group-tight">
-                    <button id="test-api" class="btn btn-secondary">🧪 测试 API</button>
-                    <button id="save-settings" class="btn btn-primary">💾 保存设置</button>
+                    <button id="save-settings" class="btn btn-primary" title="保存设置并立即测试一次 API 连接">💾 保存并测试</button>
                 </div>
 
                 <div id="test-result" class="test-result hidden"></div>
             </section>
 
-            <!-- 接口观测：排查批量操作等未识别接口（调试用） -->
-            <section class="panel">
-                <h3 class="panel-title"><span class="panel-icon">🛠️</span>接口观测（排查用）</h3>
-                <div class="form-group">
-                    <small>记录 Moka 页面最近发出的 POST 请求（最多 80 条，只记录不拦截，不发送给任何人）。用于发现批量操作等插件尚未识别的接口：在 Moka 手动做一次操作后点下面按钮，把复制的流水发给开发者分析。刷新 Moka 页面会清空流水。</small>
-                </div>
-                <div class="button-group button-group-tight">
-                    <button id="copy-request-log" class="btn btn-secondary" type="button">📋 复制接口流水</button>
-                    <button id="copy-assignee-snapshot" class="btn btn-secondary" type="button">🧾 复制排查快照（分配对象）</button>
-                </div>
+            <!-- 运行日志：插件完整使用日志（会话级，最近 100 条；清空/复制/导出/筛选/暂停） -->
+            <section class="panel panel-log panel-last">
+                <h3 class="panel-title">
+                    <span class="panel-icon">🛠️</span>运行日志
+                    <span class="panel-title-paren">最近 100 条 · 本次浏览器会话有效</span>
+                </h3>
                 <div class="form-group form-group-tight">
-                    <small>分配对象排查快照 = 当前页面上下文 + 职位名映射 + 各职位分配存档摘要 + 最近流水。分配对象显示/确认异常时，复制后发给开发者即可一次定位。</small>
+                    <small>插件在 Moka 页面上的完整使用轨迹：接口请求、推荐对象采纳、筛选生命周期、逐人评分与错误。只在本地留存，关闭浏览器即清空。</small>
                 </div>
-                <div id="request-log-result" class="test-result hidden"></div>
+
+                <div class="log-toolbar">
+                    <div class="log-filters" id="log-filters" role="group" aria-label="按分类筛选日志">
+                        <button type="button" class="log-filter on" data-cat="all">全部</button>
+                        <button type="button" class="log-filter" data-cat="req">请求</button>
+                        <button type="button" class="log-filter" data-cat="adopt" title="简历推荐对象的读取/确认/采纳">推荐</button>
+                        <button type="button" class="log-filter" data-cat="screen">筛选</button>
+                        <button type="button" class="log-filter" data-cat="score">评分</button>
+                        <button type="button" class="log-filter" data-cat="err" title="错误 + 可恢复的重试警告">错误</button>
+                    </div>
+                    <div class="log-actions">
+                        <button type="button" id="log-pause" class="log-icon-btn" title="暂停跟读：新日志只入队、不自动滚动" aria-label="暂停跟读" aria-pressed="false">⏸</button>
+                        <button type="button" id="log-clear" class="log-icon-btn" title="清空本会话运行日志" aria-label="清空日志">🗑️</button>
+                        <button type="button" id="log-copy" class="log-icon-btn" title="复制当前筛选下的日志为文本" aria-label="复制日志">📋</button>
+                        <button type="button" id="log-export" class="log-icon-btn" title="导出当前筛选下的日志为 .txt" aria-label="导出日志">⬇️</button>
+                    </div>
+                </div>
+
+                <div id="log-list" class="log-list" tabindex="0" aria-live="polite"></div>
+                <div id="log-empty" class="log-empty">暂无日志：去 Moka 页面做一次筛选或手动操作后回来看（本会话有效）。</div>
+                <div id="log-count" class="log-count"></div>
+
+                <!-- 排查工具折叠：一键复制完整排查快照（已含接口流水，不再单独设按钮） -->
+                <details class="log-diag">
+                    <summary>排查工具（一键复制排查快照）</summary>
+                    <div class="log-diag-body">
+                        <div class="form-group form-group-tight">
+                            <small>排查快照 = 页面上下文 + 职位名映射 + 各职位已记录的简历推荐对象摘要 + 最近 80 条 POST 请求流水（含完整请求体，刷新 Moka 页面会清空）+ 职位存档锚点清单与最近一次回填诊断。排查简历推荐对象、接口或「保存了却不自动回填」问题时复制一份发给开发者即可定位；运行日志面板看的是行为轨迹，这里导出的是机器可读的完整数据。</small>
+                        </div>
+                        <div class="button-group button-group-tight">
+                            <button id="copy-assignee-snapshot" class="btn btn-secondary" type="button" title="复制页面上下文 + 简历推荐对象记录 + 完整请求流水">🧾 复制排查快照</button>
+                        </div>
+                        <div id="request-log-result" class="test-result hidden"></div>
+                    </div>
+                </details>
             </section>
         </div>
 

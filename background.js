@@ -24,6 +24,8 @@ importScripts('lib/score.js');
 importScripts('lib/persist.js');
 importScripts('lib/feedback.js');
 importScripts('lib/screening-job.js');
+importScripts('lib/usage.js');
+importScripts('lib/plugin-log.js');
 function localForcedSettings() {
   return (typeof self !== 'undefined' && self.MOKA_LOCAL_SETTINGS) ? self.MOKA_LOCAL_SETTINGS : {};
 }
@@ -33,7 +35,9 @@ const DEFAULT_SETTINGS = {
   apiEndpoint: 'https://api.openai.com/v1/chat/completions',
   apiKey: '',
   modelName: 'gpt-4o',
-  notifyOnComplete: true
+  // 可选：自定义单价（元/百万 tokens），留空走内置价目表；用于费用估算
+  modelInputPrice: '',
+  modelOutputPrice: ''
 };
 
 const MAX_RETRIES = 3;
@@ -69,6 +73,49 @@ const llmCacheReady = new Promise((resolve) => {
     });
   } catch (e) { resolve(); }
 });
+
+/* ---------------- 插件运行日志（会话级，storage.session 最近 100 条） ---------------- */
+
+let pluginLog = [];
+// MV3 SW 可能随时重启：启动时先把会话日志捞回内存，getPluginLog 等待它完成
+const pluginLogReady = new Promise((resolve) => {
+  try {
+    chrome.storage.session.get(MokaPluginLog.LOG_KEY, (result) => {
+      const saved = result && result[MokaPluginLog.LOG_KEY];
+      pluginLog = MokaPluginLog.trimEntries(saved, MokaPluginLog.LOG_LIMIT);
+      resolve();
+    });
+  } catch (e) {
+    resolve();
+  }
+});
+
+function persistPluginLog() {
+  try {
+    chrome.storage.session.set({ [MokaPluginLog.LOG_KEY]: pluginLog.slice() }).catch(() => {});
+  } catch (e) { /* storage.session 不可用时仅保留内存 */ }
+}
+
+/** 记一条（或一批）运行日志：规范化后入环、落 storage.session、实时转发给侧栏 */
+function addPluginLog(raw) {
+  if (Array.isArray(raw)) {
+    for (let i = 0; i < raw.length; i++) addPluginLog(raw[i]);
+    return null;
+  }
+  const entry = MokaPluginLog.normalizeEntry(raw);
+  if (!entry) return null;
+  pluginLog = MokaPluginLog.trimEntries(pluginLog.concat([entry]), MokaPluginLog.LOG_LIMIT);
+  persistPluginLog();
+  try {
+    chrome.runtime.sendMessage({ action: 'pluginLogEntry', entry }).catch(() => {});
+  } catch (e) { /* 忽略 */ }
+  return entry;
+}
+
+function clearPluginLog() {
+  pluginLog = [];
+  persistPluginLog();
+}
 
 let persistCacheTimer = null;
 function schedulePersistLlmCache() {
@@ -264,9 +311,29 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     case 'scoreCandidate':
       handleScoreCandidate(request)
-        .then((score) => sendResponse({ ok: true, score }))
+        .then((out) => sendResponse({ ok: true, score: out.score, meta: out.meta || null }))
         .catch((error) => sendResponse({ ok: false, error: error.message }));
       return true; // 异步响应
+
+    case 'modelPriceInfo':
+      getModelPriceInfo()
+        .then((info) => sendResponse({ ok: true, model: info.model, price: info.price }))
+        .catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true; // 异步响应
+
+    case 'pluginLog':
+      if (request && request.entry) addPluginLog(request.entry);
+      sendResponse({ ok: true });
+      return false;
+
+    case 'getPluginLog':
+      pluginLogReady.then(() => sendResponse({ ok: true, entries: pluginLog.slice() }));
+      return true;
+
+    case 'clearPluginLog':
+      clearPluginLog();
+      sendResponse({ ok: true });
+      return false;
 
     case 'fetchResume':
       handleFetchResume(request.url)
@@ -338,55 +405,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
+// 筛选完成：只在插件内提示（结果页横幅/Toast）。桌面系统通知已整体移除，
+// 避免重复打扰且不再占用 notifications 权限。
 async function notifyScreeningDone(payload) {
-  const settings = await getSettings();
-  if (settings.notifyOnComplete === false) {
-    console.log('[Moka 筛选] 完成通知已关闭，跳过桌面通知');
-    chrome.runtime.sendMessage({
-      action: 'screeningCompleteToast',
-      message: (payload && payload.message) || '筛选完成',
-      total: payload && payload.total,
-      desktop: false
-    }).catch(() => {});
-    return { ok: true, skipped: true };
-  }
-  const title = 'Moka 筛选完成';
   const message = (payload && payload.message)
     || ('共 ' + ((payload && payload.total) || 0) + ' 位候选人已评分');
-  const iconUrl = chrome.runtime.getURL('icons/icon48.png');
-  let desktopOk = false;
-  try {
-    await chrome.notifications.create('moka-screening-done-' + Date.now(), {
-      type: 'basic',
-      iconUrl,
-      title,
-      message,
-      priority: 2,
-      requireInteraction: false
-    });
-    desktopOk = true;
-  } catch (e) {
-    console.warn('[Moka 筛选] 桌面通知失败:', e && e.message);
-    try {
-      await chrome.notifications.create({
-        type: 'basic',
-        iconUrl,
-        title,
-        message
-      });
-      desktopOk = true;
-    } catch (e2) {
-      console.warn('[Moka 筛选] 桌面通知重试失败:', e2 && e2.message);
-    }
-  }
-  // 侧栏内也提示，避免系统通知被静音/拦截时用户完全无感知
   chrome.runtime.sendMessage({
     action: 'screeningCompleteToast',
     message,
-    total: payload && payload.total,
-    desktop: desktopOk
+    total: payload && payload.total
   }).catch(() => {});
-  return { ok: true, desktop: desktopOk };
+  return { ok: true };
 }
 
 let keepaliveTabId = null;
@@ -469,15 +498,16 @@ async function handleAnalyzeJob({ jobJD, jobType }) {
   const systemPrompt =
     '你是资深招聘专家，擅长解读职位 JD 并提炼岗位画像。直接输出 JSON 结果，不要输出思考过程或多余文字。';
   const userPrompt = buildJDAnalysisPrompt(jobJD, jobType);
-  const content = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: 2000, temperature: 0 });
+  const analyzeRes = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: 2000, temperature: 0 });
+  const content = analyzeRes.content;
   let spec = parseJDAnalysis(content);
 
   // 空返回/截断多半是偶发，自己重试一次（放宽输出上限、再强调一遍只要 JSON），
   // 比让用户看见报错再手点一遍「按 JD 刷新」强
   if (spec.parseError) {
     const retryPrompt = userPrompt + '\n\n只输出 JSON 对象本身，不要代码块围栏，不要任何解释。';
-    const retryContent = await callLLM(settings, systemPrompt, retryPrompt, { maxTokens: 3000, temperature: 0 });
-    const retried = parseJDAnalysis(retryContent);
+    const retryRes = await callLLM(settings, systemPrompt, retryPrompt, { maxTokens: 3000, temperature: 0 });
+    const retried = parseJDAnalysis(retryRes.content);
     if (!retried.parseError) spec = retried;
   }
 
@@ -496,7 +526,8 @@ async function handleScoreCandidate({ profile, config }) {
   config = config || {};
 
   if (!settings.apiKey) {
-    return MokaScore.scoreErrorResult('未配置 API Key');
+    const errScore = MokaScore.scoreErrorResult('未配置 API Key');
+    return { score: errScore, meta: null };
   }
 
   const jobSpec = config.jobSpec || {};
@@ -509,7 +540,10 @@ async function handleScoreCandidate({ profile, config }) {
     model: settings.modelName,
     promptRev: MokaScore.PROMPT_VERSION, feedbackRev
   });
-  if (scoreCache.has(cacheKey)) return scoreCache.get(cacheKey);
+  // 命中缓存：没有真实模型调用，meta 标记 cacheHit 供 content 累计「缓存命中」
+  if (scoreCache.has(cacheKey)) {
+    return { score: scoreCache.get(cacheKey), meta: { cacheHit: true } };
+  }
 
   const systemPrompt =
     '你是资深招聘专家，擅长客观评估候选人与岗位的匹配度。'
@@ -520,8 +554,8 @@ async function handleScoreCandidate({ profile, config }) {
   );
 
   // 推理型模型会先输出思考，需给足 token，避免 JSON 被截断
-  const content = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: 4000, temperature: 0 });
-  const parsed = parseDimensionResponse(content);
+  const llmRes = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: 4000, temperature: 0 });
+  const parsed = parseDimensionResponse(llmRes.content);
   const expectedGates = []
     .concat(jobSpec.languages || [])
     .concat(jobSpec.customGates || []);
@@ -534,7 +568,26 @@ async function handleScoreCandidate({ profile, config }) {
 
   // 解析失败不写缓存，避免把错误结果固化，下一轮可重试
   if (!raw.parseError) rememberScore(cacheKey, raw);
-  return raw;
+  const llmUsage = llmRes.usage || {};
+  const meta = {
+    cacheHit: false,
+    model: settings.modelName,
+    inTok: Number(llmUsage.inTok) > 0 ? Number(llmUsage.inTok) : 0,
+    outTok: Number(llmUsage.outTok) > 0 ? Number(llmUsage.outTok) : 0
+  };
+  return { score: raw, meta };
+}
+
+/** 当前生效模型与单价（自定义价优先于内置表），供 content 端本地估算费用 */
+async function getModelPriceInfo() {
+  const settings = await getSettings();
+  const price = MokaUsage.resolvePrice(settings.modelName, settings.modelInputPrice, settings.modelOutputPrice);
+  return {
+    model: settings.modelName,
+    price: price
+      ? { inputPerM: price.inputPerM, outputPerM: price.outputPerM, priced: true }
+      : null
+  };
 }
 
 /**
@@ -572,7 +625,7 @@ async function callLLM(settings, systemPrompt, userPrompt, opts = {}) {
 
       if (response.ok) {
         const data = await response.json();
-        return extractContent(provider, data);
+        return { content: extractContent(provider, data), usage: readUsage(provider, data) };
       }
 
       // 429 / 5xx 可重试
@@ -582,6 +635,7 @@ async function callLLM(settings, systemPrompt, userPrompt, opts = {}) {
           ? retryAfter * 1000
           : BASE_BACKOFF_MS * Math.pow(2, attempt) + Math.random() * 300;
         console.warn(`[Moka 筛选] API ${response.status}，${Math.round(waitMs)}ms 后重试 (${attempt + 1}/${MAX_RETRIES})`);
+        addPluginLog({ cat: 'warn', text: `API HTTP ${response.status}，${Math.round(waitMs)}ms 后重试（${attempt + 1}/${MAX_RETRIES}）` });
         await sleep(waitMs);
         continue;
       }
@@ -595,6 +649,7 @@ async function callLLM(settings, systemPrompt, userPrompt, opts = {}) {
         await sleep(BASE_BACKOFF_MS * Math.pow(2, attempt) + Math.random() * 300);
         continue;
       }
+      addPluginLog({ cat: 'err', text: 'LLM 请求失败：' + ((error && error.message) || '未知错误') });
       throw error;
     }
   }
@@ -685,6 +740,24 @@ function extractContent(provider, data) {
     return '';
   }
   return data?.choices?.[0]?.message?.content || '';
+}
+
+/**
+ * 从响应里读 token 用量（OpenAI 兼容: prompt_tokens/completion_tokens；Claude: input_tokens/output_tokens）。
+ * 自定义/本地端点常不带 usage，返回 null（调用方仍计入「真实调用一次」，token 计 0）。
+ */
+function readUsage(provider, data) {
+  if (!data || typeof data !== 'object') return null;
+  const u = data.usage;
+  if (!u || typeof u !== 'object') return null;
+  if (provider === 'claude') {
+    const inTok = Number(u.input_tokens) > 0 ? Number(u.input_tokens) : 0;
+    const outTok = Number(u.output_tokens) > 0 ? Number(u.output_tokens) : 0;
+    return (inTok || outTok) ? { inTok, outTok } : null;
+  }
+  const inTok = Number(u.prompt_tokens) > 0 ? Number(u.prompt_tokens) : 0;
+  const outTok = Number(u.completion_tokens) > 0 ? Number(u.completion_tokens) : 0;
+  return (inTok || outTok) ? { inTok, outTok } : null;
 }
 
 const JOB_TYPE_TEXT = {

@@ -27,10 +27,15 @@ describe('request log observation', () => {
     assert.match(content, /getRequestLog/);
   });
 
-  it('popup exposes a copy button wired to the request log', () => {
+  it('snapshot button carries the request log; the standalone 流水 button is gone', () => {
+    // 去重（1.6.9）：接口流水 ⊂ 排查快照，删掉独立的「复制接口流水」按钮，
+    // content 端 getRequestLog action 仍保留作数据源（日志 req 条目同源）
     const html = source('popup/popup.html');
     const js = source('popup/popup.js');
-    assert.match(html, /id="copy-request-log"/);
-    assert.match(js, /getRequestLog/);
+    assert.doesNotMatch(html, /id="copy-request-log"/);
+    assert.match(html, /id="copy-assignee-snapshot"/);
+    assert.doesNotMatch(js, /action: 'getRequestLog'/);
+    assert.match(js, /action: 'getAssigneeDiagnostics'/);
+    assert.match(js, /log: Array\.isArray\(response\.log\)[\s\S]{0,80}response\.log : \[\]/);
   });
 });

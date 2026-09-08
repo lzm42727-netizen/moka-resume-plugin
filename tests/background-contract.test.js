@@ -49,3 +49,58 @@ describe('JD reading survives an imperfect model reply', () => {
     assert.match(bg, /jdParseFailureMessage/);
   });
 });
+
+describe('screening usage tracking contract', () => {
+  it('callLLM returns usage alongside content instead of dropping it', () => {
+    assert.match(bg, /function readUsage\(provider, data\)/);
+    assert.match(bg, /prompt_tokens|input_tokens/);
+    assert.match(bg, /return \{ content: extractContent\(provider, data\), usage: readUsage\(provider, data\) \};/);
+  });
+
+  it('scoreCandidate replies with meta carrying cacheHit or token usage', () => {
+    assert.match(bg, /case 'scoreCandidate':[\s\S]{0,120}score: out\.score, meta: out\.meta/);
+    assert.match(bg, /meta: \{ cacheHit: true \}/);
+    assert.match(bg, /model: settings\.modelName,\s*\n\s*inTok:[\s\S]{0,120}outTok:/);
+  });
+
+  it('serves a modelPriceInfo action using custom-or-builtin price', () => {
+    assert.match(bg, /async function getModelPriceInfo\(\)/);
+    assert.match(bg, /MokaUsage\.resolvePrice\(settings\.modelName, settings\.modelInputPrice, settings\.modelOutputPrice\)/);
+    assert.match(bg, /case 'modelPriceInfo':/);
+  });
+
+  it('keeps optional custom price fields out of the default settings crash path', () => {
+    assert.match(bg, /modelInputPrice: ''/);
+    assert.match(bg, /modelOutputPrice: ''/);
+  });
+});
+
+describe('plugin run log (会话级运行日志) contract', () => {
+  it('imports the shared log lib and reloads the session-scoped ring on SW start', () => {
+    assert.match(bg, /importScripts\('lib\/plugin-log\.js'\)/);
+    assert.match(bg, /let pluginLog = \[\];/);
+    assert.match(bg, /chrome\.storage\.session\.get\(MokaPluginLog\.LOG_KEY/);
+    assert.match(bg, /MokaPluginLog\.trimEntries\(saved, MokaPluginLog\.LOG_LIMIT\)/);
+  });
+
+  it('addPluginLog accepts a single entry or a batch array and broadcasts live to the panel', () => {
+    assert.match(bg, /function addPluginLog\(raw\)[\s\S]{0,200}if \(Array\.isArray\(raw\)\)/);
+    assert.match(bg, /\{ action: 'pluginLogEntry', entry \}/);
+  });
+
+  it('exposes pluginLog / getPluginLog / clearPluginLog dispatcher cases', () => {
+    assert.match(bg, /case 'pluginLog':[\s\S]{0,120}addPluginLog\(request\.entry\)/);
+    assert.match(bg, /case 'getPluginLog':[\s\S]{0,120}entries: pluginLog\.slice\(\)/);
+    assert.match(bg, /case 'clearPluginLog':[\s\S]{0,120}clearPluginLog\(\)/);
+  });
+
+  it('keeps warn/err bookmarks on the retry and failure paths of callLLM', () => {
+    assert.match(bg, /addPluginLog\(\{ cat: 'warn', text: `API HTTP/);
+    assert.match(bg, /addPluginLog\(\{ cat: 'err', text: 'LLM 请求失败/);
+  });
+
+  it('no longer owns a desktop-notification dependency', () => {
+    assert.doesNotMatch(bg, /chrome\.notifications/);
+    assert.doesNotMatch(bg, /notifyOnComplete/);
+  });
+});
