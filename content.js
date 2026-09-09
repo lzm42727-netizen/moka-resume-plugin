@@ -3696,7 +3696,9 @@ function clearRowStage(appId) {
 function openCandidate(appId) {
   if (appId == null || appId === '') return false;
   const url = location.origin + MokaMatch.candidateOpenPath(appId, location.search);
-  window.open(url, '_blank');
+  // 固定命名窗口复用同一个「简历详情」标签：首次点开新标签，之后都在这一个标签里刷新，
+  // 避免逐个看人时堆一排标签页；用户手动关掉后再点会重新开一个（行为合理）
+  window.open(url, 'moka-candidate-detail');
   return true;
 }
 
