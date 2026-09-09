@@ -2223,8 +2223,9 @@ function notifyScreeningComplete(total, message) {
   }).catch(() => {});
 }
 
-function countScoredResults() {
-  return results.filter((item) => item && item.score && item.score.level !== '错误').length;
+// 进度口径：只要出了结果就算已处理（含评分失败），与结果页顶部摘要一致
+function countProcessedResults() {
+  return results.filter((item) => item && item.score).length;
 }
 
 function hasPendingScore(item) {
@@ -2268,7 +2269,7 @@ async function offerResumeIfNeeded() {
     return;
   }
   await saveScreeningJob(MokaScreeningJob.withStatus(job, 'awaiting_resume', {
-    completed: Math.max(job.completed, countScoredResults()),
+    completed: Math.max(job.completed, countProcessedResults()),
     total: Math.max(job.total, results.length)
   }));
   chrome.runtime.sendMessage({
@@ -2292,7 +2293,7 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
   const epoch = options.epoch;
   const total = results.length;
   if (!screeningStartedAt) screeningStartedAt = Date.now();
-  let completed = countScoredResults();
+  let completed = countProcessedResults();
   let cursor = 0;
   let enrichedExp = results.filter((it) => it && it.app && (hasAnyExperience(it.app) || it.app.__resumeText)).length;
   // 重新开筛后，上一轮 worker 必须停手，否则会往新一轮的 results 里写脏数据
@@ -2349,7 +2350,7 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
       } finally {
         clearRowStage(item.app.id);
       }
-      completed = countScoredResults();
+      completed = countProcessedResults();
       updateRow(item);
       applyPanelFilter();
       scheduleSort();
@@ -2379,7 +2380,7 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
   }
 
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(total, 1)) }, worker));
-  return { completed: countScoredResults(), enrichedExp, total };
+  return { completed: countProcessedResults(), enrichedExp, total };
 }
 
 async function resumeScreeningFromJob() {
@@ -2435,12 +2436,12 @@ async function resumeScreeningFromJob() {
   await patchScreeningJob({
     status: 'running',
     total: results.length,
-    completed: countScoredResults(),
+    completed: countProcessedResults(),
     usage: runUsage
   });
   pushPluginLog({
     cat: 'screen',
-    text: `恢复筛选：继续评分（已完成 ${countScoredResults()}/${results.length}）` + (job.jobName ? ' · ' + job.jobName : '')
+    text: `恢复筛选：继续评分（已完成 ${countProcessedResults()}/${results.length}）` + (job.jobName ? ' · ' + job.jobName : '')
   });
   updatePanelStatus('已恢复筛选，继续评分未完成的候选人… · Moka 标签请保持打开');
   publishResults(undefined, undefined, { flush: true });

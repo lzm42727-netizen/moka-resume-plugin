@@ -37,7 +37,7 @@ describe('content.js 运行日志接入点', () => {
   it('开筛 / 续筛 / 丢弃三个主动动作各落一条 screen 日志', () => {
     assert.match(js, /开始筛选：共 \$\{total\} 位候选人/);
     // 注意：句末是全角括号，正则里不能写成 ASCII 转义 \)
-    assert.match(js, /恢复筛选：继续评分（已完成 \$\{countScoredResults\(\)\}\/\$\{results\.length\}）/);
+    assert.match(js, /恢复筛选：继续评分（已完成 \$\{countProcessedResults\(\)\}\/\$\{results\.length\}）/);
     assert.match(js, /已丢弃未完成筛选任务/);
   });
 

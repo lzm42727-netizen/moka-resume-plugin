@@ -156,7 +156,7 @@ describe('formatScreeningProgress', () => {
       startedAt: t0,
       now: t0 + 4 * 60 * 1000
     });
-    assert.equal(text, '正在评 黄芯怡（37/200）· 已用约 4 分钟');
+    assert.equal(text, '已评 37/200 · 刚完成 黄芯怡 · 已用约 4 分钟');
   });
 
   it('says 刚开始 when less than a minute has passed', () => {
@@ -168,7 +168,8 @@ describe('formatScreeningProgress', () => {
       now: t0 + 20 * 1000
     });
     assert.match(text, /刚开始/);
-    assert.match(text, /李四（1\/10）/);
+    assert.match(text, /刚完成 李四/);
+    assert.match(text, /1\/10/);
   });
 
   it('omits the name when it is empty', () => {
@@ -179,6 +180,6 @@ describe('formatScreeningProgress', () => {
       startedAt: t0,
       now: t0 + 60 * 1000
     });
-    assert.equal(text, '已评分 5/10 · 已用约 1 分钟');
+    assert.equal(text, '已评 5/10 · 已用约 1 分钟');
   });
 });
