@@ -556,8 +556,8 @@
     <p class="lede">只做一次。已经有人帮你装好，直接跳到下一节。</p>
     <ol class="flow">
       <li>
-        <h4>加载插件文件夹</h4>
-        <p>地址栏进 <code>chrome://extensions/</code>，开<strong>开发者模式</strong>，点「加载已解压的扩展程序」，选整个 <code>moka-resume-plugin</code> 文件夹。需要 Chrome 116 及以上。</p>
+        <h4>下载并加载插件文件夹</h4>
+        <p>到 github/gitlab 链接登录，下载最新的<strong>压缩包（zip）</strong>并解压，得到 <code>moka-resume-plugin</code> 文件夹。<strong>建议固定在同一个位置解压</strong>（例如下载目录下建一个 <code>moka-plugin</code> 文件夹），以后每次更新都覆盖到同一处，设置才不会丢。然后地址栏进 <code>chrome://extensions/</code>，开<strong>开发者模式</strong>，点「加载已解压的扩展程序」，选中这个文件夹。需要 Chrome 116 及以上。</p>
       </li>
       <li>
         <h4>打开侧栏</h4>
@@ -569,8 +569,8 @@
       </li>
     </ol>
     <div class="tip calm">
-      <b>维护同学更新了代码之后</b>
-      去 <code>chrome://extensions</code> 点插件卡片上的「重新加载」，再刷新 Moka 页面。少了这一步，浏览器里跑的还是旧版本。
+      <b>以后代码更新了怎么升级？不会自动更新</b>
+      维护同学把新版代码推到 github/gitlab 后，<strong>你浏览器里的插件不会自己变</strong>。升级要手动做一遍：到 github/gitlab 登录 → 下载最新压缩包 → 解压<strong>覆盖</strong>上次那个文件夹 → 回 <code>chrome://extensions</code> 点插件卡片上的「重新加载」→ 刷新 Moka 页面。版本号变成最新的（当前 <b>v1.7.2</b>）才算成功。
     </div>
   </section>
 
@@ -813,6 +813,14 @@
       <summary>改了设置或门槛，结果没变化</summary>
       <div class="body">
         <p>顺序是：<code>chrome://extensions</code> 点「重新加载」→ 刷新 Moka 页面 → 确认侧栏配置还在 → 再开筛。</p>
+      </div>
+    </details>
+    <details>
+      <summary>更新到新版本后，为什么设置、存档全没了，像重新装了一样？</summary>
+      <div class="body">
+        <p>Chrome 把「加载已解压的扩展程序」当成哪个插件，<strong>看的是文件夹路径</strong>。如果你每次下载压缩包后都解压到一个<strong>新目录</strong>（比如带着版本号的新文件夹），再「移除」旧插件、重新加载新路径，Chrome 就认为你装了一个<strong>全新的插件</strong>——本地存的 Endpoint、API Key、每岗条件、决策记录都会跟着旧插件一起清掉，只能重新配。</p>
+        <p>想保留设置与历史数据，记住一个动作：<strong>永远解压覆盖同一个文件夹</strong>（下载 zip 解压后，把里面的文件覆盖进上次那个 <code>moka-resume-plugin</code> 目录），然后只点「重新加载」，不要移除旧插件。这样配置和存档都在。</p>
+        <p>真不小心移除重装了，Endpoint / API Key 重填一次即可恢复使用；历史决策记录无法找回（只会影响「本岗校准」样本的连续性，不影响筛选本身）。</p>
       </div>
     </details>
 
