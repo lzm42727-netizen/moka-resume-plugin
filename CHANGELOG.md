@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.7.0 - 2026-09-09
+
+- **P2-1 工程门禁扩围（防 1.6.17 类事故复发）**：`npm run lint` 由 `lib tests scripts` 扩到 **content.js / background.js / inject.js / popup/popup.js 四个入口文件**（--max-warnings=0 不变）；eslint.config.js 为入口文件单独配浏览器 / service worker 环境 globals + Moka* 命名空间白名单，`no-undef` 直接锁死「引用未声明标识符」（正是 setMultiSelectOptions 死调用能漏网的同类形态）；新增 tests/entry-lint-gate.test.js 钉死入口必须在 lint 范围，防止以后被悄悄拿掉
+- 死代码清理（lint 上入口后首批暴露的 16 处孤儿，均已全仓核实无引用后删除）：background.js 删 setPendingMokaForTab/getPendingMokaForTab/persistPendingMokaToDisk（逻辑已被 Async 版取代）、neutralDimensions；content.js 删 normalizeAgeRanges/buildHardText/stripHtml/formatExperienceList（lib 薄包装）、deepFindAll/buildDetailUrl（lib 同功能）、rescoreItem 里未使用的 weights 赋值；popup.js 删 maybeFillEmptyRequirementsFromJd 空 stub、switchResultTab、setCandidateFeedback，applyRequirementsToEditors 去掉从未使用的 hard 参数；inject.js 删从未使用的 seenFiber
+- **P2-6 XHR load 监听防泄漏**：inject.js 劫持 send 时挂的 load 监听改为具名函数，触发后首行 removeEventListener 自移除——同一 XHR 实例复用 send 不再累积监听
+- **P2-10 锁状态解锁补洞**：reconcileJobTypeWithLabel（按职位名校正实习/正式）的 applyingPreset 改为 try/finally 复位——与 1.6.17 的锁卡死同形态的隐患点，统一消除
+- **P2-11 顶层 DOM 绑定空值守航**：popup.js 顶部新增 safeEl(id)（缺元素 console.warn 一次并返回 null）；reload-panel/api-provider/toggle-api-key/save-settings/start-screening/stop-screening/save-job-preset 及 bindResultFilters 内 result-search/export-results 等关键绑定全部改走 safeEl/可选链——HTML 重构漏掉单个 id 只跳过该绑定，不再整段瘫痪
+- 测试 396→401（entry-lint-gate ×3 / popup-ui safeEl ×1 / bridge XHR 自移除 ×1）；npm run check 全绿。prettier 范围暂未扩（入口文件整文件重排 diff 过大，留待单独格式化）
+
 ## 1.6.20 - 2026-09-08
 
 - 分页抓取加重试退避（P1-5）：`fetchAllApplications` 单页请求对超时/断网/HTTP 429/5xx 做指数退避重试（最多 3 次，600ms 起、上限 6s、带抖动），其余 4xx（会话失效等）立即失败不空转；筛选被停止时中止重试优雅收尾。此前任一页偶发超时/限流都会让整轮抓取（已完成页结果）全部作废

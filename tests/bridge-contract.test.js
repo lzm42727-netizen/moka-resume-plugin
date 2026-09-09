@@ -67,4 +67,10 @@ describe('契约收口（1.6.20）', () => {
       assert.match(content, new RegExp(`request\\.action === '${a}'`), `content 仍处理 ${a}`);
     }
   });
+
+  it('XHR load 监听具名 + 触发自移除（P2-6）：同实例复用 send 不累积监听', () => {
+    const inject = source('inject.js');
+    assert.match(inject, /const onLoad = function \(\) \{\s*\n\s*this\.removeEventListener\('load', onLoad\);/);
+    assert.match(inject, /this\.addEventListener\('load', onLoad\);/);
+  });
 });

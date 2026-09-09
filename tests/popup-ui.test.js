@@ -255,7 +255,7 @@ describe('screening configuration UI', () => {
     assert.doesNotMatch(js, /ensureJobUnderstandingOnEnter\(\)/);
     const fnBody = js.slice(
       js.indexOf('async function ensureJobUnderstandingOnEnter'),
-      js.indexOf('function maybeFillEmptyRequirementsFromJd')
+      js.indexOf('function scheduleSaveJobPreset')
     );
     // 冻结分支必须先于自动调 AI；AI 调用只允许落在「首次进入」分支里
     const freezeAt = fnBody.indexOf('if (hadSavedPreset)');
@@ -495,5 +495,19 @@ describe('切岗/恢复稳健性（1.6.18/1.6.19）', () => {
     assert.match(js, /const bootSteps = \[[\s\S]{0,400}刷新页面职位上下文', refreshResultsAndJobContext\]/);
     assert.match(js, /for \(const \[name, fn\] of bootSteps\) \{[\s\S]{0,120}await fn\(\);[\s\S]{0,80}catch \(e\) \{/);
     assert.match(js, /try \{ bindResultFilters\(\); \} catch \(e\) \{ console\.warn\('\[初始化\] 结果区交互绑定失败', e\);/);
+  });
+
+  it('顶层 DOM 绑定空值守航（P2-11）：safeEl 封装 + 关键 id 不再裸 .addEventListener', () => {
+    assert.match(js, /function safeEl\(id\)[\s\S]{0,200}console\.warn\('\[Moka 筛选\] popup\.html 缺少元素/);
+    // 关键绑定（缺元素会导致整段 JS 中断或结果区功能全失）必须走 safeEl/可选链
+    for (const id of ['reload-panel', 'api-provider', 'toggle-api-key', 'save-settings',
+      'start-screening', 'stop-screening', 'save-job-preset', 'export-results', 'result-search']) {
+      assert.doesNotMatch(
+        js,
+        new RegExp(`getElementById\\('${id}'\\)\\.addEventListener`),
+        `${id} 不得裸调用 .addEventListener`
+      );
+      assert.ok(js.includes(`safeEl('${id}')`), `${id} 应经 safeEl 绑定`);
+    }
   });
 });

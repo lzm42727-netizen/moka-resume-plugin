@@ -1,3 +1,15 @@
+/** 空值守航：取不到元素时 console.warn 一次并返回 null。
+ *  顶层 DOM 绑定一律走它——单个 id 缺失只跳过该绑定，不再整段瘫痪（P2-11）。 */
+const safeElMissingWarned = new Set();
+function safeEl(id) {
+  const el = document.getElementById(id);
+  if (!el && !safeElMissingWarned.has(id)) {
+    safeElMissingWarned.add(id);
+    console.warn('[Moka 筛选] popup.html 缺少元素 #' + id + '（HTML 重构可能漏掉了它，相关功能已跳过）');
+  }
+  return el;
+}
+
 function switchTab(tabName) {
   document.querySelectorAll('.tab-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.tab === tabName);
@@ -15,7 +27,7 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
   btn.addEventListener('click', () => switchTab(btn.dataset.tab));
 });
 
-document.getElementById('reload-panel').addEventListener('click', () => {
+safeEl('reload-panel')?.addEventListener('click', () => {
   reloadSidePanel();
 });
 
@@ -319,10 +331,13 @@ function reconcileJobTypeWithLabel(label) {
   const current = document.querySelector('input[name="job-type"]:checked');
   if (current && current.value === suggested) return false;
   applyingPreset = true;
-  const radio = document.querySelector('input[name="job-type"][value="' + suggested + '"]');
-  if (radio) radio.checked = true;
-  applyingPreset = false;
-  applyJobTypeVisibility();
+  try {
+    const radio = document.querySelector('input[name="job-type"][value="' + suggested + '"]');
+    if (radio) radio.checked = true;
+    applyJobTypeVisibility();
+  } finally {
+    applyingPreset = false;
+  }
   return true;
 }
 
@@ -614,7 +629,7 @@ function applyJobUnderstandingFromSpec(spec, noteText) {
   setJobUnderstandingText(String((spec && spec.summary) || ''), noteText);
 }
 
-function applyRequirementsToEditors(requirements, hard) {
+function applyRequirementsToEditors(requirements) {
   const req = MokaPersist.normalizeRequirements({ requirements: requirements || {} });
   importantEditor.set(req.important || []);
   niceEditor.set(req.nice || []);
@@ -635,7 +650,7 @@ function applyJobPreset(preset) {
     if ((!req.important || !req.important.length || !req.nice || !req.nice.length) && preset.jobSpec) {
       req = MokaPersist.fillRequirementsFromJobSpec(req, preset.jobSpec);
     }
-    applyRequirementsToEditors(req, preset.hard);
+    applyRequirementsToEditors(req);
     setWeights(preset.weights);
     if (preset.jobSpec && window.MokaPersist && MokaPersist.formatJobUnderstandingParts) {
       applyJobUnderstandingFromSpec(preset.jobSpec, '已恢复本岗理解');
@@ -934,11 +949,6 @@ async function ensureJobUnderstandingOnEnter(hadSavedPreset) {
   return !!ok;
 }
 
-/** 迁移场景：重要/加分空且无理解时，由 ensureJobUnderstandingOnEnter 统一处理 */
-function maybeFillEmptyRequirementsFromJd() {
-  // 保留空实现以免旧调用报错；逻辑已并入 ensureJobUnderstandingOnEnter
-}
-
 function scheduleSaveJobPreset() {
   if (applyingPreset) return;
   clearTimeout(savePresetTimer);
@@ -1142,7 +1152,7 @@ document.getElementById('refresh-job-understanding')?.addEventListener('click', 
 });
 
 // API 提供商切换时联动默认 Endpoint 占位
-document.getElementById('api-provider').addEventListener('change', (e) => {
+safeEl('api-provider')?.addEventListener('change', (e) => {
   const endpoint = document.getElementById('api-endpoint');
   const map = {
     openai: 'https://api.openai.com/v1/chat/completions',
@@ -1153,7 +1163,7 @@ document.getElementById('api-provider').addEventListener('change', (e) => {
 });
 
 // API Key 显示/隐藏切换
-document.getElementById('toggle-api-key').addEventListener('click', function () {
+safeEl('toggle-api-key')?.addEventListener('click', function () {
   const apiKeyInput = document.getElementById('api-key');
   if (apiKeyInput.type === 'password') {
     apiKeyInput.type = 'text';
@@ -1221,7 +1231,7 @@ async function ensureHostPermission(endpoint) {
 }
 
 // 保存并测试：一次完成落盘 + 连接校验（中转地址仍需在弹窗里点「允许」）
-document.getElementById('save-settings').addEventListener('click', async () => {
+safeEl('save-settings')?.addEventListener('click', async () => {
   const settings = readSettingsForm();
 
   if (!settings.apiKey) {
@@ -1941,7 +1951,7 @@ async function prefillHardFromJD() {
 }
 
 // 开始筛选
-document.getElementById('start-screening').addEventListener('click', async () => {
+safeEl('start-screening')?.addEventListener('click', async () => {
   // 只挡住「正在发送的这一下」；任何异常都会在看门狗里解锁，绝不永久吞掉点击
   if (startingScreen) return;
   const selectedJob = document.getElementById('job-select').value || activePresetJobId || '';
@@ -2076,7 +2086,7 @@ function setScreeningUi(active) {
 }
 
 // 停止筛选（进度条旁的文字按钮）
-document.getElementById('stop-screening').addEventListener('click', async () => {
+safeEl('stop-screening')?.addEventListener('click', async () => {
   const tab = await getMokaTab();
   if (isMokaTab(tab)) {
     chrome.tabs.sendMessage(tab.id, { action: 'stopScreening' }, () => void chrome.runtime.lastError);
@@ -2085,7 +2095,7 @@ document.getElementById('stop-screening').addEventListener('click', async () => 
   document.getElementById('progress-container').classList.add('hidden');
 });
 
-document.getElementById('save-job-preset').addEventListener('click', () => {
+safeEl('save-job-preset')?.addEventListener('click', () => {
   saveJobPresetFromButton();
 });
 
@@ -2779,14 +2789,6 @@ function markFeedbackSyncState(appId, state) {
   resultState.items = mergeFeedbackIntoViews(resultState.items);
 }
 
-function switchResultTab(tab) {
-  const next = tab === 'hardfail' ? 'all' : (tab || 'all');
-  resultFilter.tab = next;
-  document.querySelectorAll('#results-tab .mp-filter').forEach((b) => {
-    b.classList.toggle('on', (b.dataset.filter || 'all') === resultFilter.tab);
-  });
-}
-
 const FILTER_TAB_LABELS = {
   all: '待处理',
   recommend: '推荐',
@@ -2810,18 +2812,6 @@ function updateFilterTabLabels() {
     const n = countViewsForFilter(tab);
     btn.textContent = `${label} (${n})`;
   });
-}
-
-function setCandidateFeedback(appId, verdict, view) {
-  const jobId = effectiveJobId();
-  if (!jobId) {
-    setPresetNote('请先选择职位后再标注反馈', '#fa8c16');
-    return;
-  }
-  const current = MokaFeedback.getFeedbackVerdict(feedbackRecord, jobId, appId);
-  const nextVerdict = current === verdict ? null : verdict;
-  saveCandidateFeedback(appId, nextVerdict, view);
-  renderResults();
 }
 
 function findResultView(appId) {
@@ -2999,12 +2989,12 @@ function bindResultFilters() {
       renderResults();
     });
   });
-  const search = document.getElementById('result-search');
-  search.addEventListener('input', () => {
+  const search = safeEl('result-search');
+  search?.addEventListener('input', () => {
     resultFilter.query = search.value || '';
     renderResults();
   });
-  document.getElementById('export-results').addEventListener('click', () => {
+  safeEl('export-results')?.addEventListener('click', () => {
     exportDecidedCsv();
   });
 }

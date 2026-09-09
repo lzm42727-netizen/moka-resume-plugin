@@ -1804,14 +1804,6 @@ function evaluateHardConditions(app, hc, jobType) {
   return MokaCandidateProfile.evaluateHardConditions(app, hc, jobType);
 }
 
-function normalizeAgeRanges(hc) {
-  return MokaCandidateProfile.normalizeAgeRanges(hc);
-}
-
-function buildHardText(hc, jobType, extraMustHaves) {
-  return MokaCandidateProfile.buildHardText(hc, jobType, extraMustHaves);
-}
-
 function applyMergedHard(item) {
   const local = item.hardLocal || { passed: true, missing: [] };
   const unmet = ((item.score && item.score.unmet) || [])
@@ -1848,23 +1840,6 @@ function deepFind(obj, key) {
   };
   walk(obj);
   return found;
-}
-
-/** 深度收集某个 key 的所有取值（同名 key 可能出现在多层） */
-function deepFindAll(obj, key) {
-  const out = [];
-  const seen = new Set();
-  const walk = (o) => {
-    if (!o || typeof o !== 'object' || seen.has(o)) return;
-    seen.add(o);
-    if (Array.isArray(o)) { o.forEach(walk); return; }
-    for (const k of Object.keys(o)) {
-      if (k === key) out.push(o[k]);
-      walk(o[k]);
-    }
-  };
-  walk(obj);
-  return out;
 }
 
 /**
@@ -1904,11 +1879,6 @@ const FORBIDDEN_HEADERS = new Set([
   'cookie', 'host', 'content-length', 'connection', 'accept-encoding', 'content-type',
   'if-none-match', 'if-modified-since' // 条件请求头会导致 304 空响应，重放时去掉
 ]);
-
-/** 用「已验证含经历」的详情模板拼出目标候选人的详情 URL（保留 scene 等查询参数） */
-function buildDetailUrl(app) {
-  return MokaCapture.buildDetailUrl(app, capturedDetailRequest, location.origin);
-}
 
 function detailHeaders() {
   const out = { Accept: 'application/json' };
@@ -2100,14 +2070,6 @@ function fetchResumeText(url) {
 }
 
 /* ---------------- 画像 & JD ---------------- */
-
-function stripHtml(html) {
-  return MokaCandidateProfile.stripHtml(html);
-}
-
-function formatExperienceList(arr) {
-  return MokaCandidateProfile.formatExperienceList(arr);
-}
 
 function buildCandidateProfile(app) {
   return MokaCandidateProfile.buildCandidateProfile(app);
@@ -3505,7 +3467,6 @@ async function rescoreItem(item) {
   if (!item || !item.app || item.__rescoring) return;
   const cfg = lastScreenConfig;
   if (!cfg) return;
-  const weights = cfg.weights || activeWeights || normalizeWeights(null);
   item.__rescoring = true;
   publishResults(undefined, undefined, { flush: true });
   if (item.app) item.app.__enriched = false;

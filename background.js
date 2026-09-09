@@ -209,26 +209,6 @@ function hydratePendingMokaFromDisk() {
 }
 hydratePendingMokaFromDisk();
 
-function persistPendingMokaToDisk() {
-  try {
-    const bag = {};
-    pendingMokaByTab.forEach((v, k) => { bag[String(k)] = v; });
-    chrome.storage.local.set({ [PENDING_MOKA_STORAGE_KEY]: bag });
-  } catch (e) { /* ignore */ }
-}
-
-function setPendingMokaForTab(tabId, pending) {
-  if (tabId == null) return;
-  if (pending) pendingMokaByTab.set(tabId, pending);
-  else pendingMokaByTab.delete(tabId);
-  persistPendingMokaToDisk();
-}
-
-function getPendingMokaForTab(tabId) {
-  if (tabId == null) return null;
-  return pendingMokaByTab.get(tabId) || null;
-}
-
 function loadPendingMokaForTab(tabId) {
   return new Promise((resolve) => {
     if (tabId == null) {
@@ -918,16 +898,6 @@ function arrOf(x, max = 6) {
   if (typeof x === 'string') x = [x];
   if (!Array.isArray(x)) return [];
   return x.map((s) => String(s)).filter(Boolean).slice(0, max);
-}
-
-function neutralDimensions(reason) {
-  const r = reason || '';
-  return {
-    experience: { score: 50, reason: r },
-    skill: { score: 50, reason: r },
-    education: { score: 50, reason: r },
-    potential: { score: 50, reason: r }
-  };
 }
 
 const WEIGHT_KEYS = ['experience', 'skill', 'education', 'potential'];

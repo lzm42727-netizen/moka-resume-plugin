@@ -9,7 +9,7 @@
     "test": "node --test tests/*.test.js",
     "syntax:check": "node scripts/syntax-check.js",
     "check:version": "node scripts/check-version.js",
-    "lint": "eslint lib tests scripts --max-warnings=0",
+    "lint": "eslint lib tests scripts content.js background.js inject.js popup/popup.js --max-warnings=0",
     "format:check": "prettier --check scripts tests lib/contracts.js content",
     "format": "prettier --write scripts tests lib/contracts.js content",
     "pack": "node scripts/pack.js",

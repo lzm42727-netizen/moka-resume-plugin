@@ -246,7 +246,6 @@
   function collectIdNamePairsFromChipEls(els, names) {
     const pairs = [];
     const seenPair = {};
-    const seenFiber = new Set();
     (els || []).forEach((el) => {
       let fiber = reactFiberOf(el);
       for (let i = 0; fiber && i < 20; i++) {
@@ -384,7 +383,9 @@
         }
       } catch (e) { /* ignore */ }
 
-      this.addEventListener('load', function () {
+      // 具名监听 + 触发后自移除：同一 XHR 实例复用 send 时不累积 load 监听
+      const onLoad = function () {
+        this.removeEventListener('load', onLoad);
         try {
           const m = this.__moka || {};
           const rt = xhrResponseText(this);
@@ -394,7 +395,8 @@
             harvestMemberResponse(m.url, rt);
           }
         } catch (e) { /* ignore */ }
-      });
+      };
+      this.addEventListener('load', onLoad);
 
       return send.apply(this, arguments);
     };
