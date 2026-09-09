@@ -127,6 +127,21 @@ describe('csv', () => {
     assert.match(csv, /赵六,,,42,91,不建议推进/);
     assert.doesNotMatch(csv, /必备项扣分|经验,技能,教育,潜力/);
   });
+
+  it('exports sync state and decided time columns when provided (1.7.1)', () => {
+    const item = {
+      app: { id: 44, name: '王五' },
+      score: { score: 70, level: '值得推荐', dims: {} },
+      hard: { passed: true },
+      rawScore: {},
+      feedbackSync: 'synced',
+      decidedAt: new Date(2026, 8, 9, 10, 30).getTime()
+    };
+    const csv = screeningToCsv([item], 'https://app.mokahr.com', { 44: 'recommend' });
+    assert.match(csv, /同步状态,决策时间,链接/);
+    assert.match(csv, /已同步/);
+    assert.match(csv, /2026-09-09 10:30/);
+  });
 });
 
 describe('slim screening', () => {

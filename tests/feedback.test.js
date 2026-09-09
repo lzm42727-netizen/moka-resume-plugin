@@ -599,5 +599,8 @@ describe('listDecidedResultViews', () => {
     assert.equal(item.app.highestDegree, '硕士');
     assert.equal(item.score.score, 70);
     assert.equal(item.rawScore.highlights[0], '稳');
+    // 决策时间 / 同步状态透传给 CSV（1.7.1）
+    assert.equal(item.decidedAt, 1);
+    assert.equal(item.feedbackSync, 'synced');
   });
 });

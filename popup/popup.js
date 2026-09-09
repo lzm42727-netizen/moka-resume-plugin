@@ -2742,7 +2742,9 @@ async function exportDecidedCsv() {
   } catch (e) { /* keep default */ }
   const items = views.map((v) => MokaFeedback.resultViewToCsvItem(v)).filter(Boolean);
   const csv = MokaPersist.screeningToCsv(items, origin, feedbackMapForExport());
-  downloadTextFile(`moka-已决策-${new Date().toISOString().slice(0, 10)}.csv`, csv);
+  // 文件名带职位名：多个职位分别导出时不会同名覆盖/难找（去掉文件名非法字符）
+  const safeLabel = String(currentJobLabel() || '职位').replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 40) || '职位';
+  downloadTextFile(`moka-已决策-${safeLabel}-${new Date().toISOString().slice(0, 10)}.csv`, csv);
   setResultHint(`已导出 ${items.length} 条本岗已决策简历`, { tone: 'ok' });
 }
 
