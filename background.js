@@ -36,6 +36,26 @@ function localForcedSettings() {
   return (typeof self !== 'undefined' && self.MOKA_LOCAL_SETTINGS) ? self.MOKA_LOCAL_SETTINGS : {};
 }
 
+/** 存储写入统一封装（P1-10）：失败读 lastError / 捕获异常并 console.error，不再静默丢数据。
+ *  返回 Promise<boolean> 表示是否写入成功；调用方据此决定是否提示「已保存」。 */
+function storeSet(items, context) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.set(items, () => {
+        if (chrome.runtime.lastError) {
+          console.error('[Moka 筛选] 存储写入失败(' + (context || 'unknown') + '):', chrome.runtime.lastError.message);
+          resolve(false);
+        } else {
+          resolve(true);
+        }
+      });
+    } catch (e) {
+      console.error('[Moka 筛选] 存储写入异常(' + (context || 'unknown') + '):', e);
+      resolve(false);
+    }
+  });
+}
+
 const DEFAULT_SETTINGS = {
   apiProvider: 'openai',
   apiEndpoint: 'https://api.openai.com/v1/chat/completions',
@@ -99,7 +119,8 @@ const pluginLogReady = new Promise((resolve) => {
 
 function persistPluginLog() {
   try {
-    chrome.storage.session.set({ [MokaPluginLog.LOG_KEY]: pluginLog.slice() }).catch(() => {});
+    chrome.storage.session.set({ [MokaPluginLog.LOG_KEY]: pluginLog.slice() })
+      .catch((e) => console.warn('[Moka 筛选] 运行日志落盘失败', e));
   } catch (e) { /* storage.session 不可用时仅保留内存 */ }
 }
 
@@ -114,7 +135,8 @@ function addPluginLog(raw) {
   pluginLog = MokaPluginLog.trimEntries(pluginLog.concat([entry]), MokaPluginLog.LOG_LIMIT);
   persistPluginLog();
   try {
-    chrome.runtime.sendMessage({ action: 'pluginLogEntry', entry }).catch(() => {});
+    chrome.runtime.sendMessage({ action: 'pluginLogEntry', entry })
+      .catch((e) => console.warn('[Moka 筛选] 运行日志实时广播失败', e));
   } catch (e) { /* 忽略 */ }
   return entry;
 }
@@ -129,11 +151,8 @@ function schedulePersistLlmCache() {
   if (persistCacheTimer) return;
   persistCacheTimer = setTimeout(() => {
     persistCacheTimer = null;
-    try {
-      chrome.storage.local.set({
-        [MokaPersist.LLM_CACHE_STORAGE_KEY]: { scores: scoreRecord, jds: jdRecord }
-      });
-    } catch (e) { /* ignore */ }
+    // LLM 缓存丢失 → SW 重启后重复扣费，写入失败必须可见
+    storeSet({ [MokaPersist.LLM_CACHE_STORAGE_KEY]: { scores: scoreRecord, jds: jdRecord } }, 'llm-cache');
   }, 400);
 }
 
@@ -424,7 +443,12 @@ async function stopScreeningKeepalive() {
 if (chrome.alarms && chrome.alarms.onAlarm) {
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (!alarm || alarm.name !== MokaScreeningJob.KEEP_ALIVE_ALARM) return;
-    if (keepaliveTabId == null) return;
+    // 空闲自清（P2-4）：SW 重启后 keepaliveTabId 归 null 但周期 alarm 仍在，
+    // 若不清理会每分钟空唤醒一次。清掉即止。
+    if (keepaliveTabId == null) {
+      try { chrome.alarms.clear(MokaScreeningJob.KEEP_ALIVE_ALARM); } catch (e) { /* ignore */ }
+      return;
+    }
     chrome.tabs.sendMessage(keepaliveTabId, { action: 'screeningKeepalivePing' }, () => {
       void chrome.runtime.lastError;
     });
@@ -1184,8 +1208,9 @@ function getSettings() {
 // 初始化默认设置
 chrome.storage.local.get('mokaSettings', (result) => {
   if (!result.mokaSettings) {
-    chrome.storage.local.set({ mokaSettings: DEFAULT_SETTINGS });
-    console.log('[Moka 筛选] 已初始化默认设置');
+    storeSet({ mokaSettings: DEFAULT_SETTINGS }, 'default-settings').then(() => {
+      console.log('[Moka 筛选] 已初始化默认设置');
+    });
   }
 });
 

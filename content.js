@@ -464,10 +464,11 @@ function requestAssigneePairs() {
       if (event.source !== window) return;
       const data = event.data;
       if (!data || data.source !== 'moka-inject' || data.type !== 'assignee-pairs') return;
+      if (!bridgeMessageAccepted(data)) return;
       if (!data.payload || data.payload.reqId !== reqId) return;
       done(data.payload);
     };
-    setTimeout(() => done({ names: [], pairs: [] }), 4000);
+    setTimeout(() => done({ names: [], pairs: [] }), 6000);
     window.addEventListener('message', onMessage);
     try {
       window.postMessage({
@@ -645,10 +646,46 @@ function mergeLiveScrapedAssigneeNames(scraped) {
 }
 
 // 尽早监听，避免错过 inject.js 的早期推送
+
+/* ---------------- 桥接握手（nonce，P1-9） ----------------
+ * content 生成一次性 nonce 下发给 inject；inject 之后每次上行 push 都回带。
+ * 握手确认后 content 只采信带正确 nonce 的消息，页面内其它脚本伪造
+ * moka-inject 来源的写操作（篡改经历/分配映射/重放模板）会被丢弃。
+ * 确认前（旧 inject / 时序窗口）不校验，保证兼容与功能不断链。 */
+let bridgeNonce = '';
+let bridgeNonceConfirmed = false;
+function bridgeNonceValue() {
+  if (!bridgeNonce) bridgeNonce = 'moka-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  return bridgeNonce;
+}
+function sendBridgeInit() {
+  try {
+    window.postMessage({ source: 'moka-content', type: 'bridge-init', payload: { nonce: bridgeNonceValue() } }, '*');
+  } catch (e) { /* ignore */ }
+}
+function bridgeMessageAccepted(data) {
+  return !bridgeNonceConfirmed || (data && data.nonce === bridgeNonce);
+}
+function startBridgeHandshake() {
+  let tries = 0;
+  sendBridgeInit();
+  const timer = setInterval(() => {
+    if (bridgeNonceConfirmed || ++tries > 10) { clearInterval(timer); return; }
+    sendBridgeInit();
+  }, 500);
+}
+
 window.addEventListener('message', (event) => {
   if (event.source !== window) return;
   const data = event.data;
   if (!data || data.source !== 'moka-inject') return;
+  // 握手回执：inject 收到 nonce 后回 bridge-ready，确认后启用严格校验
+  if (data.type === 'bridge-ready') {
+    if (data.payload && data.payload.nonce === bridgeNonce) bridgeNonceConfirmed = true;
+    return;
+  }
+  // nonce 校验：确认后丢弃不带/带错 nonce 的伪造消息
+  if (!bridgeMessageAccepted(data)) return;
   if (data.type === 'search-request') {
     capturedRequest = data.payload;
     persistCapture();
@@ -1151,6 +1188,7 @@ function init() {
   if (contentBooted) return;
   contentBooted = true;
   console.log('[Moka 筛选] Content script 已加载');
+  startBridgeHandshake();
   const leftover = document.getElementById('moka-panel');
   if (leftover) leftover.remove();
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -1964,19 +2002,34 @@ async function enrichCandidate(app) {
     const method = (capturedDetailRequest && capturedDetailRequest.method) || 'GET';
     const urls = MokaCapture.uniqueDetailUrls(app, capturedDetailRequest, location.origin, currentScene());
     for (const url of urls) {
-      try {
-        const resp = await fetchWithTimeout(url, {
-          method,
-          credentials: 'include',
-          headers: detailHeaders()
-        });
-        if (!resp.ok) continue;
-        const fetched = MokaCapture.unwrapDetailJson(await resp.json());
-        if (detailBelongsTo(app, fetched)) {
-          json = fetched;
+      // 详情抓取带 1 次重试：断网/超时/429/5xx 短暂退避后再试，4xx（会话失效）立即放弃换下一条
+      let resp = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          resp = await fetchWithTimeout(url, {
+            method,
+            credentials: 'include',
+            headers: detailHeaders()
+          });
+          if (resp.ok) break;
+          if (resp.status === 429 || resp.status >= 500) {
+            resp = null;
+            await sleep(300);
+            continue;
+          }
+          resp = null;
           break;
+        } catch (e) {
+          resp = null;
+          if (attempt === 0) await sleep(300);
         }
-      } catch (e) { /* 尝试下一条 URL */ }
+      }
+      if (!resp || !resp.ok) continue;
+      const fetched = MokaCapture.unwrapDetailJson(await resp.json());
+      if (detailBelongsTo(app, fetched)) {
+        json = fetched;
+        break;
+      }
     }
   }
 
@@ -3264,6 +3317,7 @@ function requestMainWorldAssignment(payload) {
       if (event.source !== window) return;
       const data = event.data;
       if (!data || data.source !== 'moka-inject' || data.type !== 'assignment-response') return;
+      if (!bridgeMessageAccepted(data)) return;
       if (!data.payload || data.payload.reqId !== reqId) return;
       done(data.payload);
     };

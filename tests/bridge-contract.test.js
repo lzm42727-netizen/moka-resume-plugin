@@ -73,4 +73,18 @@ describe('契约收口（1.6.20）', () => {
     assert.match(inject, /const onLoad = function \(\) \{\s*\n\s*this\.removeEventListener\('load', onLoad\);/);
     assert.match(inject, /this\.addEventListener\('load', onLoad\);/);
   });
+
+  it('P1-9 nonce 握手：inject 回带 nonce，content 确认后只采信带正确 nonce 的消息', () => {
+    const inject = source('inject.js');
+    const content = source('content.js');
+    // inject：记录 nonce，上行 post 统一附带
+    assert.match(inject, /let bridgeNonce = ''/);
+    assert.match(inject, /if \(bridgeNonce\) msg\.nonce = bridgeNonce;/);
+    assert.match(inject, /data\.type === 'bridge-init'[\s\S]{0,200}post\('bridge-ready'/);
+    // content：握手下发 + 确认后 gate
+    assert.match(content, /type: 'bridge-init', payload: \{ nonce: bridgeNonceValue\(\) \}/);
+    assert.match(content, /function bridgeMessageAccepted\(data\)/);
+    assert.match(content, /if \(!bridgeMessageAccepted\(data\)\) return;/);
+    assert.match(content, /data\.type === 'bridge-ready'[\s\S]{0,160}bridgeNonceConfirmed = true/);
+  });
 });

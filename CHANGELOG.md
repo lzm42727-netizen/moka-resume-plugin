@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.7.1 - 2026-09-09
+
+- **P1-9 桥接消息 nonce 握手（安全）**：content 生成一次性 nonce 下发给 inject，inject 之后每次上行 push 统一回带；握手确认后 content 只采信带正确 nonce 的消息——页面内其它脚本伪造 moka-inject 来源的写操作（篡改经历 / 分配映射 / 重放模板）会被丢弃。确认前（旧 inject / 时序窗口）不校验，兼容不断链；detail-data 本身已有「合法 JSON + URL 含 application id」结构校验兜底
+- **P1-10 存储写入失败可观测**：background 新增 `storeSet` 统一封装（读 lastError / 捕获异常并 console.error）；LLM 缓存落盘与默认设置初始化改走它——缓存写失败不再静默丢（否则 SW 重启会重复扣费）。popup 侧「保存岗位配置」「保存并测试」本就已 try/catch 兜底并提示失败，未重复改
+- **P2-4**：keepalive alarm 空闲自清——SW 重启后 `keepaliveTabId` 归 null 但周期 alarm 仍在时清掉，不再每分钟空唤醒
+- **P2-9**：enrichCandidate 详情抓取加 1 次重试（断网/超时/429/5xx 短暂退避，其余 4xx 立即换下一条 URL）；requestAssigneePairs 超时 4s → 6s
+- **P2-12**：运行日志落盘 / 实时广播的静默吞错收敛为 console.warn，失败可见
+- 测试 401→403（bridge-contract nonce 握手 ×1 / background-contract storeSet+alarm ×1）；npm run check 全绿
+
 ## 1.7.0 - 2026-09-09
 
 - **P2-1 工程门禁扩围（防 1.6.17 类事故复发）**：`npm run lint` 由 `lib tests scripts` 扩到 **content.js / background.js / inject.js / popup/popup.js 四个入口文件**（--max-warnings=0 不变）；eslint.config.js 为入口文件单独配浏览器 / service worker 环境 globals + Moka* 命名空间白名单，`no-undef` 直接锁死「引用未声明标识符」（正是 setMultiSelectOptions 死调用能漏网的同类形态）；新增 tests/entry-lint-gate.test.js 钉死入口必须在 lint 范围，防止以后被悄悄拿掉

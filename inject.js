@@ -24,6 +24,7 @@
 
   let lastSearch = null;
   let detailTemplate = null; // 详情请求模板
+  let bridgeNonce = ''; // content 握手时下发；上行 push 时回带，content 据此校验消息真伪
 
   function normalizeHeaders(headers) {
     const out = {};
@@ -39,7 +40,11 @@
   }
 
   function post(type, payload) {
-    try { window.postMessage({ source: 'moka-inject', type, payload }, '*'); } catch (e) { /* ignore */ }
+    // 上行统一附带 nonce：content 握手确认后只采信带正确 nonce 的消息，
+    // 页面内其它脚本/插件伪造 moka-inject 来源时会被丢弃。
+    const msg = { source: 'moka-inject', type, payload };
+    if (bridgeNonce) msg.nonce = bridgeNonce;
+    try { window.postMessage(msg, '*'); } catch (e) { /* ignore */ }
   }
 
   function harvestScene(url) {
@@ -427,6 +432,13 @@
         names: chip.anchored,
         pairs: chip.pairs
       });
+    } else if (data.type === 'bridge-init') {
+      // content 握手：记录 nonce 并回执，之后所有上行 push 都带这个 nonce
+      const n = data.payload && data.payload.nonce;
+      if (typeof n === 'string' && n) {
+        bridgeNonce = n;
+        post('bridge-ready', { nonce: bridgeNonce });
+      }
     }
   });
 

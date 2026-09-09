@@ -111,4 +111,13 @@ describe('plugin run log (会话级运行日志) contract', () => {
     assert.doesNotMatch(bg, /chrome\.notifications/);
     assert.doesNotMatch(bg, /notifyOnComplete/);
   });
+
+  it('P1-10 存储写入 storeSet 封装 + P2-4 alarm 空闲自清（1.7.1）', () => {
+    // storeSet：写入失败读 lastError / 捕获异常并 console.error，不再静默丢数据
+    assert.match(bg, /function storeSet\(items, context\)/);
+    assert.match(bg, /console\.error\('\[Moka 筛选\] 存储写入失败/);
+    assert.match(bg, /storeSet\(\{ \[MokaPersist\.LLM_CACHE_STORAGE_KEY\][\s\S]{0,120}'llm-cache'\)/);
+    // alarm：SW 重启后 keepaliveTabId 归 null 但周期 alarm 仍在 → 清掉即止
+    assert.match(bg, /if \(keepaliveTabId == null\) \{\s*\n\s*try \{ chrome\.alarms\.clear\(MokaScreeningJob\.KEEP_ALIVE_ALARM\)/);
+  });
 });
