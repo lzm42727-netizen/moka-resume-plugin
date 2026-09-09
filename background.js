@@ -570,7 +570,12 @@ async function handleScoreCandidate({ profile, config }) {
       + '门槛 reason 控制在 40 字以内，highlights/concerns 每条不超过 30 字。';
     const userPrompt = buildDimensionPrompt(
       profile, jobSpec, config.jobType, config.jobJD, hardText, feedbackContext
-    );
+    )
+      // 解析失败后的重试：附加纠偏指令，压低再次输出非 JSON 的概率（不参与缓存 key）
+      + (config.retryAfterParseError
+        ? '\n\n重要：上一次输出无法解析为 JSON。这次请严格只输出一个 JSON 对象，从 { 开始、到 } 结束，'
+          + '不要输出任何思考过程、解释文字或 markdown 代码块。'
+        : '');
 
     // 推理型模型会先输出思考，需给足 token，避免 JSON 被截断
     const llmRes = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: 4000, temperature: 0 });

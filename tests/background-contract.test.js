@@ -120,4 +120,10 @@ describe('plugin run log (会话级运行日志) contract', () => {
     // alarm：SW 重启后 keepaliveTabId 归 null 但周期 alarm 仍在 → 清掉即止
     assert.match(bg, /if \(keepaliveTabId == null\) \{\s*\n\s*try \{ chrome\.alarms\.clear\(MokaScreeningJob\.KEEP_ALIVE_ALARM\)/);
   });
+
+  it('评分重试纠偏（1.7.4）：解析失败重试时 prompt 附加严格只输出 JSON 的指令', () => {
+    assert.match(bg, /config\.retryAfterParseError/);
+    assert.match(bg, /上一次输出无法解析为 JSON/);
+    assert.match(bg, /不要输出任何思考过程、解释文字或 markdown 代码块/);
+  });
 });

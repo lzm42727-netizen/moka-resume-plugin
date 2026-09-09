@@ -69,3 +69,15 @@ describe('content.js 任务状态守卫（1.6.18 第一批）', () => {
     assert.match(js, /isScreening = true;[\s\S]{0,300}status: 'running',/);
   });
 });
+
+describe('content.js 筛选自动补评（1.7.4）', () => {
+  it('主轮结束仍有失败项时自动补评一轮（不递归、断点续筛不嵌套）', () => {
+    assert.match(js, /if \(!onlyPending && alive\(\)\) \{[\s\S]{0,400}results\.filter\(hasPendingScore\)\.length/);
+    assert.match(js, /自动补评：\$\{failedCount\} 位评分失败，再试一轮/);
+    // 补评复用同一批次函数、只跑失败项、保持同一 epoch 守卫
+    assert.match(js, /scoreResultsBatch\(scoreConfig, weights, hc, keywords, \{ onlyPending: true, epoch \}\)/);
+    // 重试纠偏：解析类失败的重试附加 retryAfterParseError
+    assert.match(js, /attempt > 0 && last && last\.parseError[\s\S]{0,80}retryAfterParseError: true/);
+    assert.match(js, /retryAfterParseError: !!config\.retryAfterParseError/);
+  });
+});

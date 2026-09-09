@@ -2380,6 +2380,18 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
   }
 
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(total, 1)) }, worker));
+
+  // 自动补评：主轮结束仍有评分失败的（多为模型偶发输出异常），自动整体再补一轮；
+  // 只补一轮不递归，补评仍失败的落卡等手动「重评」。断点续筛（onlyPending）不再嵌套补评。
+  if (!onlyPending && alive()) {
+    const failedCount = results.filter(hasPendingScore).length;
+    if (failedCount > 0) {
+      pushPluginLog({ cat: 'screen', text: `自动补评：${failedCount} 位评分失败，再试一轮` });
+      publishResults(`有 ${failedCount} 位评分失败，自动补评一轮…`, undefined, { flush: true });
+      await scoreResultsBatch(scoreConfig, weights, hc, keywords, { onlyPending: true, epoch });
+    }
+  }
+
   return { completed: countProcessedResults(), enrichedExp, total };
 }
 
@@ -2725,7 +2737,8 @@ function scoreViaBackground(profile, config) {
           jobJD: config.jobJD,
           hardText: config.hardText || '',
           feedbackContext: config.feedbackContext || '',
-          feedbackRev: config.feedbackRev || 'none'
+          feedbackRev: config.feedbackRev || 'none',
+          retryAfterParseError: !!config.retryAfterParseError
         }
       },
       (response) => {
@@ -2752,7 +2765,11 @@ async function scoreViaBackgroundWithRetry(profile, config) {
   let last = null;
   let usage = MokaUsage.emptyUsage();
   for (let attempt = 0; attempt < 1 + MokaScore.SCORE_AUTO_RETRY_MAX; attempt++) {
-    const res = await scoreViaBackground(profile, config);
+    // 解析类失败的重试附加纠偏指令，要求模型严格只输出 JSON（不影响缓存 key）
+    const attemptConfig = (attempt > 0 && last && last.parseError)
+      ? Object.assign({}, config, { retryAfterParseError: true })
+      : config;
+    const res = await scoreViaBackground(profile, attemptConfig);
     last = res.score;
     if (res.meta) {
       usage = res.meta.cacheHit
