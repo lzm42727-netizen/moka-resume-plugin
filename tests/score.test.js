@@ -8,7 +8,6 @@ const {
   NON_RETRYABLE_FAILURE_KINDS,
   SCORE_AUTO_RETRY_MAX,
   hardConditionsPromptBlock,
-  dimensionScoringNotes,
   matchScoringPromptBlock,
   normalizeModelScoreResponse,
   ensureHandwrittenGateResults,
@@ -551,17 +550,17 @@ describe('AI match scoring contract', () => {
   });
 });
 
-describe('dimensionScoringNotes', () => {
+describe('matchScoringPromptBlock 保护条款（原 dimensionScoringNotes 死代码已删除，断言迁移到实际生效的提示词）', () => {
   it('states the four weighted fit dimensions used for the local composite score', () => {
-    const notes = dimensionScoringNotes('intern');
-    assert.match(notes, /coreDuty\s*40%/);
-    assert.match(notes, /business\s*25%/);
-    assert.match(notes, /skill\s*20%/);
-    assert.match(notes, /scope\s*15%/);
+    const notes = matchScoringPromptBlock('intern', [], [], []);
+    assert.match(notes, /coreDuty.*40%/);
+    assert.match(notes, /business.*25%/);
+    assert.match(notes, /skill.*20%/);
+    assert.match(notes, /scope.*15%/);
   });
 
   it('caps the base match by coreDuty instead of letting other strengths offset it', () => {
-    const notes = dimensionScoringNotes('full-time');
+    const notes = matchScoringPromptBlock('full-time', [], [], []);
     assert.match(notes, /coreDuty\s*<\s*40.*49/);
     assert.match(notes, /40\s*[–-]\s*59.*69/);
     assert.match(notes, /60\s*[–-]\s*79.*84/);
@@ -570,21 +569,21 @@ describe('dimensionScoringNotes', () => {
   });
 
   it('tells the model to mark missing resume info as unknown, not fail', () => {
-    const notes = dimensionScoringNotes('intern');
+    const notes = matchScoringPromptBlock('intern', [], [], []);
     assert.match(notes, /unknown/);
     assert.match(notes, /不脑补|不得脑补|不因信息缺失/);
     assert.match(notes, /反向证据/);
   });
 
   it('does not punish interns for short or thin resumes with automatic zero', () => {
-    const notes = dimensionScoringNotes('intern');
+    const notes = matchScoringPromptBlock('intern', [], [], []);
     assert.match(notes, /不应自动归零|不等于能力不存在|不得自动归零/);
     assert.match(notes, /证据覆盖度|置信度|evidenceCoverage|confidence/);
   });
 
   it('still judges by actual duty evidence rather than job titles', () => {
-    const notes = dimensionScoringNotes('full-time');
-    assert.match(notes, /实际承担的工作|职责证据/);
+    const notes = matchScoringPromptBlock('full-time', [], [], []);
+    assert.match(notes, /实际承担的职责|实际承担的工作|职责证据/);
     assert.match(notes, /职位名称|关键词/);
   });
 });

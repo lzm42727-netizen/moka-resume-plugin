@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.6 - 2026-09-10
+
+- **清理死代码（无行为变化、评分缓存不受影响）**：删除 5 个「定义在、从来没被调用」的符号——`dimensionScoringNotes`（23 行旧版评分说明段，早已不在实际提示词链路，留着会误导后续维护）、`STRUCTURED_HARD_MODE`、`tokenizePhrases`、`buildHardText`、`ASSIGNMENT_URL_MATCH`
+- **收敛 lib 导出面**：移除 40 个「导出后全工程无人消费」的导出项（其中 5 个对应的函数体本身也从未被调用，一并删除；其余 35 个函数仅在文件内部使用，保留代码、只摘掉导出）。涉及 batch / calibrate / candidate-profile / capture / feedback / match / moka-actions / persist / score / screening-job / usage 共 11 个 lib，导出总数由 221 收敛到 181，模块边界现在与真实调用关系一致
+- **迁移而非丢弃测试覆盖**：原 `dimensionScoringNotes` 的 5 条断言（四项权重、核心职责封顶、unknown 不判 fail、实习岗不自动归零、按职责证据而非职位名判断）**迁移到真正生效的 `matchScoringPromptBlock` 上**，覆盖不减反增
+- **新增死代码门禁** `tests/dead-export-gate.test.js`：断言「lib 导出的每个符号在本文件之外至少被引用一次」，`eslint no-unused-vars` 管不到的「导出但无人消费」这类死代码从此会直接让 `npm run check` 失败；确需保留的导出走 `ALLOWED_UNUSED_EXPORTS` 白名单并写明理由
+- 测试 479 → 480；`npm run check` 全绿
+
 ## 1.9.5 - 2026-09-10
 
 - **修复「理由在说缺口、分数却给中性」的虚高匹配分**：起因是实招案例——四项理由全写「缺合同对账直接经验 / 行业差异较大 / 英语无任何证据」，四项分数却全落在 48–58，加权出 55 分的「中性」匹配分。根因是提示词只写了*判什么*、没写*什么证据格局给多少分*，模型把「有沾边证据」一律锚在 50–60，几乎不下探 40 以下
