@@ -1162,15 +1162,15 @@ safeEl('api-provider')?.addEventListener('change', (e) => {
   endpoint.placeholder = map[e.target.value] || map.openai;
 });
 
-// API Key 显示/隐藏切换
+// API Key 显示/隐藏切换（图标用 CSS 切换睁眼/闭眼，不再操作 emoji 文本）
 safeEl('toggle-api-key')?.addEventListener('click', function () {
   const apiKeyInput = document.getElementById('api-key');
   if (apiKeyInput.type === 'password') {
     apiKeyInput.type = 'text';
-    this.textContent = '🙈';
+    this.classList.add('is-visible');
   } else {
     apiKeyInput.type = 'password';
-    this.textContent = '👁️';
+    this.classList.remove('is-visible');
   }
 });
 
@@ -1981,6 +1981,7 @@ safeEl('start-screening')?.addEventListener('click', async () => {
   beginStartingScreen();
   // 先给反馈，避免「点了没反应」；真正失败再回滚
   resultState.screening = true;
+  arrivedScoreRows.clear(); // 新一轮筛选：落卡动效重新可播
   setScreeningUi(true);
   hideResumeBanner();
   setResultHint('正在启动筛选…', { tip: true, tone: 'info' });
@@ -2566,6 +2567,8 @@ function setResultHint(activity, options) {
 }
 
 const resultState = { items: [], status: '', banner: null, screening: false, usageText: '' };
+// 已播过「评分落卡」动效的候选人 id：每轮筛选开始时清空，保证一张卡只播一次
+const arrivedScoreRows = new Set();
 
 function setResultUsageLine(text) {
   const el = document.getElementById('usage-line');
@@ -3096,7 +3099,7 @@ function buildEvidenceSplit(appId, cols, fitDetail) {
   const hasEvidence = evidenceList.length > 0;
   const detail = fitDetail || {};
   const breakdown = detail.breakdown || null;
-  // 「具备」列没有亮点但存在未体现/经历证据时，用空态占位让对比语义完整
+  // 「亮点」列（原「具备」）没有亮点但存在未体现/经历证据时，用空态占位让对比语义完整
   const leftVisible = cols.left.length > 0 || (hasRight || hasEvidence);
   split.className = 'mp-split' + (!(leftVisible && hasRight) ? ' mp-split-single' : '');
 
@@ -3105,7 +3108,7 @@ function buildEvidenceSplit(appId, cols, fitDetail) {
     col.className = 'mp-col hit';
     const title = document.createElement('div');
     title.className = 'mp-col-title';
-    title.textContent = '具备';
+    title.textContent = '亮点';
     col.appendChild(title);
     cols.left.forEach((text) => {
       const line = document.createElement('div');
@@ -3123,7 +3126,7 @@ function buildEvidenceSplit(appId, cols, fitDetail) {
     col.className = 'mp-col hit empty';
     const title = document.createElement('div');
     title.className = 'mp-col-title';
-    title.textContent = '具备';
+    title.textContent = '亮点';
     col.appendChild(title);
     const line = document.createElement('div');
     line.className = 'mp-hit-empty';
@@ -3297,6 +3300,11 @@ function createResultRow(view) {
   row.className = 'mp-row'
     + (view.hardPassed === false ? ' failed' : '')
     + (view.stage || view.rescoring ? ' scoring' : '');
+  // 评分落卡动效：仅筛选进行中、该候选人首次出分时播一次；筛选/搜索重绘不重播
+  if (view.score && resultState.screening && !arrivedScoreRows.has(view.id)) {
+    arrivedScoreRows.add(view.id);
+    row.classList.add('mp-arrive');
+  }
 
   const chk = document.createElement('input');
   chk.type = 'checkbox';

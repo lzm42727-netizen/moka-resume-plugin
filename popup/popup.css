@@ -1567,6 +1567,19 @@ select:focus {
   transition: all 0.2s ease;
 }
 
+/* 睁眼/闭眼切换（1.8.3）：图标用 class 切换，不再换 emoji 文本 */
+.btn-icon .icon-eye-off {
+  display: none;
+}
+
+.btn-icon.is-visible .icon-eye {
+  display: none;
+}
+
+.btn-icon.is-visible .icon-eye-off {
+  display: block;
+}
+
 .btn-icon:hover {
   background: var(--primary-bg);
   border-color: var(--primary);
@@ -1687,6 +1700,50 @@ select:focus {
   transition: width 0.3s ease;
   width: 0%;
   border-radius: 3px;
+}
+
+/* ===== 状态动效（1.8.3）：只在状态变化时播一次，不循环刷存在感；系统「减弱动态效果」时整体禁用 ===== */
+@media (prefers-reduced-motion: no-preference) {
+  /* 评分落卡：内容淡入上移，分数徽章轻弹入（mp-arrive 由 popup.js 在首次出分时挂上，只挂一次） */
+  .mp-row.mp-arrive .mp-info {
+    animation: mpArriveInfo 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .mp-row.mp-arrive .mp-score {
+    animation: mpArriveScore 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  /* 筛选运行中的进度条：低对比流光扫过表示「活着」；结束后随容器隐藏自然静止 */
+  #progress-container:not(.hidden) .progress-fill {
+    position: relative;
+    overflow: hidden;
+  }
+
+  #progress-container:not(.hidden) .progress-fill::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 30%;
+    background: rgba(255, 255, 255, 0.4);
+    animation: mpSweep 1.4s ease-in-out infinite;
+  }
+
+  @keyframes mpArriveInfo {
+    from { opacity: 0; transform: translateY(5px); }
+    to { opacity: 1; transform: none; }
+  }
+
+  @keyframes mpArriveScore {
+    from { opacity: 0; transform: scale(0.85); }
+    to { opacity: 1; transform: none; }
+  }
+
+  @keyframes mpSweep {
+    from { transform: translateX(-110%); }
+    to { transform: translateX(430%); }
+  }
 }
 
 /* 测试结果 */

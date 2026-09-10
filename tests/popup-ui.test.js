@@ -294,18 +294,39 @@ describe('screening configuration UI', () => {
     assert.match(js, /mp-detail-line/);
   });
 
-  it('renders an empty 具备 hint and a collapsible 经历证据 section', () => {
-    // 「具备」列只在有与岗位直接相关的亮点时填内容；无亮点给空态提示
+  it('renders a 亮点 column title (was 具备) and a collapsible 经历证据 section', () => {
+    // 「亮点」列（1.8.3 由「具备」改名，与空态文案对齐）只在有与岗位直接相关的亮点时填内容
     assert.match(js, /AI 未找到与岗位直接相关的亮点/);
-    assert.match(js, /title\.textContent = '具备'/);
-    // 经历证据从「具备」列拆出为独立折叠区（默认收起，带条数）
+    assert.match(js, /title\.textContent = '亮点'/);
+    assert.doesNotMatch(js, /title\.textContent = '具备'/);
+    // 经历证据从「亮点」列拆出为独立折叠区（默认收起，带条数）
     assert.match(js, /经历证据（' \+ evidenceList\.length \+ '）/);
     assert.match(js, /mp-evidence-body hidden/);
     assert.match(js, /evidenceList\.forEach/);
     // 折叠按钮必须阻断冒泡：否则点击会触发结果行 openCandidate 跳详情页
     assert.match(js, /toggle\.addEventListener\('click', \(e\) => \{[\s\S]{0,160}stopPropagation/);
-    // 「具备」列内容只来自 highlights：不给证据混入左列留任何入口
+    // 「亮点」列内容只来自 highlights：不给证据混入左列留任何入口
     assert.doesNotMatch(js, /cols\.left[\s\S]{0,60}experienceEvidence/);
+  });
+
+  it('plays a one-shot arrive animation only when a candidate first gets scored', () => {
+    // mp-arrive 由筛选进行中首次出分时挂上（arrivedScoreRows 去重，新一轮筛选清空）
+    assert.match(js, /arrivedScoreRows/);
+    assert.match(js, /arrivedScoreRows\.clear\(\)/);
+    assert.match(js, /view\.score && resultState\.screening && !arrivedScoreRows\.has\(view\.id\)/);
+    assert.match(css, /\.mp-row\.mp-arrive \.mp-info \{[\s\S]{0,80}animation: mpArriveInfo/);
+    // 动效包在 prefers-reduced-motion 守卫里，系统减弱动态时整体禁用
+    assert.match(css, /@media \(prefers-reduced-motion: no-preference\) \{[\s\S]{0,200}mpArriveInfo/);
+    // 进度条运行态流光
+    assert.match(css, /#progress-container:not\(\.hidden\) \.progress-fill::after \{[\s\S]{0,240}animation: mpSweep/);
+  });
+
+  it('replaces action-button emoji with monoline SVG icons', () => {
+    // 👁️🙈⏸🗑️📋⬇️ 全部换 SVG；Key 眼睛用 class 切换睁/闭
+    assert.doesNotMatch(html, /👁️|🙈|⏸|🗑️|⬇️/);
+    assert.match(html, /id="toggle-api-key" class="btn-icon"[\s\S]{0,120}icon-eye"/);
+    assert.match(css, /\.btn-icon\.is-visible \.icon-eye \{[\s\S]{0,40}display: none/);
+    assert.match(js, /classList\.add\('is-visible'\)/);
   });
 
   it('renders a usage line fed by snapshots and optional custom prices in settings', () => {
@@ -451,7 +472,8 @@ describe('settings UI de-clutter (endpoint visibility / advanced fold / save-and
   });
 
   it('turns the log toolbar actions into icon buttons with a toggle pause', () => {
-    assert.match(html, /id="log-pause" class="log-icon-btn"[\s\S]{0,160}aria-pressed="false">⏸</);
+    // 1.8.3 起 ⏸ 为单色 SVG，暂停态由 .on class + aria-pressed 表达
+    assert.match(html, /id="log-pause" class="log-icon-btn"[\s\S]{0,200}aria-pressed="false"><svg/);
     assert.match(html, /id="log-clear" class="log-icon-btn"/);
     assert.match(html, /id="log-copy" class="log-icon-btn"/);
     assert.match(html, /id="log-export" class="log-icon-btn"/);
