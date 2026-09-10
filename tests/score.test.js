@@ -438,6 +438,15 @@ describe('AI match scoring contract', () => {
     assert.match(prompt, /scoreBreakdown|四项基础评分/);
     // 核心职责保护性封顶：coreDuty 不足不能被学历/公司/年限抵消
     assert.match(prompt, /coreDuty\s*<\s*40.*49/);
+    // 给分锚点：按证据格局分档，禁止全部挤在 50–60（1.9.5）
+    assert.match(prompt, /给分锚点/);
+    assert.match(prompt, /仅相邻\/可迁移职责、缺主责直接证据\s*→\s*40–50/);
+    assert.match(prompt, /只有通用执行力（接待\/销售\/行政等，与主责无方向性重合）→ 35 以下/);
+    assert.match(prompt, /行业\/客户\/业务模式差异大、只有通用 B 端或通用职场经验可迁移\s*→\s*45 以下/);
+    // 理由与分数同向：理由是缺口表述时该项不得超过 50
+    assert.match(prompt, /理由与分数同向/);
+    assert.match(prompt, /该项不得超过\s*50/);
+    assert.doesNotMatch(prompt, /理由全是正面证据时不要低于/);
     // 证据充分度与置信度不直接乘到分数上
     assert.match(prompt, /evidenceCoverage/);
     assert.match(prompt, /confidence/);
