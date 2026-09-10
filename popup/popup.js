@@ -2327,6 +2327,13 @@ function appendCalMetric(parent, num, label, cls) {
 
 const CAL_CONF_LABEL = { high: '可信度高', medium: '可信度中', low: '可信度低' };
 
+function buildCalSubLabel(text) {
+  const el = document.createElement('div');
+  el.className = 'mp-cal-sublabel';
+  el.textContent = text;
+  return el;
+}
+
 function buildSuggestionCard(sug, opts) {
   const options = opts || {};
   const item = document.createElement('div');
@@ -2460,8 +2467,10 @@ function renderCalibrationPanel() {
   const actionableTypes = { addGate: 1, relaxGate: 1, addFocus: 1, dropBonus: 1, addBonus: 1 };
   const actionable = (report.suggestions || []).filter((s) => actionableTypes[s.type]);
   const infos = (report.suggestions || []).filter((s) => s.type === 'info');
+
+  // 分组：规则调整（可采纳）/ 诊断（只提示）
+  listEl.appendChild(buildCalSubLabel('规则调整'));
   actionable.forEach((sug) => listEl.appendChild(buildSuggestionCard(sug)));
-  infos.forEach((sug) => listEl.appendChild(buildSuggestionCard(sug)));
   listEl.appendChild(buildSuggestionCard({
     type: 'addGate',
     title: '自行新增专业及其他门槛',
@@ -2474,6 +2483,10 @@ function renderCalibrationPanel() {
     detail: '把反复看走眼的经历写进重点看，下次按相邻经历判断，不靠字面命中。',
     editableValue: ''
   }, { isAdd: 'focus' }));
+  if (infos.length) {
+    listEl.appendChild(buildCalSubLabel('诊断'));
+    infos.forEach((sug) => listEl.appendChild(buildSuggestionCard(sug)));
+  }
 
   panel.classList.remove('hidden');
   const tab = document.getElementById('results-tab');

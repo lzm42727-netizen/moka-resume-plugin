@@ -323,6 +323,39 @@ describe('normalizeCalibrationSignal / groupCalibrationSignals', () => {
     assert.equal(sug.evidence.variants.length, 5);
     assert.match(sug.detail, /不要求简历出现完全相同的关键词/);
   });
+
+  it('近期优先：同一信号的 variants 按更新时间倒序保留原文（不做时间衰减权重）', () => {
+    let record = {};
+    record = putFeedback(
+      record,
+      'job-1',
+      'o1',
+      'eliminate',
+      { pluginRecommend: false, hardMissing: [], concerns: ['无达人合作'] },
+      1
+    );
+    record = putFeedback(
+      record,
+      'job-1',
+      'o2',
+      'eliminate',
+      { pluginRecommend: false, hardMissing: [], concerns: ['缺少达人资源'] },
+      2
+    );
+    record = putFeedback(
+      record,
+      'job-1',
+      'o3',
+      'eliminate',
+      { pluginRecommend: false, hardMissing: [], concerns: ['没有KOL合作经验'] },
+      3
+    );
+    const report = buildCalibrationReport(record, 'job-1');
+    const sig = report.topConcerns.find((x) => x.text === '达人合作');
+    assert.ok(sig);
+    assert.equal(sig.count, 3);
+    assert.equal(sig.variants[0], '没有KOL合作经验');
+  });
 });
 
 describe('score-drift 诊断', () => {
