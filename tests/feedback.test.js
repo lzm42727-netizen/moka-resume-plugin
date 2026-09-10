@@ -314,7 +314,7 @@ describe('buildFeedbackContext', () => {
     assert.match(ctx, /插件推你却淘汰 5/);
     assert.match(ctx, /反复信号：/);
     assert.match(ctx, /未过门槛「日语 N1」×5/);
-    assert.match(ctx, /淘汰原因「无达人合作」×5/);
+    assert.match(ctx, /淘汰原因「达人合作」×5/);
     const numbered = ctx.split('\n').filter((line) => /^\d+\. /.test(line));
     assert.equal(numbered.length, 6);
     assert.match(ctx, /业务对口3/);
@@ -362,6 +362,14 @@ describe('feedbackPromptBlock', () => {
     assert.match(block, /不要把加分项写入 matchScore/);
     assert.doesNotMatch(block, /上调相关维度/);
     assert.doesNotMatch(block, /综合分/);
+  });
+
+  it('历史偏好不得被升级成新的硬性一票否决（1.9.3）', () => {
+    const block = feedbackPromptBlock('示例偏好');
+    assert.match(block, /不得据此创建新的硬性一票否决条件/);
+    assert.match(block, /简历未提及某项，不等于候选人不具备该项/);
+    assert.doesNotMatch(block, /上调维度/);
+    assert.doesNotMatch(block, /权重/);
   });
 });
 
