@@ -2325,6 +2325,8 @@ function appendCalMetric(parent, num, label, cls) {
   parent.appendChild(el);
 }
 
+const CAL_CONF_LABEL = { high: '可信度高', medium: '可信度中', low: '可信度低' };
+
 function buildSuggestionCard(sug, opts) {
   const options = opts || {};
   const item = document.createElement('div');
@@ -2336,6 +2338,13 @@ function buildSuggestionCard(sug, opts) {
   const title = document.createElement('div');
   title.className = 'mp-cal-item-title';
   title.textContent = sug.title || '建议';
+  // 置信度「有则展示」：老数据无该字段时完全不渲染
+  if (sug.confidence && CAL_CONF_LABEL[sug.confidence]) {
+    const conf = document.createElement('span');
+    conf.className = 'mp-cal-conf mp-cal-conf-' + sug.confidence;
+    conf.textContent = CAL_CONF_LABEL[sug.confidence];
+    title.appendChild(conf);
+  }
   item.appendChild(title);
 
   if (sug.detail) {

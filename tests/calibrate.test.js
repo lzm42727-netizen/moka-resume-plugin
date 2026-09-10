@@ -1,7 +1,12 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { putFeedback } = require('../lib/feedback.js');
-const { buildCalibrationReport, normalizeMustHaveLabel } = require('../lib/calibrate.js');
+const {
+  buildCalibrationReport,
+  normalizeMustHaveLabel,
+  normalizeCalibrationSignal,
+  groupCalibrationSignals
+} = require('../lib/calibrate.js');
 
 function fill(n, fn) {
   let record = {};
@@ -70,8 +75,9 @@ describe('buildCalibrationReport', () => {
     assert.equal(report.overRecommend, 5);
     const sug = report.suggestions.find((s) => s.type === 'addFocus');
     assert.ok(sug);
-    assert.equal(sug.editableValue, '无达人合作');
-    assert.equal(sug.apply.focusKeyword, '无达人合作');
+    // 归一化后写入的是肯定式文案，不再是「无达人合作」这种否定式
+    assert.equal(sug.editableValue, '达人合作');
+    assert.equal(sug.apply.focusKeyword, '达人合作');
     assert.equal(
       report.suggestions.some((s) => s.type === 'weight'),
       false
@@ -100,6 +106,8 @@ describe('buildCalibrationReport', () => {
     assert.equal(gate.editableValue, '日语 N1');
     assert.equal(gate.apply.customGate, '日语 N1');
     assert.match(gate.title, /门槛/);
+    // 文案强化：只提示风险，不阻止采纳
+    assert.match(gate.detail, /一票否决/);
   });
 
   it('does not auto-change dropdown gates; explains education blocks as info', () => {
@@ -239,5 +247,254 @@ describe('normalizeMustHaveLabel', () => {
     assert.equal(normalizeMustHaveLabel('缺「熟悉海外」'), '熟悉海外');
     assert.equal(normalizeMustHaveLabel('缺「缺「跨文化」」'), '跨文化');
     assert.equal(normalizeMustHaveLabel('Google UAC'), 'Google UAC');
+  });
+});
+
+describe('normalizeCalibrationSignal / groupCalibrationSignals', () => {
+  it('聚合同一含义的不同措辞，并保留原始措辞', () => {
+    const grouped = groupCalibrationSignals([
+      '没有达人资源',
+      '缺少达人合作经验',
+      '无KOL合作经验'
+    ]);
+    assert.equal(grouped.length, 1);
+    assert.equal(grouped[0].text, '达人合作');
+    assert.equal(grouped[0].count, 3);
+    assert.equal(grouped[0].variants.length, 3);
+    assert.equal(grouped[0].polarity, 'lack');
+  });
+
+  it('完全相同文本按次数累加', () => {
+    const grouped = groupCalibrationSignals(['达人合作', '达人合作', '达人合作']);
+    assert.equal(grouped.length, 1);
+    assert.equal(grouped[0].count, 3);
+  });
+
+  it('方向保护：肯定式与否定式不归并', () => {
+    const grouped = groupCalibrationSignals(['有达人合作经验', '无达人合作经验']);
+    assert.equal(grouped.length, 2);
+    const have = normalizeCalibrationSignal('有达人合作经验');
+    const lack = normalizeCalibrationSignal('无达人合作经验');
+    assert.equal(have.polarity, 'neutral');
+    assert.equal(have.direction, 'have');
+    assert.equal(lack.polarity, 'lack');
+    assert.equal(lack.core, '达人合作');
+  });
+
+  it('不把正向修饰当噪音剥掉', () => {
+    const rich = normalizeCalibrationSignal('项目经验丰富');
+    const weak = normalizeCalibrationSignal('项目经验不足');
+    assert.equal(rich.core, '项目经验丰富');
+    assert.equal(rich.polarity, 'neutral');
+    assert.equal(weak.core, '项目经验');
+    assert.equal(weak.polarity, 'lack');
+  });
+
+  it('验收例 1：5 条不同措辞聚成 addFocus「达人合作」，variants 保留 5 条原文', () => {
+    const concerns = [
+      '没有达人资源',
+      '缺少达人合作经验',
+      '无KOL合作经验',
+      '无达人合作',
+      '达人合作不足'
+    ];
+    const record = fill(5, (rec, i) =>
+      putFeedback(
+        rec,
+        'job-1',
+        'nv' + i,
+        'eliminate',
+        {
+          score: 75,
+          level: '可推进',
+          pluginRecommend: true,
+          advanceReason: 'ok',
+          hardMissing: [],
+          concerns: [concerns[i]]
+        },
+        11000 + i
+      )
+    );
+    const report = buildCalibrationReport(record, 'job-1');
+    const sug = report.suggestions.find((s) => s.type === 'addFocus');
+    assert.ok(sug);
+    assert.equal(sug.editableValue, '达人合作');
+    assert.equal(sug.evidence.count, 5);
+    assert.equal(sug.evidence.variants.length, 5);
+    assert.match(sug.detail, /不要求简历出现完全相同的关键词/);
+  });
+});
+
+describe('score-drift 诊断', () => {
+  it('插件偏严：连续推荐匹配偏低且无门槛阻断的候选人', () => {
+    const record = fill(5, (rec, i) =>
+      putFeedback(
+        rec,
+        'job-1',
+        'st' + i,
+        'recommend',
+        {
+          score: 40,
+          matchScore: 38,
+          pluginRecommend: false,
+          advanceReason: 'match',
+          hardMissing: [],
+          highlights: ['业务对口']
+        },
+        12000 + i
+      )
+    );
+    const report = buildCalibrationReport(record, 'job-1');
+    assert.equal(report.diagnostics.scoreDrift.direction, 'strict');
+    assert.ok(report.suggestions.some((s) => s.id === 'drift-strict'));
+    assert.equal(
+      report.suggestions.some((s) => s.type === 'weight'),
+      false
+    );
+  });
+
+  it('插件偏宽：连续淘汰无门槛问题的候选人，且不再报「判断较一致」', () => {
+    const record = fill(5, (rec, i) =>
+      putFeedback(
+        rec,
+        'job-1',
+        'ln' + i,
+        i < 3 ? 'eliminate' : 'recommend',
+        i < 3
+          ? {
+              score: 80,
+              matchScore: 79,
+              pluginRecommend: true,
+              advanceReason: 'match',
+              hardMissing: [],
+              concerns: ['方向不符' + i]
+            }
+          : {
+              score: 80,
+              matchScore: 79,
+              pluginRecommend: true,
+              advanceReason: 'match',
+              hardMissing: [],
+              highlights: ['业务对口']
+            },
+        13000 + i
+      )
+    );
+    const report = buildCalibrationReport(record, 'job-1');
+    assert.equal(report.diagnostics.scoreDrift.direction, 'lenient');
+    assert.ok(report.suggestions.some((s) => s.id === 'drift-lenient'));
+    assert.equal(
+      report.suggestions.some((s) => s.title === '判断较一致'),
+      false
+    );
+    assert.equal(
+      report.suggestions.some((s) => s.type === 'weight'),
+      false
+    );
+  });
+
+  it('无系统性偏差时不输出 drift 诊断', () => {
+    const record = fill(5, (rec, i) =>
+      putFeedback(
+        rec,
+        'job-1',
+        'no' + i,
+        i % 2 === 0 ? 'recommend' : 'eliminate',
+        {
+          score: 70,
+          matchScore: 70,
+          pluginRecommend: true,
+          advanceReason: 'match',
+          hardMissing: [],
+          concerns: ['轻微顾虑'],
+          highlights: ['业务对口']
+        },
+        14000 + i
+      )
+    );
+    const report = buildCalibrationReport(record, 'job-1');
+    assert.equal(report.diagnostics.scoreDrift.direction, 'none');
+    assert.ok(report.suggestions.some((s) => s.title === '判断较一致'));
+  });
+});
+
+describe('dropBonus 收紧', () => {
+  it('不同加分项各 1 人晋级时不建议移除', () => {
+    const items = ['作品集', '公众号', '短视频', '长视频', '播客'];
+    const record = fill(5, (rec, i) =>
+      putFeedback(
+        rec,
+        'job-1',
+        'db' + i,
+        'eliminate',
+        {
+          score: 81,
+          matchScore: 78,
+          pluginRecommend: true,
+          advanceReason: 'bonus',
+          bonusPromoted: true,
+          bonusMetCount: 1,
+          bonusTotalCount: 1,
+          bonusKeywordResults: [{ item: items[i], met: true, reason: '有' + items[i] }],
+          concerns: ['稳定性一般']
+        },
+        15000 + i
+      )
+    );
+    const report = buildCalibrationReport(record, 'job-1');
+    assert.equal(
+      report.suggestions.some((s) => s.type === 'dropBonus'),
+      false
+    );
+  });
+});
+
+describe('建议置信度 confidence', () => {
+  it('高样本高集中且因果明确 → high', () => {
+    const record = fill(12, (rec, i) =>
+      putFeedback(
+        rec,
+        'job-1',
+        'cf' + i,
+        'eliminate',
+        {
+          score: 42,
+          pluginRecommend: false,
+          hardMissing: ['缺「日语 N1」'],
+          concerns: ['语言不够']
+        },
+        16000 + i
+      )
+    );
+    const report = buildCalibrationReport(record, 'job-1');
+    const gate = report.suggestions.find((s) => s.type === 'addGate');
+    assert.ok(gate);
+    assert.equal(gate.confidence, 'high');
+    assert.ok(gate.evidence.count >= 5);
+  });
+
+  it('擦边样本只给 medium / low，不臆造 high', () => {
+    const record = fill(5, (rec, i) =>
+      putFeedback(
+        rec,
+        'job-1',
+        'cw' + i,
+        'eliminate',
+        {
+          score: 75,
+          level: '可推进',
+          pluginRecommend: true,
+          advanceReason: 'ok',
+          hardMissing: [],
+          concerns: i < 2 ? ['无达人合作'] : ['顾虑' + i]
+        },
+        17000 + i
+      )
+    );
+    const report = buildCalibrationReport(record, 'job-1');
+    const sug = report.suggestions.find((s) => s.type === 'addFocus');
+    assert.ok(sug);
+    assert.ok(sug.confidence === 'medium' || sug.confidence === 'low');
+    assert.notEqual(sug.confidence, 'high');
   });
 });

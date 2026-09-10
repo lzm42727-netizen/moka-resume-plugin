@@ -476,6 +476,33 @@ body {
   margin-bottom: 2px;
 }
 
+.mp-cal-conf {
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 1px solid #d9d9d9;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 400;
+  color: #8c8c8c;
+  vertical-align: middle;
+}
+
+.mp-cal-conf-high {
+  border-color: #b7eb8f;
+  background: #f6ffed;
+  color: #389e0d;
+}
+
+.mp-cal-conf-medium {
+  border-color: #ffd591;
+  background: #fffaf0;
+  color: #d46b08;
+}
+
+.mp-cal-conf-low {
+  color: #bfbfbf;
+}
+
 .mp-cal-item-field:focus {
   outline: none;
   border-color: var(--primary);
