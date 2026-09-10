@@ -132,3 +132,18 @@ test('summaryText warns when model price is unknown but calls happened', () => {
   const a = addUsage(u, { inTok: 100, outTok: 20, model: 'internal-x' });
   assert.match(summaryText(a), /模型未收录单价，未估费/);
 });
+
+test('addUsage counts meta.calls when one score took several model calls（v1.8.5）', () => {
+  // 截断后 maxTokens 加倍重试：一次得分内部发生两次真实调用，费用与次数都要算实数
+  const one = addUsage(emptyUsage(), { inTok: 1000, outTok: 500 });
+  assert.equal(one.calls, 1, '未带 calls 时按 1 次计');
+
+  const two = addUsage(emptyUsage(), { calls: 2, inTok: 3000, outTok: 1500 });
+  assert.equal(two.calls, 2);
+  assert.equal(two.inTok, 3000);
+
+  // 0 / 非法值回退为 1，避免出现「0 次调用却有 token」的脏账
+  assert.equal(addUsage(emptyUsage(), { calls: 0 }).calls, 1);
+  assert.equal(addUsage(emptyUsage(), { calls: -3 }).calls, 1);
+  assert.equal(addUsage(emptyUsage(), {}).calls, 1);
+});

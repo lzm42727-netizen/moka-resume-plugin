@@ -63,8 +63,26 @@ const DEFAULT_SETTINGS = {
   modelName: 'gpt-4o',
   // 可选：自定义单价（元/百万 tokens），留空走内置价目表；用于费用估算
   modelInputPrice: '',
-  modelOutputPrice: ''
+  modelOutputPrice: '',
+  // 自定义/中继端点默认请求 JSON 输出（网关拒绝时自动降级重试一次）
+  forceJsonMode: true,
+  // 评分并发数（1–8）：同时评分的候选人数
+  scoreConcurrency: 6
 };
+
+/** 评分并发数边界（content 侧也用它做夹取） */
+const SCORE_CONCURRENCY_MIN = 1;
+const SCORE_CONCURRENCY_MAX = 8;
+const SCORE_CONCURRENCY_DEFAULT = 6;
+
+/** 评分调用输出上限；思考型模型（M2 等）的思考 token 计入该预算 */
+const SCORE_MAX_TOKENS = 8000;
+
+function normalizeScoreConcurrency(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return SCORE_CONCURRENCY_DEFAULT;
+  return Math.min(SCORE_CONCURRENCY_MAX, Math.max(SCORE_CONCURRENCY_MIN, Math.round(n)));
+}
 
 const MAX_RETRIES = 3;
 const BASE_BACKOFF_MS = 1000;
@@ -323,7 +341,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     case 'modelPriceInfo':
       getModelPriceInfo()
-        .then((info) => sendResponse({ ok: true, model: info.model, price: info.price }))
+        .then((info) => sendResponse({ ok: true, model: info.model, price: info.price, concurrency: info.concurrency }))
         .catch((error) => sendResponse({ ok: false, error: error.message }));
       return true; // 异步响应
 
@@ -577,9 +595,17 @@ async function handleScoreCandidate({ profile, config }) {
           + '不要输出任何思考过程、解释文字或 markdown 代码块。'
         : '');
 
-    // 推理型模型会先输出思考，需给足 token，避免 JSON 被截断
-    const llmRes = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: 4000, temperature: 0 });
-    const parsed = parseDimensionResponse(llmRes.content);
+    // 推理型模型（如 MiniMax-M2）的思考 token 计入输出预算，上限给足避免 JSON 被截断
+    let llmRes = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: SCORE_MAX_TOKENS, temperature: 0 });
+    const usedCalls = [llmRes];
+    let parsed = parseDimensionResponse(llmRes.content);
+    // 明确被截断（finish_reason=length）且解析失败 → 上限加倍再试一次；两次用量都计入费用
+    if (parsed.parseError && isTruncatedFinish(llmRes.finishReason)) {
+      addPluginLog({ cat: 'warn', text: '评分输出被截断（finish_reason=length），maxTokens 加倍重试一次' });
+      llmRes = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: SCORE_MAX_TOKENS * 2, temperature: 0 });
+      usedCalls.push(llmRes);
+      parsed = parseDimensionResponse(llmRes.content);
+    }
     const expectedGates = []
       .concat(jobSpec.languages || [])
       .concat(jobSpec.customGates || []);
@@ -592,12 +618,25 @@ async function handleScoreCandidate({ profile, config }) {
 
     // 解析失败不写缓存，避免把错误结果固化，下一轮可重试
     if (!raw.parseError) rememberScore(cacheKey, raw);
-    const llmUsage = llmRes.usage || {};
+    const llmUsage = usedCalls.reduce((acc, r) => {
+      const u = (r && r.usage) || {};
+      return {
+        inTok: acc.inTok + (Number(u.inTok) > 0 ? Number(u.inTok) : 0),
+        outTok: acc.outTok + (Number(u.outTok) > 0 ? Number(u.outTok) : 0)
+      };
+    }, { inTok: 0, outTok: 0 });
+    const finalContent = llmRes.content || '';
     const meta = {
       cacheHit: false,
       model: settings.modelName,
-      inTok: Number(llmUsage.inTok) > 0 ? Number(llmUsage.inTok) : 0,
-      outTok: Number(llmUsage.outTok) > 0 ? Number(llmUsage.outTok) : 0
+      calls: usedCalls.length,
+      inTok: llmUsage.inTok,
+      outTok: llmUsage.outTok,
+      // 诊断字段：网关/模型不给时为空串，不影响主流程
+      finishReason: llmRes.finishReason || '',
+      outLen: finalContent.length,
+      hasThink: /<think/i.test(finalContent),
+      parseFailureKind: raw.parseFailureKind || ''
     };
     return { score: raw, meta };
   })();
@@ -610,12 +649,13 @@ async function handleScoreCandidate({ profile, config }) {
   }
 }
 
-/** 当前生效模型与单价（自定义价优先于内置表），供 content 端本地估算费用 */
+/** 当前生效模型、单价与评分运行时参数（并发数），供 content 端本地估算与调度 */
 async function getModelPriceInfo() {
   const settings = await getSettings();
   const price = MokaUsage.resolvePrice(settings.modelName, settings.modelInputPrice, settings.modelOutputPrice);
   return {
     model: settings.modelName,
+    concurrency: normalizeScoreConcurrency(settings.scoreConcurrency),
     price: price
       ? { inputPerM: price.inputPerM, outputPerM: price.outputPerM, priced: true }
       : null
@@ -641,23 +681,43 @@ async function handleTestApi(inputSettings) {
 
 /**
  * 调用 LLM（自动按 provider 适配、带指数退避重试）
+ * 返回 { content, usage, finishReason }：finishReason 用于识别输出被截断（length/max_tokens）
  */
 async function callLLM(settings, systemPrompt, userPrompt, opts = {}) {
   const provider = settings.apiProvider || 'openai';
-  const { url, headers, body } = buildRequest(provider, settings, systemPrompt, userPrompt, opts);
+  let req = buildRequest(provider, settings, systemPrompt, userPrompt, opts);
+  const jsonModeActive = !!(req.body && req.body.response_format);
+  let jsonModeDegraded = false;
 
   let lastError;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const response = await fetchWithTimeout(url, {
+      const response = await fetchWithTimeout(req.url, {
         method: 'POST',
-        headers,
-        body: JSON.stringify(body)
+        headers: req.headers,
+        body: JSON.stringify(req.body)
       }, LLM_TIMEOUT_MS);
 
       if (response.ok) {
         const data = await response.json();
-        return { content: extractContent(provider, data), usage: readUsage(provider, data) };
+        return {
+          content: extractContent(provider, data),
+          usage: readUsage(provider, data),
+          finishReason: readFinishReason(provider, data)
+        };
+      }
+
+      // 网关拒绝 JSON 模式（多为 400/404/422：不认识 response_format 参数）→ 去掉该参数立即降级重试一次；
+      // 鉴权类(401/403)与限流超时(429/408)不在此列：那些不是参数问题，降级也救不回来
+      if (jsonModeActive && !jsonModeDegraded && isJsonModeRejectionStatus(response.status)) {
+        jsonModeDegraded = true;
+        const why = await safeText(response);
+        addPluginLog({
+          cat: 'warn',
+          text: `网关拒绝 JSON 模式（HTTP ${response.status}），已自动降级重试` + (why ? ' · ' + why.slice(0, 80) : '')
+        });
+        req = buildRequest(provider, settings, systemPrompt, userPrompt, { ...opts, jsonMode: false });
+        continue;
       }
 
       // 429 / 5xx 可重试
@@ -689,6 +749,27 @@ async function callLLM(settings, systemPrompt, userPrompt, opts = {}) {
   throw lastError || new Error('API 调用失败');
 }
 
+/** 是否值得摘掉 response_format 重试：参数类 4xx 才算，鉴权/限流/超时不算 */
+function isJsonModeRejectionStatus(status) {
+  const s = Number(status);
+  if (!Number.isFinite(s) || s < 400 || s >= 500) return false;
+  return s !== 401 && s !== 403 && s !== 408 && s !== 429;
+}
+
+/** 输出结束原因（OpenAI 兼容: finish_reason；Claude: stop_reason） */
+function readFinishReason(provider, data) {
+  if (!data || typeof data !== 'object') return '';
+  if (provider === 'claude') return String(data.stop_reason || '');
+  return String(data?.choices?.[0]?.finish_reason || '');
+}
+
+const TRUNCATED_FINISH_REASONS = new Set(['length', 'max_tokens', 'max_output_tokens']);
+
+/** 是否因达到输出上限被截断 */
+function isTruncatedFinish(reason) {
+  return TRUNCATED_FINISH_REASONS.has(String(reason || '').toLowerCase());
+}
+
 /**
  * 按 provider 构造请求
  */
@@ -696,6 +777,12 @@ function buildRequest(provider, settings, systemPrompt, userPrompt, opts) {
   const maxTokens = opts.maxTokens || 500;
   const temperature = typeof opts.temperature === 'number' ? opts.temperature : 0.7;
   const forceJson = opts.forceJson !== false; // 默认要求返回 JSON
+
+  // JSON mode：官方 OpenAI 恒开；custom（自建/中转，OpenAI 兼容）由设置开关控制，
+  // 网关拒绝时 callLLM 会自动去掉该参数降级重试一次。
+  const jsonMode = forceJson
+    && opts.jsonMode !== false
+    && (provider === 'openai' || (provider === 'custom' && settings.forceJsonMode !== false));
 
   if (provider === 'claude') {
     return {
@@ -727,8 +814,8 @@ function buildRequest(provider, settings, systemPrompt, userPrompt, opts) {
     temperature,
     max_tokens: maxTokens
   };
-  // 仅官方 OpenAI 强制 JSON 输出；custom 端点未必支持，交给健壮解析兜底
-  if (forceJson && provider === 'openai') {
+  // custom 端点未必支持 JSON 模式；带的失败会由 callLLM 降级重试
+  if (jsonMode) {
     body.response_format = { type: 'json_object' };
   }
 
@@ -922,10 +1009,10 @@ ${scoringRules}
 /** 去掉推理块与代码围栏 */
 function stripThink(content) {
   if (!content || typeof content !== 'string') return '';
-  let text = content
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/<\/?think>/gi, '')
-    .trim();
+  let text = content.replace(/<think>[\s\S]*?<\/think>/gi, ''); // 成对推理块
+  // 未闭合的 <think>（思考阶段就被截断）：从它到结尾全部丢弃，避免把思考文本当 JSON 解析
+  text = text.replace(/<think[\s\S]*$/i, '');
+  text = text.replace(/<\/?think>/gi, '').trim();
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenced) text = fenced[1];
   return text;

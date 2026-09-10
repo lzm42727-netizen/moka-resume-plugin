@@ -297,6 +297,17 @@
                     <input type="text" id="model-name" placeholder="如 gpt-4o / claude-sonnet / minimax-m2.7" class="input-field">
                 </div>
 
+                <div class="form-group">
+                    <label for="score-concurrency">评分并发数</label>
+                    <input type="number" id="score-concurrency" min="1" max="8" step="1" inputmode="numeric" placeholder="默认 6（可选 1–8）" class="input-field">
+                    <small>同时评分的候选人数（1–8，默认 6）。企业网关或本地模型可调大提速；被限流时调小</small>
+                </div>
+
+                <div class="form-group form-group-tight">
+                    <label class="choice-pill"><input type="checkbox" id="force-json-mode"> 强制 JSON 输出（推荐）</label>
+                    <small>对自定义/中转端点请求结构化 JSON 输出；网关不支持时会自动去掉该参数降级重试，无需手动关闭</small>
+                </div>
+
                 <!-- 高级 · 费用估算：默认收起，需要自定义单价再展开 -->
                 <details class="adv-group">
                     <summary>高级 · 费用估算单价（可选）</summary>

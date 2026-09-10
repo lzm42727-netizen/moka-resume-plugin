@@ -563,3 +563,25 @@ describe('切岗/恢复稳健性（1.6.18/1.6.19）', () => {
     }
   });
 });
+
+describe('v1.8.5 设置页新增并发数 / JSON 模式', () => {
+  it('连接与模型卡片提供「评分并发数」与「强制 JSON 输出」', () => {
+    assert.match(html, /<input type="number" id="score-concurrency" min="1" max="8" step="1"/);
+    assert.match(html, /<input type="checkbox" id="force-json-mode"> 强制 JSON 输出（推荐）/);
+    // 控件位置：紧跟模型名称之后，属于「连接与模型」卡片
+    assert.match(html, /id="model-name"[\s\S]{0,600}id="score-concurrency"[\s\S]{0,600}id="force-json-mode"/);
+  });
+
+  it('readSettingsForm 落库 forceJsonMode / scoreConcurrency 并做边界夹取', () => {
+    assert.match(js, /forceJsonMode: document\.getElementById\('force-json-mode'\)\?\.checked !== false/);
+    assert.match(js, /scoreConcurrency: concurrency/);
+    assert.match(js, /const concurrency = Number\.isFinite\(rawConcurrency\) && rawConcurrency > 0\s*\n\s*\? Math\.min\(8, Math\.max\(1, Math\.round\(rawConcurrency\)\)\)/);
+  });
+
+  it('loadSettings 回填两个新字段；老配置/首次使用都有默认值', () => {
+    assert.match(js, /jsonModeEl\.checked = s\.forceJsonMode !== false/);
+    assert.match(js, /concurrencyEl\.value = Number\.isFinite\(c\) && c > 0 \? String\(Math\.min\(8, Math\.max\(1, Math\.round\(c\)\)\)\) : '6'/);
+    // 首次使用（无 mokaSettings）也要显示默认：JSON 模式勾选 + 并发 6
+    assert.match(js, /\} else \{[\s\S]{0,200}jsonModeEl\.checked = true[\s\S]{0,200}concurrencyEl\.value = '6'/);
+  });
+});

@@ -1191,6 +1191,10 @@ function applyLocalForced() {
 }
 
 function readSettingsForm() {
+  const rawConcurrency = Number(document.getElementById('score-concurrency')?.value || 0);
+  const concurrency = Number.isFinite(rawConcurrency) && rawConcurrency > 0
+    ? Math.min(8, Math.max(1, Math.round(rawConcurrency)))
+    : 6;
   return {
     apiProvider: document.getElementById('api-provider').value,
     apiEndpoint: document.getElementById('api-endpoint').value.trim(),
@@ -1198,6 +1202,9 @@ function readSettingsForm() {
     modelName: document.getElementById('model-name').value.trim(),
     modelInputPrice: String(document.getElementById('model-input-price')?.value || '').trim(),
     modelOutputPrice: String(document.getElementById('model-output-price')?.value || '').trim(),
+    // 默认开：网关不支持时后台自动降级，用户无感
+    forceJsonMode: document.getElementById('force-json-mode')?.checked !== false,
+    scoreConcurrency: concurrency,
     ...LOCAL_FORCED // 强制覆盖 provider/endpoint/model
   };
 }
@@ -1578,6 +1585,20 @@ async function loadSettings() {
       document.getElementById('model-name').value = s.modelName || 'gpt-4o';
       document.getElementById('model-input-price').value = s.modelInputPrice != null ? s.modelInputPrice : '';
       document.getElementById('model-output-price').value = s.modelOutputPrice != null ? s.modelOutputPrice : '';
+      // 老配置没有这两个字段：按默认值回填（JSON 输出开、并发 6）
+      const concurrencyEl = document.getElementById('score-concurrency');
+      if (concurrencyEl) {
+        const c = Number(s.scoreConcurrency);
+        concurrencyEl.value = Number.isFinite(c) && c > 0 ? String(Math.min(8, Math.max(1, Math.round(c)))) : '6';
+      }
+      const jsonModeEl = document.getElementById('force-json-mode');
+      if (jsonModeEl) jsonModeEl.checked = s.forceJsonMode !== false;
+    } else {
+      // 首次使用（尚无配置）：展示默认值
+      const jsonModeEl = document.getElementById('force-json-mode');
+      if (jsonModeEl) jsonModeEl.checked = true;
+      const concurrencyEl = document.getElementById('score-concurrency');
+      if (concurrencyEl) concurrencyEl.value = '6';
     }
   } catch (error) {
     console.error('加载设置失败:', error);

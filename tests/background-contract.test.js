@@ -51,16 +51,19 @@ describe('JD reading survives an imperfect model reply', () => {
 });
 
 describe('screening usage tracking contract', () => {
-  it('callLLM returns usage alongside content instead of dropping it', () => {
+  it('callLLM returns usage and finish_reason alongside content instead of dropping them', () => {
     assert.match(bg, /function readUsage\(provider, data\)/);
     assert.match(bg, /prompt_tokens|input_tokens/);
-    assert.match(bg, /return \{ content: extractContent\(provider, data\), usage: readUsage\(provider, data\) \};/);
+    assert.match(
+      bg,
+      /return \{\s*\n\s*content: extractContent\(provider, data\),\s*\n\s*usage: readUsage\(provider, data\),\s*\n\s*finishReason: readFinishReason\(provider, data\)\s*\n\s*\};/
+    );
   });
 
   it('scoreCandidate replies with meta carrying cacheHit or token usage', () => {
     assert.match(bg, /case 'scoreCandidate':[\s\S]{0,120}score: out\.score, meta: out\.meta/);
     assert.match(bg, /meta: \{ cacheHit: true \}/);
-    assert.match(bg, /model: settings\.modelName,\s*\n\s*inTok:[\s\S]{0,120}outTok:/);
+    assert.match(bg, /model: settings\.modelName,\s*\n\s*calls: usedCalls\.length,\s*\n\s*inTok:[\s\S]{0,160}outTok:/);
   });
 
   it('serves a modelPriceInfo action using custom-or-builtin price', () => {
@@ -125,5 +128,60 @@ describe('plugin run log (会话级运行日志) contract', () => {
     assert.match(bg, /config\.retryAfterParseError/);
     assert.match(bg, /上一次输出无法解析为 JSON/);
     assert.match(bg, /不要输出任何思考过程、解释文字或 markdown 代码块/);
+  });
+});
+
+describe('v1.8.5 JSON 模式、截断处置与并发设置', () => {
+  it('JSON mode：官方 OpenAI 恒开；custom 由设置开关控制（默认开）', () => {
+    assert.match(bg, /forceJsonMode: true/);
+    assert.match(bg, /provider === 'openai' \|\| \(provider === 'custom' && settings\.forceJsonMode !== false\)/);
+    assert.match(bg, /if \(jsonMode\) \{\s*\n\s*body\.response_format = \{ type: 'json_object' \}/);
+  });
+
+  it('网关拒绝 JSON 模式时自动降级重试一次（不再让所有候选人一起失败）', () => {
+    assert.match(bg, /let jsonModeDegraded = false/);
+    assert.match(bg, /jsonModeActive && !jsonModeDegraded && isJsonModeRejectionStatus\(response\.status\)/);
+    assert.match(bg, /已自动降级重试/);
+    assert.match(bg, /buildRequest\(provider, settings, systemPrompt, userPrompt, \{ \.\.\.opts, jsonMode: false \}\)/);
+    // 降级只在参数类 4xx 触发；鉴权(401/403)/限流(429)/超时(408) 不算，避免白跑一次请求
+    assert.match(bg, /function isJsonModeRejectionStatus\(status\)/);
+    assert.match(bg, /return s !== 401 && s !== 403 && s !== 408 && s !== 429;/);
+  });
+
+  it('callLLM 回传 finish_reason，供截断识别', () => {
+    assert.match(bg, /function readFinishReason\(provider, data\)/);
+    assert.match(bg, /data\?\.choices\?\.\[0\]\?\.finish_reason/);
+    assert.match(bg, /data\.stop_reason/);
+    assert.match(bg, /function isTruncatedFinish\(reason\)/);
+    assert.match(bg, /finishReason: readFinishReason\(provider, data\)/);
+  });
+
+  it('评分调用 maxTokens 提到 8000，截断时加倍重试并合计两次用量', () => {
+    assert.match(bg, /const SCORE_MAX_TOKENS = 8000/);
+    assert.match(bg, /maxTokens: SCORE_MAX_TOKENS, temperature: 0/);
+    assert.match(bg, /parsed\.parseError && isTruncatedFinish\(llmRes\.finishReason\)/);
+    assert.match(bg, /maxTokens: SCORE_MAX_TOKENS \* 2/);
+    assert.match(bg, /usedCalls\.push\(llmRes\)/);
+    assert.match(bg, /calls: usedCalls\.length/);
+  });
+
+  it('评分 meta 带诊断字段：finish_reason / 输出长度 / 是否含思考 / 失败类型', () => {
+    assert.match(bg, /finishReason: llmRes\.finishReason \|\| ''/);
+    assert.match(bg, /outLen: finalContent\.length/);
+    assert.match(bg, /hasThink: \/<think\/i\.test\(finalContent\)/);
+    assert.match(bg, /parseFailureKind: raw\.parseFailureKind \|\| ''/);
+  });
+
+  it('stripThink 处理未闭合的 think 块（思考阶段被截断时不再把思考当 JSON）', () => {
+    assert.match(bg, /text\.replace\(\/<think\[\\s\\S\]\*\$\/i, ''\)/);
+  });
+
+  it('并发数：默认 6、边界 1–8，随 modelPriceInfo 下发给 content', () => {
+    assert.match(bg, /scoreConcurrency: 6/);
+    assert.match(bg, /const SCORE_CONCURRENCY_MIN = 1/);
+    assert.match(bg, /const SCORE_CONCURRENCY_MAX = 8/);
+    assert.match(bg, /function normalizeScoreConcurrency\(value\)/);
+    assert.match(bg, /concurrency: normalizeScoreConcurrency\(settings\.scoreConcurrency\)/);
+    assert.match(bg, /sendResponse\(\{ ok: true, model: info\.model, price: info\.price, concurrency: info\.concurrency \}\)/);
   });
 });

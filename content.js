@@ -9,7 +9,20 @@
  */
 
 const SEARCH_API_FALLBACK = '/api/outer/ats-candidate-search-left/candidate/search-candidate/v2';
-const CONCURRENCY = 4;
+/**
+ * 评分并发数：默认 6，可由「连接与模型 → 评分并发数」设置（1–8）覆盖；
+ * 开筛时经 modelPriceInfo 拉到生效值写入 scoreConcurrency。
+ */
+const DEFAULT_SCORE_CONCURRENCY = 6;
+const MIN_SCORE_CONCURRENCY = 1;
+const MAX_SCORE_CONCURRENCY = 8;
+let scoreConcurrency = DEFAULT_SCORE_CONCURRENCY;
+
+function normalizeScoreConcurrency(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_SCORE_CONCURRENCY;
+  return Math.min(MAX_SCORE_CONCURRENCY, Math.max(MIN_SCORE_CONCURRENCY, Math.round(n)));
+}
 const DEFAULT_LIMIT = 30;
 const MAX_PAGES = 300; // 安全上限：300 页 × 30 ≈ 9000 人
 const MOKA_TIMEOUT_MS = 25000;
@@ -81,7 +94,7 @@ function seedRunUsageFromJob(job) {
   runUsage = MokaUsage.normalizeUsage(job && job.usage);
 }
 
-/** 向后台取当前生效模型单价（自定义价优先于内置表），写入 runUsage 供本地估算 */
+/** 向后台取当前生效模型单价与评分运行时参数（并发数），写入 runUsage 供本地估算 */
 function refreshRunPriceInfo() {
   return new Promise((resolve) => {
     try {
@@ -94,6 +107,7 @@ function refreshRunPriceInfo() {
           ? { inputPerM: response.price.inputPerM, outputPerM: response.price.outputPerM, priced: true }
           : null;
         if (response.model) runUsage.model = String(response.model);
+        if (response.concurrency != null) scoreConcurrency = normalizeScoreConcurrency(response.concurrency);
         resolve(response);
       });
     } catch (e) {
@@ -2287,6 +2301,35 @@ async function discardScreeningJob() {
   await saveScreeningJob(null);
 }
 
+const TRUNCATED_FINISH_REASONS = ['length', 'max_tokens', 'max_output_tokens'];
+
+function isTruncatedFinishReason(reason) {
+  return TRUNCATED_FINISH_REASONS.indexOf(String(reason || '').toLowerCase()) !== -1;
+}
+
+/** 输出长度显示：1234 → 1.2k */
+function formatCharCount(n) {
+  const num = Number(n) || 0;
+  return num >= 1000 ? (num / 1000).toFixed(1) + 'k 字' : num + ' 字';
+}
+
+/**
+ * 评分诊断尾部：输出长度 / 截断标记 / 是否含思考 / 多次调用 / 解析失败类型。
+ * 正常完成（finish=stop、无思考）时只留输出长度，避免日志行过长。
+ */
+function scoreDiagnosticsText(meta, score) {
+  const m = meta || {};
+  const bits = [];
+  if (m.outLen) bits.push('输出 ' + formatCharCount(m.outLen));
+  if (isTruncatedFinishReason(m.finishReason)) bits.push('截断(' + m.finishReason + ')');
+  else if (m.finishReason && String(m.finishReason).toLowerCase() !== 'stop') bits.push('finish=' + m.finishReason);
+  if (m.hasThink) bits.push('含思考');
+  if (Number(m.calls) > 1) bits.push(m.calls + ' 次调用');
+  const kind = (score && score.parseFailureKind) || m.parseFailureKind;
+  if (score && score.level === '错误' && kind) bits.push('解析失败：' + kind);
+  return bits.length ? ' · ' + bits.join(' · ') : '';
+}
+
 async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
   const options = opts || {};
   const onlyPending = !!options.onlyPending;
@@ -2336,6 +2379,7 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
         pushPluginLog({
           cat: 'score',
           text: `评分 ${(item.app && item.app.name) || '#' + (index + 1)}：${(sc && sc.level) || '无结果'}（${Number(sc && sc.score) || 0} 分）` + uBit
+            + scoreDiagnosticsText(scoredRes.meta, sc)
         });
       } catch (err) {
         console.error('[Moka 筛选] 候选人处理失败:', item.app && item.app.name, err);
@@ -2379,7 +2423,7 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
     }
   }
 
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(total, 1)) }, worker));
+  await Promise.all(Array.from({ length: Math.min(scoreConcurrency, Math.max(total, 1)) }, worker));
 
   // 自动补评：主轮结束仍有评分失败的（多为模型偶发输出异常），自动整体再补一轮；
   // 只补一轮不递归，补评仍失败的落卡等手动「重评」。断点续筛（onlyPending）不再嵌套补评。
@@ -2763,6 +2807,7 @@ const SCORE_RETRY_DELAY_MS = 1000;
  */
 async function scoreViaBackgroundWithRetry(profile, config) {
   let last = null;
+  let lastMeta = null;
   let usage = MokaUsage.emptyUsage();
   for (let attempt = 0; attempt < 1 + MokaScore.SCORE_AUTO_RETRY_MAX; attempt++) {
     // 解析类失败的重试附加纠偏指令，要求模型严格只输出 JSON（不影响缓存 key）
@@ -2772,16 +2817,17 @@ async function scoreViaBackgroundWithRetry(profile, config) {
     const res = await scoreViaBackground(profile, attemptConfig);
     last = res.score;
     if (res.meta) {
+      lastMeta = res.meta;
       usage = res.meta.cacheHit
         ? MokaUsage.addCacheHit(usage)
         : MokaUsage.addUsage(usage, res.meta);
     }
-    if (!MokaScore.isRetryableScoreFailure(last)) return { score: last, usage };
+    if (!MokaScore.isRetryableScoreFailure(last)) return { score: last, usage, meta: lastMeta };
     if (attempt < MokaScore.SCORE_AUTO_RETRY_MAX) {
       await sleep(SCORE_RETRY_DELAY_MS * (attempt + 1));
     }
   }
-  return { score: last, usage };
+  return { score: last, usage, meta: lastMeta };
 }
 
 const WEIGHT_KEYS = MokaScore.WEIGHT_KEYS;
@@ -3557,7 +3603,7 @@ async function rescoreItem(item) {
     applyKeywordTags(item);
     setRowStage(item.app.id, 'score');
     const fbBundle = await loadFeedbackBundle(cfg.jobId);
-    const raw = await scoreViaBackgroundWithRetry(item.profile, {
+    const scoredRes = await scoreViaBackgroundWithRetry(item.profile, {
       jobType: cfg.jobType,
       jobSpec: cfg.jobSpec,
       jobJD: cfg.jobJD,
@@ -3565,7 +3611,11 @@ async function rescoreItem(item) {
       feedbackContext: fbBundle.context,
       feedbackRev: fbBundle.rev
     });
-    applyScoreResult(item, raw);
+    // 取 .score：scoreViaBackgroundWithRetry 返回 {score, usage, meta} 包装（整包传下去会被判成评分失败）
+    applyScoreResult(item, scoredRes.score);
+    if (scoredRes.usage && (scoredRes.usage.calls || scoredRes.usage.cacheHits)) {
+      runUsage = MokaUsage.mergeUsage(runUsage, scoredRes.usage);
+    }
   } catch (err) {
     applyScoreResult(item, { dimensions: null, error: (err && err.message) || '重评失败' });
   } finally {
@@ -3731,6 +3781,10 @@ if (typeof module !== 'undefined' && module.exports) {
     rememberJobPipeline,
     getAssigneeForJob,
     getAssigneeDiagnostics,
+    normalizeScoreConcurrency,
+    scoreDiagnosticsText,
+    scoreConcurrencyForTest: () => scoreConcurrency,
+    setScoreConcurrencyForTest: (v) => { scoreConcurrency = normalizeScoreConcurrency(v); },
     detailSeenAppsForTest: () => Object.fromEntries(detailSeenApps),
     memberNamesForTest: () => Object.fromEntries(memberNames)
   };

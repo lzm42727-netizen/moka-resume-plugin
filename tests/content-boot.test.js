@@ -225,3 +225,55 @@ describe('content.js 顶层加载', () => {
     assert.deepEqual(contentApi.validAssigneeNames(['王歆澄'], 1), ['王歆澄']);
   });
 });
+
+describe('v1.8.5 评分并发可配置与诊断日志', () => {
+  it('normalizeScoreConcurrency 夹取到 1–8，非法值回退默认 6', () => {
+    assert.equal(contentApi.normalizeScoreConcurrency(6), 6);
+    assert.equal(contentApi.normalizeScoreConcurrency('3'), 3);
+    assert.equal(contentApi.normalizeScoreConcurrency(0), 6);
+    assert.equal(contentApi.normalizeScoreConcurrency(-2), 6);
+    assert.equal(contentApi.normalizeScoreConcurrency('abc'), 6);
+    assert.equal(contentApi.normalizeScoreConcurrency(99), 8);
+    assert.equal(contentApi.normalizeScoreConcurrency(2.6), 3, '取整后再夹取');
+  });
+
+  it('scoreDiagnosticsText 只在有信号时输出，正常完成不啰嗦', () => {
+    assert.equal(contentApi.scoreDiagnosticsText(null, null), '');
+    assert.equal(contentApi.scoreDiagnosticsText({ finishReason: 'stop', outLen: 0 }, null), '');
+    assert.match(contentApi.scoreDiagnosticsText({ outLen: 1500 }, {}), /输出 1\.5k 字/);
+    assert.match(contentApi.scoreDiagnosticsText({ outLen: 300 }, {}), /输出 300 字/);
+    const truncated = contentApi.scoreDiagnosticsText({ finishReason: 'length', hasThink: true, outLen: 4200, calls: 2 }, {});
+    assert.match(truncated, /截断\(length\)/);
+    assert.match(truncated, /含思考/);
+    assert.match(truncated, /2 次调用/);
+    // 失败时带解析失败类型（模型侧 meta 或 score 上的都认）
+    const failed = contentApi.scoreDiagnosticsText({ parseFailureKind: 'truncated_json' }, { level: '错误' });
+    assert.match(failed, /解析失败：truncated_json/);
+    assert.doesNotMatch(
+      contentApi.scoreDiagnosticsText({ parseFailureKind: 'x' }, { level: '可推进' }),
+      /解析失败/,
+      '非失败卡不显示解析失败'
+    );
+  });
+
+  it('评分 worker 用可配置并发数，且不再硬编码 CONCURRENCY', () => {
+    const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../content.js'), 'utf8');
+    assert.match(src, /Math\.min\(scoreConcurrency, Math\.max\(total, 1\)\)/);
+    assert.doesNotMatch(src, /Math\.min\(CONCURRENCY/);
+    assert.doesNotMatch(src, /^const CONCURRENCY =/m);
+    // 开筛时从后台（modelPriceInfo）取生效并发
+    assert.match(src, /response\.concurrency != null\) scoreConcurrency = normalizeScoreConcurrency/);
+  });
+
+  it('评分日志追加诊断尾部（输出长度/截断/含思考/多次调用）', () => {
+    const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../content.js'), 'utf8');
+    // 评分日志行末尾拼 uBit 之后再拼诊断尾部
+    assert.match(src, /\+ uBit[\s\S]{0,80}scoreDiagnosticsText\(scoredRes\.meta, sc\)/);
+  });
+
+  it('单卡重评取包装里的 .score（整包传下去会被判成评分失败）', () => {
+    const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../content.js'), 'utf8');
+    assert.match(src, /const scoredRes = await scoreViaBackgroundWithRetry\(item\.profile, \{[\s\S]{0,400}applyScoreResult\(item, scoredRes\.score\)/);
+    assert.doesNotMatch(src, /const raw = await scoreViaBackgroundWithRetry\(item\.profile/);
+  });
+});
