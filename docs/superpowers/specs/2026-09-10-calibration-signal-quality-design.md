@@ -1,7 +1,8 @@
 # 本岗校准信号质量优化（规格）
 
 日期：2026-09-10
-状态：待评审（未实现）
+状态：**已实现**（1.9.2 / 1.9.3 / 1.9.4 分批落地；仅「6 removeFocus 轻量版」仍待补数据，见下）
+落地情况：第一批 = 1.9.2（信号归一化 / score-drift / confidence / 文案强化 / dropBonus 收紧 + popup 徽章与分组）；第二批 = 1.9.3（反馈上下文加固 + `PROMPT_VERSION` v1→v2 + 反复信号归一化）；第三批 = 1.9.4（诊断分组 + 近期优先排序）。测试 466 → 479。
 来源：外部模型提交的本岗校准改进建议 + 对现有实现的逐项审查
 
 本规格不改评分体系。四维权重、门槛三态、`scoreBreakdown`、bonus 语义、`matchScore` 公式全部保持现状（见 `2026-09-02-bonus-keyword-scoring-design.md`、`2026-09-02-job-calibration-align-design.md`）。
@@ -210,11 +211,17 @@ groupCalibrationSignals(list, minCount) -> [{ text, count, variants, polarity }]
 
 ## 分批
 
-| 批次 | 内容 | 触及文件 |
-|---|---|---|
-| 第一批 | 1 信号归一化、2 score-drift、3 confidence 字段、4 文案强化、5 dropBonus 收紧 | `lib/calibrate.js`、`tests/calibrate.test.js`；popup 仅「有则展示」的极小改动 |
-| 第二批 | 8 反馈上下文加固（含 `PROMPT_VERSION` bump）、confidence 上卡片 | `lib/feedback.js`、`lib/score.js`、`popup/popup.js` |
-| 第三批（可选） | 6 removeFocus 轻量版、7 近期优先排序、UI 分组「规则调整 / 诊断」 | `lib/calibrate.js`、`popup/*` |
+| 批次 | 内容 | 触及文件 | 实装 |
+|---|---|---|---|
+| 第一批 | 1 信号归一化、2 score-drift、3 confidence 字段、4 文案强化、5 dropBonus 收紧 | `lib/calibrate.js`、`tests/calibrate.test.js`；popup 仅「有则展示」的极小改动 | ✅ **1.9.2** |
+| 第二批 | 8 反馈上下文加固（含 `PROMPT_VERSION` bump）、confidence 上卡片 | `lib/feedback.js`、`lib/score.js`、`popup/popup.js` | ✅ **1.9.3**（confidence 徽章随 1.9.2 一并落地） |
+| 第三批 | 7 近期优先排序、UI 分组「规则调整 / 诊断」 | `lib/calibrate.js`、`popup/*` | ✅ **1.9.4** |
+| 待数据 | 6 removeFocus 轻量版 | `lib/calibrate.js`、`lib/score.js`（需新增快照字段） | ⏸ 未做：评分快照不记录「重点看是否命中」，强行按 concerns 推断会删错词 |
+
+### 实现中修正的两处设计偏差（重要）
+
+1. **极性判定必须在剥引号与剥「缺/缺少」前缀之前**。原设计先说「去展示前缀」再说「判极性」，会导致 `缺少达人合作经验` 在剥掉 `缺少` 后极性丢失，同类信号分裂成两组（`达人合作` + `达人合作经验`）。实现顺序改为：先判 `缺(?!乏) / 缺少 / 未满足` 前缀 → 再剥引号 → 再判否定前缀 → 最后判否定后缀。
+2. **结果后缀只剥「否定动词」**（`不足/较少/缺失/不够/欠缺/偏少/较弱/较差/匮乏`），不含 `经验 / 能力` 等名词；且「尾巴虚词（经验/经历/背景/能力）清理」**仅在前缀型触发**。这样 `项目经验不足` → `项目经验`（符合方向保护），而 `缺少达人合作经验` → `达人合作`（符合验收例 1）两者同时成立。
 
 ## 验证
 
