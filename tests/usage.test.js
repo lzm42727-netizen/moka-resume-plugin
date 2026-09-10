@@ -12,6 +12,7 @@ const {
   mergeUsage,
   sumCost,
   formatCost,
+  costOnlyText,
   summaryText
 } = require('../lib/usage.js');
 
@@ -131,6 +132,17 @@ test('summaryText warns when model price is unknown but calls happened', () => {
   const u = emptyUsage();
   const a = addUsage(u, { inTok: 100, outTok: 20, model: 'internal-x' });
   assert.match(summaryText(a), /模型未收录单价，未估费/);
+});
+
+test('costOnlyText 只出预估花费；无调用/未收录单价返回空串（结果页整行隐藏）', () => {
+  assert.equal(costOnlyText(emptyUsage()), '', '没有真实调用不出费用行');
+  const base = emptyUsage();
+  base.price = { inputPerM: 2.1, outputPerM: 8.4, priced: true };
+  const a = addUsage(base, { inTok: 3000, outTok: 1000, model: 'MiniMax-M2.7-MT' });
+  assert.equal(costOnlyText(a), '预估花费 ¥0.015');
+  assert.doesNotMatch(costOnlyText(a), /调用|tokens|缓存/, '调用次数与 token 不再上结果页');
+  const b = addUsage(emptyUsage(), { inTok: 100, outTok: 20, model: 'internal-x' });
+  assert.equal(costOnlyText(b), '', '未收录单价 → 整行隐藏（用时也不展示）');
 });
 
 test('addUsage counts meta.calls when one score took several model calls（v1.8.5）', () => {

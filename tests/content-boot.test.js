@@ -384,3 +384,22 @@ describe('v1.8.7 降档抗抖与并发可见', () => {
     assert.match(src, /已按网关反馈降档/);
   });
 });
+
+describe('v1.8.8 结果页用量行（用时 + 预估花费）', () => {
+  const readSrc = () => require('node:fs').readFileSync(require('node:path').join(__dirname, '../content.js'), 'utf8');
+
+  it('快照 usageText 改由「用时 + 预估花费」组成，token/调用次数不上结果页', () => {
+    const src = readSrc();
+    assert.match(src, /usageText: buildUsageLineText\(\)/);
+    assert.match(src, /const cost = MokaUsage\.costOnlyText\(runUsage\);[\s\S]{0,200}if \(!cost\) return '';/);
+    assert.match(src, /formatElapsedText\(elapsed\) \+ ' · '/);
+  });
+
+  it('用时整轮口径：开筛即起算、完成/停止冻结、续筛从任务快照起点续算', () => {
+    const src = readSrc();
+    assert.match(src, /screeningStartedAt = Date\.now\(\);\s*\n\s*screeningEndedAt = 0;/);
+    assert.match(src, /if \(status === 'done' \|\| status === 'stopped'\) \{[\s\S]{0,160}screeningEndedAt = Date\.now\(\);/);
+    assert.match(src, /screeningStartedAt = job\.startedAt \|\| Date\.now\(\);/);
+    assert.match(src, /screeningStartedAt = job\.startedAt \|\| Date\.now\(\);[\s\S]{0,60}screeningEndedAt = 0;/);
+  });
+});

@@ -2601,8 +2601,8 @@ function setResultUsageLine(text) {
     return;
   }
   el.classList.remove('hidden');
-  el.textContent = '用量：' + clean;
-  el.title = '本轮筛选的模型调用次数 / token / 估算费用；命中评分缓存不计费';
+  el.textContent = clean;
+  el.title = '本轮筛选总耗时与预估模型费用（估算值）；命中评分缓存不计费';
 }
 
 function renderUsageLine() {

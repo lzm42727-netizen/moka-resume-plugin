@@ -7,7 +7,8 @@ const {
   screeningLooksActive,
   withStatus,
   SCREENING_JOB_KEY,
-  formatScreeningProgress
+  formatScreeningProgress,
+  formatElapsedText
 } = require('../lib/screening-job.js');
 
 describe('sanitizeScreeningJob', () => {
@@ -181,5 +182,24 @@ describe('formatScreeningProgress', () => {
       now: t0 + 60 * 1000
     });
     assert.equal(text, '已评 5/10 · 已用约 1 分钟');
+  });
+});
+
+describe('formatElapsedText（结果页「用时」，秒为最小单位）', () => {
+  it('不足一分钟只显示秒', () => {
+    assert.equal(formatElapsedText(48), '48 秒');
+    assert.equal(formatElapsedText(0), '0 秒');
+  });
+
+  it('超过一分钟显示「分 秒」，超过一小时补「时」', () => {
+    assert.equal(formatElapsedText(161), '2 分 41 秒');
+    assert.equal(formatElapsedText(3723), '1 时 2 分 3 秒');
+    assert.equal(formatElapsedText(3600), '1 时 0 分 0 秒');
+  });
+
+  it('容忍非法输入并四舍五入', () => {
+    assert.equal(formatElapsedText(''), '0 秒');
+    assert.equal(formatElapsedText(-5), '0 秒');
+    assert.equal(formatElapsedText(47.6), '48 秒');
   });
 });

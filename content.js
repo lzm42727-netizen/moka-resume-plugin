@@ -175,6 +175,7 @@ async function fetchPageWithRetry(url, options, isAlive) {
 
 let isScreening = false;
 let screeningStartedAt = 0;
+let screeningEndedAt = 0; // 完成/停止时冻结，结果页「用时」不再走动（暂停/续筛不冻结）
 let screeningEpoch = 0;
 let screeningHeartbeat = 0; // 最近一次筛选活动时间；用于识别「卡死的旧任务」
 let runUsage = MokaUsage.emptyUsage(); // 本轮筛选的 LLM 用量/费用（续筛时从任务快照恢复）
@@ -2303,6 +2304,10 @@ const SCREEN_STATUS_LABEL = {
 };
 
 async function finishScreeningJob(status, extra) {
+  // 完成/停止时冻结「用时」的终点；暂停（awaiting_resume/paused_mismatch）不冻结，续筛接着走
+  if (status === 'done' || status === 'stopped') {
+    if (screeningStartedAt && !screeningEndedAt) screeningEndedAt = Date.now();
+  }
   if (activeScreeningJob) {
     await saveScreeningJob(MokaScreeningJob.withStatus(
       activeScreeningJob,
@@ -2593,6 +2598,9 @@ async function resumeScreeningFromJob() {
     feedbackRev: (lastScreenConfig && lastScreenConfig.feedbackRev) || 'none'
   };
 
+  // 「用时」整轮口径：续筛从任务快照的起点续算，跨刷新不断账
+  screeningStartedAt = job.startedAt || Date.now();
+  screeningEndedAt = 0;
   isScreening = true;
   // 续筛也必须持有一轮 epoch：否则「恢复筛选」的 worker 在新一轮开筛时不会停手
   // （alive() 判定 epoch == null 即视为有效），两条链路并发评同一批人 → 并发翻倍、网关被打爆
@@ -2649,7 +2657,9 @@ async function performScreening(config, epoch) {
   results = [];
   lastScreenConfig = null;
   activeWeights = null;
-  screeningStartedAt = 0;
+  // 「用时」整轮口径：从点「开始筛选」（含拉列表准备）起算
+  screeningStartedAt = Date.now();
+  screeningEndedAt = 0;
   resetRunUsage();
   resetResultUi();
   updatePanelStatus('正在准备筛选… · Moka 标签请保持打开（可切去其他浏览器标签）');
@@ -3758,6 +3768,16 @@ function findResult(appId) {
   return results.find((r) => r.app && String(r.app.id) === id);
 }
 
+/** 结果页首行：用时（整轮，秒为最小单位）+ 预估花费；估不了费整行隐藏（token/调用次数只在日志与进度行） */
+function buildUsageLineText() {
+  const cost = MokaUsage.costOnlyText(runUsage);
+  if (!cost) return '';
+  const elapsed = screeningStartedAt
+    ? Math.max(0, Math.round(((screeningEndedAt || Date.now()) - screeningStartedAt) / 1000))
+    : 0;
+  return (elapsed > 0 ? MokaScreeningJob.formatElapsedText(elapsed) + ' · ' : '') + cost;
+}
+
 function buildResultsSnapshot() {
   const ctx = parsePageContext();
   const pageJobId = ctx && ctx.jobIds[0] ? String(ctx.jobIds[0]) : '';
@@ -3775,7 +3795,7 @@ function buildResultsSnapshot() {
     resultJobId,
     resultContextKey: MokaPersist.resultContextKey(pipelineId, resultJobId),
     resultMismatch: !!(pageJobId && resultJobId && pageJobId !== resultJobId),
-    usageText: MokaUsage.summaryText(runUsage),
+    usageText: buildUsageLineText(),
     items: MokaMatch.sortResultViews(results.map((item) => MokaMatch.toResultView(item)))
   };
 }

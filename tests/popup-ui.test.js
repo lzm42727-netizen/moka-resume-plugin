@@ -338,6 +338,8 @@ describe('screening configuration UI', () => {
     assert.match(js, /function renderUsageLine/);
     assert.match(js, /snap\.usageText/);
     assert.match(js, /setResultUsageLine/);
+    // 1.8.8 起这行内容 = 用时 + 预估花费，popup 不再加「用量：」前缀
+    assert.doesNotMatch(js, /'用量：'/);
     // 设置页自定义单价（元/百万 tokens，留空走内置表）
     assert.match(html, /id="model-input-price"/);
     assert.match(html, /id="model-output-price"/);
