@@ -3099,7 +3099,7 @@ function buildEvidenceSplit(appId, cols, fitDetail) {
   const hasEvidence = evidenceList.length > 0;
   const detail = fitDetail || {};
   const breakdown = detail.breakdown || null;
-  // 「亮点」列（原「具备」）没有亮点但存在未体现/经历证据时，用空态占位让对比语义完整
+  // 「亮点」列（原「具备」）没有亮点但存在差距/经历证据时，用空态占位让对比语义完整
   const leftVisible = cols.left.length > 0 || (hasRight || hasEvidence);
   split.className = 'mp-split' + (!(leftVisible && hasRight) ? ' mp-split-single' : '');
 
@@ -3141,7 +3141,7 @@ function buildEvidenceSplit(appId, cols, fitDetail) {
     col.className = 'mp-col miss';
     const title = document.createElement('div');
     title.className = 'mp-col-title';
-    title.textContent = '未体现';
+    title.textContent = '差距';
     col.appendChild(title);
     cols.right.forEach((r) => {
       const line = document.createElement('div');
@@ -3150,7 +3150,7 @@ function buildEvidenceSplit(appId, cols, fitDetail) {
       body.className = 'mp-miss-text';
       const mark = document.createElement('span');
       if (r.kind === 'unmet') {
-        // 门槛条目用「门槛」徽章区分于普通未体现项，正文只留「条目：原因」
+        // 门槛条目用「门槛」徽章区分于普通差距项，正文只留「条目：原因」
         mark.className = 'mp-mark gate';
         mark.textContent = '门槛';
       } else {
@@ -3446,12 +3446,12 @@ function createResultRow(view) {
       cut.textContent = scoreDetailText;
       level.appendChild(cut);
     }
-    // 档位原因并入同一行；门槛明细只在「未体现」列出现一次，不再另起标签行
+    // 档位原因并入同一行；门槛明细只在「差距」列出现一次，不再另起标签行
     if (s.level !== '错误' && (s.advanceReason === 'gate' || s.advanceReason === 'match')) {
       const note = document.createElement('span');
       note.className = 'mp-level-note';
       note.textContent = s.advanceReason === 'gate'
-        ? '· 未过门槛 ' + ((Array.isArray(s.unmet) && s.unmet.length) || 0) + ' 项（见未体现）'
+        ? '· 未过门槛 ' + ((Array.isArray(s.unmet) && s.unmet.length) || 0) + ' 项（见差距）'
         : '· 经历/技能匹配不足';
       level.appendChild(note);
     }

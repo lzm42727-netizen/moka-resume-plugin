@@ -273,13 +273,16 @@ describe('screening configuration UI', () => {
   });
 
   it('states the gate count on the level line instead of a duplicated tag row', () => {
-    // 门槛明细只在「未体现」列出现一次（带「门槛」徽章）；卡面档位行只说明条数
+    // 门槛明细只在「差距」列出现一次（带「门槛」徽章）；卡面档位行只说明条数
     assert.match(js, /mp-level-note/);
-    assert.match(js, /'· 未过门槛 ' \+ \(\(Array\.isArray\(s\.unmet\) && s\.unmet\.length\) \|\| 0\) \+ ' 项（见未体现）'/);
+    assert.match(js, /'· 未过门槛 ' \+ \(\(Array\.isArray\(s\.unmet\) && s\.unmet\.length\) \|\| 0\) \+ ' 项（见差距）'/);
     assert.match(js, /mark\.className = 'mp-mark gate'/);
     // 旧的门槛标签行（遍历 s.unmet 逐条平铺红标签）已删除，防止再长回来
     // 用 (gate) 锚定旧的门槛循环，避免撞上 niceTags.unmet.forEach
     assert.doesNotMatch(js, /s\.unmet\.forEach\(\(gate\)/);
+    // 右列名称为「差距」（v1.8.4 起，原「未体现」）；「亮点」空态与右列并存
+    assert.match(js, /title\.textContent = '差距';/);
+    assert.doesNotMatch(js, /title\.textContent = '未体现';/);
   });
 
   it('keeps the unknown (待确认) tag row for items the resume never mentions', () => {
