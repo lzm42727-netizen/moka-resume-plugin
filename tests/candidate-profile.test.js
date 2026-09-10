@@ -25,7 +25,7 @@ describe('formatExperienceList', () => {
 });
 
 describe('evaluateHardConditions', () => {
-  it('fails configured structured gates when the resume has empty fields', () => {
+  it('treats empty resume fields as unknown instead of failing the gate', () => {
     const result = evaluateHardConditions(
       { highestDegree: '', intelligentTags: [], gender: '', age: null, experience: 0 },
       {
@@ -35,7 +35,24 @@ describe('evaluateHardConditions', () => {
       },
       'full-time'
     );
+    assert.deepEqual(result.missing, []);
+    assert.deepEqual(result.unknown, ['学历需本科及以上', '性别需女', '年龄需 20-25']);
+    assert.equal(result.passed, true);
+  });
+
+  it('still fails the gate on explicit mismatch evidence', () => {
+    const result = evaluateHardConditions(
+      { highestDegree: '大专', intelligentTags: [], gender: '男', age: 30, experience: 0 },
+      {
+        degree: '本科',
+        gender: '女',
+        ageRanges: [{ min: 20, max: 25, label: '20-25' }]
+      },
+      'full-time'
+    );
     assert.deepEqual(result.missing, ['学历需本科及以上', '性别需女', '年龄需 20-25']);
+    assert.deepEqual(result.unknown, []);
+    assert.equal(result.passed, false);
   });
 });
 

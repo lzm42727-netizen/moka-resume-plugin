@@ -282,6 +282,102 @@ describe('composeFinalScore', () => {
   });
 });
 
+describe('composeFinalScore 四维结构化合成', () => {
+  const breakdown = (core, business, skill, scope) => ({
+    scoreBreakdown: {
+      coreDuty: { score: core, reason: '职责重合' },
+      business: { score: business, reason: '业务相近' },
+      skill: { score: skill, reason: '技能可用' },
+      scope: { score: scope, reason: '独立负责' }
+    },
+    highlights: [],
+    concerns: [],
+    handwrittenGateResults: []
+  });
+
+  it('本地按 40/25/20/15 权重合成，而不是听模型直接给的总分', () => {
+    // (80*40 + 60*25 + 70*20 + 50*15) / 100 = 68.5 → 69
+    const out = composeFinalScore(breakdown(80, 60, 70, 50), [], []);
+    assert.equal(out.score, 69);
+    assert.equal(out.baseScore, 69);
+    assert.equal(out.level, '可推进');
+  });
+
+  it('scoreBreakdown 输出 {score, reason} 形状，卡片渲染不会取到 undefined', () => {
+    const out = composeFinalScore(breakdown(80, 60, 70, 50), [], []);
+    assert.equal(typeof out.scoreBreakdown.coreDuty, 'object');
+    assert.equal(out.scoreBreakdown.coreDuty.score, 80);
+    assert.equal(out.scoreBreakdown.coreDuty.reason, '职责重合');
+    assert.equal(out.scoreBreakdown.scope.score, 50);
+    // 缺理由时兜底为空串，不是 undefined
+    const noReason = composeFinalScore(
+      { scoreBreakdown: { coreDuty: 80, business: 60, skill: 70, scope: 50 } },
+      [],
+      []
+    );
+    assert.equal(noReason.scoreBreakdown.coreDuty.reason, '');
+  });
+
+  it('四维只回了一部分时判为评分失败，不静默合成 0 分', () => {
+    const partial = composeFinalScore(
+      { scoreBreakdown: { coreDuty: { score: 80 }, business: { score: 60 } }, concerns: [] },
+      [],
+      []
+    );
+    assert.equal(partial.level, '错误');
+    assert.equal(partial.score, 0);
+    assert.equal(partial.scoreBreakdown, null);
+    assert.equal(isScoreFailure({ scoreBreakdown: { coreDuty: { score: 80 } } }), true);
+    assert.equal(
+      isScoreFailure(breakdown(80, 60, 70, 50)),
+      false
+    );
+  });
+
+  it('coreDuty 保护封顶：核心职责弱时，其他维度再高也压不过阈值', () => {
+    // 其余满分把加权分顶到 72，但核心职责 30 < 40 → 封顶 49
+    assert.equal(composeFinalScore(breakdown(30, 100, 100, 100), [], []).score, 49);
+    // 核心职责 50（40–59）→ 封顶 69
+    assert.equal(composeFinalScore(breakdown(50, 100, 100, 100), [], []).score, 69);
+    // 核心职责 70（60–79）→ 封顶 84
+    assert.equal(composeFinalScore(breakdown(70, 100, 100, 100), [], []).score, 84);
+    // 核心职责 >= 80 不封顶
+    assert.equal(composeFinalScore(breakdown(80, 100, 100, 100), [], []).score, 92);
+  });
+
+  it('信息不足（unknown）的门槛不扣分，只有明确失败才封顶', () => {
+    const out = composeFinalScore(
+      Object.assign(breakdown(80, 80, 80, 80), {
+        handwrittenGateResults: [
+          { item: '日语 N1', status: 'unknown', reason: '简历未提及' },
+          { item: '学历本科', status: 'pass' }
+        ]
+      }),
+      [],
+      []
+    );
+    assert.equal(out.unmet.length, 0);
+    assert.equal(out.unknown.length, 1);
+    assert.equal(out.score, 80);
+    assert.equal(out.level, '优先推进');
+  });
+
+  it('结构化门槛的 unknown 状态同样不扣分', () => {
+    const out = composeFinalScore(breakdown(80, 80, 80, 80), [], [
+      { item: '性别需女', status: 'unknown', reason: '简历未填' }
+    ]);
+    assert.equal(out.unmet.length, 0);
+    assert.equal(out.unknown.length, 1);
+    assert.equal(out.score, 80);
+  });
+
+  it('旧缓存只有 matchScore、没有四维时仍能评分（兼容历史结果）', () => {
+    const out = composeFinalScore({ matchScore: 77, dimensions: null }, [], []);
+    assert.equal(out.score, 77);
+    assert.equal(out.scoreBreakdown, null);
+  });
+});
+
 describe('hardConditionsPromptBlock', () => {
   it('returns empty string when recruiter set no hard conditions', () => {
     assert.equal(hardConditionsPromptBlock(''), '');
@@ -318,7 +414,8 @@ describe('AI match scoring contract', () => {
       ['品牌实习'],
       ['作品集']
     );
-    assert.match(prompt, /无证据.*不过/);
+    assert.match(prompt, /unknown/);
+    assert.match(prompt, /不要把 unknown 当 fail/);
     assert.match(prompt, /PS.*Photoshop|Photoshop.*PS/);
     assert.match(prompt, /matchScore/);
     assert.match(prompt, /重点看.*品牌实习/);
@@ -326,12 +423,23 @@ describe('AI match scoring contract', () => {
     assert.match(prompt, /bonusKeywordResults/);
     assert.match(prompt, /加分看.*(?:不得|不要).*matchScore|matchScore.*(?:不得|不要).*加分看/);
     assert.match(prompt, /逐条.*加分|加分.*逐条/);
-    assert.match(prompt, /学历.*(?:不要|不得).*加分/);
+    assert.match(prompt, /学历.*(?:不是|不要|不得).*加分/);
     assert.match(prompt, /experienceEvidence|经历证据/);
     assert.match(prompt, /相邻/);
-    assert.match(prompt, /不得.{0,12}低于\s*50|不得.{0,12}50\s*以下/);
+    assert.match(prompt, /相邻经历完全可以低于\s*50|相邻经历.*低于\s*50/);
     assert.doesNotMatch(prompt, /education|综合分约\s*50/);
     assert.doesNotMatch(prompt, /重点看缺失会拉低匹配分/);
+    // 四项结构化评分：权重与本地合成，模型不再自己拍总分
+    assert.match(prompt, /coreDuty.*40%/);
+    assert.match(prompt, /business.*25%/);
+    assert.match(prompt, /skill.*20%/);
+    assert.match(prompt, /scope.*15%/);
+    assert.match(prompt, /scoreBreakdown|四项基础评分/);
+    // 核心职责保护性封顶：coreDuty 不足不能被学历/公司/年限抵消
+    assert.match(prompt, /coreDuty\s*<\s*40.*49/);
+    // 证据充分度与置信度不直接乘到分数上
+    assert.match(prompt, /evidenceCoverage/);
+    assert.match(prompt, /confidence/);
     // 岗位相关性校准：证据只写岗位相关、亮点必须挂靠 JD 职责/重点看
     assert.ok(prompt.indexOf('只写与岗位职责/重点看直接相关的经历证据') !== -1);
     assert.ok(prompt.indexOf('highlights 只能写与岗位职责/重点看直接对应的亮点') !== -1);
@@ -353,7 +461,7 @@ describe('AI match scoring contract', () => {
     });
     assert.equal(raw.matchScore, 100);
     assert.deepEqual(raw.handwrittenGateResults, [
-      { item: '日语', met: false, reason: '简历未提及' }
+      { item: '日语', met: false, reason: '简历未提及', status: 'fail' }
     ]);
     assert.deepEqual(raw.highlights, ['品牌项目']);
     assert.deepEqual(raw.experienceEvidence, []);
@@ -406,7 +514,7 @@ describe('AI match scoring contract', () => {
     assert.match(scoreFailureMessage(composed), /matchScore/);
   });
 
-  it('fails any configured handwritten gate omitted by the model', () => {
+  it('marks any configured handwritten gate omitted by the model as unknown', () => {
     const results = ensureHandwrittenGateResults(
       {
         handwrittenGateResults: [{ item: '日语 N1', met: true, reason: 'JLPT N1' }]
@@ -415,7 +523,7 @@ describe('AI match scoring contract', () => {
     );
     assert.deepEqual(results.handwrittenGateResults, [
       { item: '日语 N1', met: true, reason: 'JLPT N1' },
-      { item: '会使用 Photoshop', met: false, reason: '简历未提供可核对证据' }
+      { item: '会使用 Photoshop', met: false, status: 'unknown', reason: '简历未提供可核对证据' }
     ]);
   });
 
@@ -434,30 +542,40 @@ describe('AI match scoring contract', () => {
 });
 
 describe('dimensionScoringNotes', () => {
-  it('caps adjacent internships below 60 for intern jobs', () => {
+  it('states the four weighted fit dimensions used for the local composite score', () => {
     const notes = dimensionScoringNotes('intern');
-    assert.match(notes, /36\s*[–\-至到]\s*55|不得\s*[≥>=]\s*60|不超过\s*55/);
-    assert.match(notes, /行政/);
-    assert.match(notes, /对口/);
+    assert.match(notes, /coreDuty\s*40%/);
+    assert.match(notes, /business\s*25%/);
+    assert.match(notes, /skill\s*20%/);
+    assert.match(notes, /scope\s*15%/);
   });
 
-  it('tells the model that recruitment-support inside an admin intern is adjacent, not core HR', () => {
+  it('caps the base match by coreDuty instead of letting other strengths offset it', () => {
+    const notes = dimensionScoringNotes('full-time');
+    assert.match(notes, /coreDuty\s*<\s*40.*49/);
+    assert.match(notes, /40\s*[–-]\s*59.*69/);
+    assert.match(notes, /60\s*[–-]\s*79.*84/);
+    // 保护封顶不是相邻经历保底
+    assert.match(notes, /不是.{0,6}相邻经历保底|相邻经历完全可以低于/);
+  });
+
+  it('tells the model to mark missing resume info as unknown, not fail', () => {
     const notes = dimensionScoringNotes('intern');
-    assert.match(notes, /招聘/);
-    assert.match(notes, /HR|人力/);
+    assert.match(notes, /unknown/);
+    assert.match(notes, /不脑补|不得脑补|不因信息缺失/);
+    assert.match(notes, /反向证据/);
   });
 
-  it('still uses a core-vs-adjacent rule for full-time jobs', () => {
-    const notes = dimensionScoringNotes('full-time');
-    assert.match(notes, /主责|对口|相邻|辅助/);
+  it('does not punish interns for short or thin resumes with automatic zero', () => {
+    const notes = dimensionScoringNotes('intern');
+    assert.match(notes, /不应自动归零|不等于能力不存在|不得自动归零/);
+    assert.match(notes, /证据覆盖度|置信度|evidenceCoverage|confidence/);
   });
 
-  it('keeps same-direction but incomplete ads experience around mid scores, not 20', () => {
+  it('still judges by actual duty evidence rather than job titles', () => {
     const notes = dimensionScoringNotes('full-time');
-    assert.match(notes, /45\s*[–\-至到]\s*60|不得低于\s*45/);
-    assert.match(notes, /Meta|渠道/);
-    assert.match(notes, /教育/);
-    assert.match(notes, /40/);
+    assert.match(notes, /实际承担的工作|职责证据/);
+    assert.match(notes, /职位名称|关键词/);
   });
 });
 

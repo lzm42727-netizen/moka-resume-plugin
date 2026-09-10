@@ -139,7 +139,7 @@ describe('content.js 顶层加载', () => {
     assert.doesNotMatch(resp.error, /另一个职位/);
   });
 
-  it('已配置的结构化门槛在简历缺少对应字段时判为未过', () => {
+  it('简历缺少对应字段时判为待确认（unknown），不误判为未过', () => {
     const result = contentApi.evaluateHardConditions(
       { highestDegree: '', intelligentTags: [], gender: '', age: null, experience: 0 },
       {
@@ -149,7 +149,10 @@ describe('content.js 顶层加载', () => {
       },
       'full-time'
     );
-    assert.deepEqual(result.missing, ['学历需本科及以上', '性别需女', '年龄需 20-25']);
+    // 空字段 = 简历里没写，无法判定，归入 unknown；不能算作硬性不符而直接淘汰
+    assert.equal(result.passed, true);
+    assert.deepEqual(result.missing, []);
+    assert.deepEqual(result.unknown, ['学历需本科及以上', '性别需女', '年龄需 20-25']);
   });
 
   it('isOnCandidatePage 精确匹配 application id，前缀撞车不算同页', () => {

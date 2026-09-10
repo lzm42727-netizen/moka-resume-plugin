@@ -2508,6 +2508,8 @@ window.addEventListener('load', async () => {
 });
 
 const DIM_LABEL = { experience: '经验', skill: '技能', education: '教育', potential: '潜力' };
+const FIT_LABEL = { coreDuty: '核心职责', business: '业务场景', skill: '专业技能', scope: '责任范围' };
+const CONFIDENCE_LABEL = { high: '高', medium: '中', low: '低' };
 const ROW_STAGE = { enrich: '① 补全经历…', score: '② AI 评分中…' };
 
 const KEEP_TAB_TIP = 'Moka 标签请保持打开（可切去其他浏览器标签）';
@@ -3086,11 +3088,13 @@ function renderResults() {
   }
 }
 
-function buildEvidenceSplit(appId, cols) {
+function buildEvidenceSplit(appId, cols, fitDetail) {
   const split = document.createElement('div');
   const evidenceList = Array.isArray(cols.evidence) ? cols.evidence : [];
   const hasRight = cols.right.length > 0;
   const hasEvidence = evidenceList.length > 0;
+  const detail = fitDetail || {};
+  const breakdown = detail.breakdown || null;
   // 「具备」列没有亮点但存在未体现/经历证据时，用空态占位让对比语义完整
   const leftVisible = cols.left.length > 0 || (hasRight || hasEvidence);
   split.className = 'mp-split' + (!(leftVisible && hasRight) ? ' mp-split-single' : '');
@@ -3199,6 +3203,59 @@ function buildEvidenceSplit(appId, cols) {
     box.appendChild(toggle);
     box.appendChild(body);
     split.appendChild(box);
+  }
+
+  // 评分明细：四项分（含理由）与判断把握收进折叠区，卡面只留结论与完整度
+  if (breakdown) {
+    const detailBox = document.createElement('div');
+    detailBox.className = 'mp-evidence';
+    const detailToggle = document.createElement('button');
+    detailToggle.type = 'button';
+    detailToggle.className = 'mp-evidence-toggle';
+    const detailArrow = document.createElement('span');
+    detailArrow.className = 'mp-evidence-arrow';
+    detailArrow.textContent = '▸';
+    detailToggle.appendChild(document.createTextNode('评分明细'));
+    detailToggle.appendChild(detailArrow);
+    const detailBody = document.createElement('div');
+    detailBody.className = 'mp-evidence-body hidden';
+    ['coreDuty', 'business', 'skill', 'scope'].forEach((k) => {
+      const d = breakdown[k];
+      if (!d || d.score == null) return;
+      const line = document.createElement('div');
+      line.className = 'mp-hit mp-evidence-item';
+      const mark = document.createElement('span');
+      mark.className = 'mp-mark ev';
+      mark.textContent = '•';
+      line.appendChild(mark);
+      line.appendChild(document.createTextNode(
+        (FIT_LABEL[k] || k) + ' ' + d.score + (d.reason ? '：' + d.reason : '')
+      ));
+      detailBody.appendChild(line);
+    });
+    if (detail.confidence) {
+      const line = document.createElement('div');
+      line.className = 'mp-hit mp-evidence-item';
+      const mark = document.createElement('span');
+      mark.className = 'mp-mark ev';
+      mark.textContent = '•';
+      line.appendChild(mark);
+      line.appendChild(document.createTextNode(
+        '判断把握：' + (CONFIDENCE_LABEL[detail.confidence] || '中')
+          + '（简历信息越完整越可靠，把握低时建议点开简历人工确认）'
+      ));
+      detailBody.appendChild(line);
+    }
+    detailToggle.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const nowHidden = detailBody.classList.toggle('hidden');
+      detailBox.classList.toggle('open', !nowHidden);
+      detailArrow.textContent = nowHidden ? '▸' : '▾';
+    });
+    detailBox.appendChild(detailToggle);
+    detailBox.appendChild(detailBody);
+    split.appendChild(detailBox);
   }
 
   return split;
@@ -3398,25 +3455,65 @@ function createResultRow(view) {
       }
     }
 
-    if (s.dims) {
+    // 信息不足（unknown）：简历没提及、无法判定，不扣分但要让招聘方知道「这几项要人工核对」
+    if (s.level !== '错误' && Array.isArray(s.unknown) && s.unknown.length) {
+      const unknownList = document.createElement('div');
+      unknownList.className = 'mp-gate-list mp-tags';
+      s.unknown.forEach((gate) => {
+        const item = String((gate && gate.item) || '').trim();
+        if (!item) return;
+        const tag = document.createElement('span');
+        tag.className = 'mp-tag-warn';
+        tag.textContent = '待确认 · ' + item;
+        tag.title = (gate.reason || '简历未提及') + '；信息不足，未扣分，建议点开简历人工确认';
+        unknownList.appendChild(tag);
+      });
+      if (unknownList.childNodes.length) info.appendChild(unknownList);
+    }
+
+    // 卡面只留信息充分度指标；四项分与理由收进「评分明细」折叠区（见 buildEvidenceSplit）
+    const fitBreakdown = s.scoreBreakdown || null;
+    const hasCoverage = s.evidenceCoverage != null || (fitBreakdown && s.confidence);
+    if (hasCoverage || s.dims) {
       const dimsEl = document.createElement('div');
       dimsEl.className = 'mp-dims';
-      WEIGHT_KEYS.forEach((k) => {
-        const d = s.dims[k];
-        if (!d) return;
-        const span = document.createElement('span');
-        span.className = 'mp-dim';
-        span.textContent = `${DIM_LABEL[k]}${d.score}`;
-        if (d.reason) span.title = `${DIM_LABEL[k]}：${d.reason}`;
-        dimsEl.appendChild(span);
-      });
-      info.appendChild(dimsEl);
+      if (s.evidenceCoverage != null) {
+        const coverage = document.createElement('span');
+        coverage.className = 'mp-dim';
+        coverage.textContent = `简历信息完整度${s.evidenceCoverage}%`;
+        coverage.title = '简历中可核对的信息占岗位关键要求的比例；低不代表不合适，通常说明简历写得简略，建议点开简历人工确认';
+        dimsEl.appendChild(coverage);
+      }
+      if (fitBreakdown && s.confidence) {
+        const conf = document.createElement('span');
+        conf.className = 'mp-dim';
+        conf.textContent = `判断把握${CONFIDENCE_LABEL[s.confidence] || '中'}`;
+        conf.title = '模型对自己这次判断的把握程度，受简历信息完整度影响';
+        dimsEl.appendChild(conf);
+      }
+      if (!fitBreakdown && s.dims) {
+        WEIGHT_KEYS.forEach((k) => {
+          const d = s.dims[k];
+          if (!d) return;
+          const span = document.createElement('span');
+          span.className = 'mp-dim';
+          span.textContent = `${DIM_LABEL[k]}${d.score}`;
+          if (d.reason) span.title = `${DIM_LABEL[k]}：${d.reason}`;
+          dimsEl.appendChild(span);
+        });
+      }
+      if (dimsEl.childNodes.length) info.appendChild(dimsEl);
     }
 
     if (s.level !== '错误') {
       const cols = MokaMatch.evidenceColumnsFromScore(s);
-      if (cols.left.length || cols.right.length || (cols.evidence && cols.evidence.length)) {
-        info.appendChild(buildEvidenceSplit(view.id, cols));
+      const fitDetail = {
+        breakdown: s.scoreBreakdown || null,
+        confidence: s.confidence || null
+      };
+      const hasCols = cols.left.length || cols.right.length || (cols.evidence && cols.evidence.length);
+      if (hasCols || fitDetail.breakdown) {
+        info.appendChild(buildEvidenceSplit(view.id, cols, fitDetail));
       }
     }
   }

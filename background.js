@@ -886,6 +886,7 @@ function buildDimensionPrompt(profile, spec, jobType, jobJD, hardText, feedbackC
   );
 
   return `请先根据简历归纳经历证据，再对照岗位与重点看评估匹配，并逐条核对手写硬性门槛。禁止跳过经历阅读直接打分。
+评分结果必须使用 scoreBreakdown 四项评分；不要返回旧版 dimensions。
 
 【候选人完整信息】
 ${profile || '（无候选人信息）'}
@@ -903,8 +904,15 @@ ${scoringRules}
   只返回以下 JSON，不要输出多余文字：
 {
   "experienceEvidence": ["与岗位职责直接相关的经历证据"],
-  "matchScore": 0,
-  "handwrittenGateResults": [{"item": "日语 N1", "met": false, "reason": "简历未提及日语能力"}],
+  "scoreBreakdown": {
+    "coreDuty": {"score": 0, "reason": ""},
+    "business": {"score": 0, "reason": ""},
+    "skill": {"score": 0, "reason": ""},
+    "scope": {"score": 0, "reason": ""}
+  },
+  "evidenceCoverage": 0,
+  "confidence": "medium",
+  "handwrittenGateResults": [{"item": "日语 N1", "status": "unknown", "met": false, "reason": "简历未提供可核对证据"}],
   "bonusKeywordResults": [{"item": "作品集", "met": true, "reason": "简历附有可核对作品集"}],
   "highlights": ["亮点1", "亮点2"],
   "concerns": ["主要差距1", "主要差距2"]
@@ -1005,12 +1013,12 @@ function parseDimensionResponse(content) {
   let best = null;
   for (const c of objs) {
     const p = tryParseJson(c);
-    if (p && (p.matchScore != null || p.dimensions)) { best = p; break; }
+    if (p && (p.matchScore != null || p.dimensions || p.scoreBreakdown)) { best = p; break; }
   }
   // 兜底 1：JSON 被截断（花括号未闭合）→ 尝试修复后再解析
   if (!best) {
     const repaired = tryParseJson(repairTruncatedJson(text));
-    if (repaired && (repaired.matchScore != null || repaired.dimensions)) best = repaired;
+    if (repaired && (repaired.matchScore != null || repaired.dimensions || repaired.scoreBreakdown)) best = repaired;
   }
   // 兜底 2：仍失败 → 用正则宽松抽取各维度分数/理由（能救多少救多少）
   if (!best) {
