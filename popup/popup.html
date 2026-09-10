@@ -20,7 +20,7 @@
         <div class="tab-content active" id="screening-tab">
             <section class="panel sec-job">
                 <h3 class="panel-title">
-                    <span class="panel-icon">📋</span>职位信息
+                    <span class="panel-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="12" height="8" rx="1.5"/><path d="M6 5V3.5A1.5 1.5 0 0 1 7.5 2h1A1.5 1.5 0 0 1 10 3.5V5"/></svg></span>职位信息
                     <span class="panel-title-paren">（<button type="button" id="reload-panel" class="btn-link" title="重载侧栏（等于关掉再打开）；会先保存本岗配置">点击刷新</button>）</span>
                 </h3>
 
@@ -55,7 +55,7 @@
             <!-- 简历推荐对象：批量推进用，开筛前在本页确认 -->
             <section class="panel sec-assignee">
                 <h3 class="panel-title">
-                    <span class="panel-icon">🎯</span>简历推荐对象
+                    <span class="panel-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2.2"/><circle cx="8" cy="8" r="0.7" fill="currentColor" stroke="none"/></svg></span>简历推荐对象
                     <span class="panel-title-paren">（<button type="button" id="refresh-assignee" class="btn-link">重新读取</button>）</span>
                 </h3>
                 <div id="assignee-status" class="cond-hint cond-hint-flush">读取中…</div>
@@ -65,7 +65,7 @@
             <!-- 岗位理解：沿用原权重区绿色摘要样式 -->
             <section class="panel sec-understand">
                 <h3 class="panel-title">
-                    <span class="panel-icon">💡</span>岗位理解
+                    <span class="panel-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2a4 4 0 0 1 2.4 7.2c-.5.4-.9 1-.9 1.6v.2H6.5v-.2c0-.6-.4-1.2-.9-1.6A4 4 0 0 1 8 2z"/><path d="M6.5 13.5h3"/></svg></span>岗位理解
                     <span class="panel-title-paren">（<button type="button" id="refresh-job-understanding" class="btn-link">按 JD 刷新</button>）</span>
                 </h3>
                 <div id="jd-understanding" class="jd-understanding hidden"></div>
@@ -75,7 +75,7 @@
             <!-- 硬性门槛：随「按 JD 刷新」联动预填，空项不参与筛选 -->
             <section class="panel sec-gate">
                 <h3 class="panel-title">
-                    <span class="panel-icon">🔒</span>硬性门槛
+                    <span class="panel-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg></span>硬性门槛
                     <span class="panel-title-paren">（空项不参与筛选）</span>
                 </h3>
                 <div id="autofill-note" class="cond-hint cond-hint-flush"></div>
@@ -170,7 +170,7 @@
 
             <!-- 筛选关键词：重点看定义匹配；加分看仅给已可推进候选人加分 -->
             <section class="panel sec-keyword panel-last">
-                <h3 class="panel-title"><span class="panel-icon">✅</span>筛选关键词</h3>
+                <h3 class="panel-title"><span class="panel-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M5.5 8.2l1.8 1.8 3.2-3.6"/></svg></span>筛选关键词</h3>
                 <div class="cond-hint cond-hint-flush" title="重点看：定义经历与 JD 重点直接匹配（只匹配没有证据会挂起）；加分看：有简历证据时每项 +3，最多 +15，且不能把匹配不足 50 的候选人救进可推进">重点看=经历硬匹配；加分看=有证据每项 +3（最多 +15）</div>
                 <div class="cond-row cond-row-wrap">
                     <span class="cond-label">重点看</span>
@@ -262,7 +262,7 @@
         <!-- 设置标签页 -->
         <div class="tab-content" id="settings-tab">
             <section class="panel">
-                <h3 class="panel-title"><span class="panel-icon">🔗</span>连接与模型</h3>
+                <h3 class="panel-title"><span class="panel-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.8 9.2l2.4-2.4"/><path d="M7.3 5.6l1.1-1.1a2.4 2.4 0 0 1 3.4 3.4l-1.1 1.1"/><path d="M8.7 10.4l-1.1 1.1a2.4 2.4 0 0 1-3.4-3.4l1.1-1.1"/></svg></span>连接与模型</h3>
 
                 <div class="form-group">
                     <label for="api-provider">API 提供商</label>
@@ -316,7 +316,7 @@
             <!-- 运行日志：插件完整使用日志（会话级，最近 100 条；清空/复制/导出/筛选/暂停） -->
             <section class="panel panel-log panel-last">
                 <h3 class="panel-title">
-                    <span class="panel-icon">🛠️</span>运行日志
+                    <span class="panel-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></svg></span>运行日志
                     <span class="panel-title-paren">最近 100 条 · 本次浏览器会话有效</span>
                 </h3>
                 <div class="form-group form-group-tight">
@@ -363,7 +363,7 @@
         <!-- 关于标签页 -->
         <div class="tab-content" id="about-tab">
             <section class="panel panel-last">
-                <h3 class="panel-title"><span class="panel-icon">ℹ️</span>关于</h3>
+                <h3 class="panel-title"><span class="panel-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 7.5v3"/><circle cx="8" cy="5.3" r="0.7" fill="currentColor" stroke="none"/></svg></span>关于</h3>
                 <div class="about-content">
                     <p class="about-name"><strong>Moka 智能简历筛选助手</strong></p>
                     <p class="about-version" id="about-version">版本：…</p>

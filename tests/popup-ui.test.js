@@ -323,15 +323,25 @@ describe('screening configuration UI', () => {
   });
 });
 
-describe('screening tab card layout and gate two-column grid', () => {
-  it('tags every config panel with a section class for per-zone tinting', () => {
+describe('screening tab flat sections and gate two-column grid', () => {
+  it('renders config panels as flat sections with per-zone classes kept', () => {
     assert.match(html, /<section class="panel sec-job">/);
     assert.match(html, /<section class="panel sec-assignee">/);
     assert.match(html, /<section class="panel sec-understand">/);
     assert.match(html, /<section class="panel sec-gate">/);
     assert.match(html, /<section class="panel sec-keyword panel-last">/);
-    assert.match(css, /#screening-tab \.sec-job \.panel-icon \{ background: #e6f7ff; \}/);
-    assert.match(css, /#screening-tab \.panel \{[\s\S]{0,300}border-radius: 8px/);
+    // 1.8.2 去卡片壳：分区靠「图标 + 标题 + 细分割线」表达层级，卡片质感只留给 dock 与结果卡
+    assert.match(css, /#screening-tab \.panel \{[\s\S]{0,220}border-bottom: 1px solid var\(--border\)/);
+    assert.match(css, /#screening-tab \.panel \{[\s\S]{0,220}border-radius: 0/);
+    assert.match(css, /#screening-tab \.panel \{[\s\S]{0,220}background: transparent/);
+    // 彩色圆底图标与卡片投影一并移除，防止旧样式回潮
+    assert.doesNotMatch(css, /panel-icon \{ background: #/);
+  });
+
+  it('replaces emoji section icons with monoline SVG icons', () => {
+    const iconCount = (html.match(/<span class="panel-icon"><svg/g) || []).length;
+    assert.equal(iconCount, 8, '8 个分区标题都应使用单色线性 SVG 图标');
+    assert.doesNotMatch(html, /panel-icon">[^<]/, 'panel-icon 里不应再残留 emoji 文本');
   });
 
   it('pairs the four dropdown gates in a 2-column grid and keeps multi-select rows full width', () => {
@@ -346,8 +356,8 @@ describe('screening tab card layout and gate two-column grid', () => {
     assert.match(css, /#screening-tab \.cond-grid \{[\s\S]{0,200}repeat\(2, minmax\(0, 1fr\)\)/);
   });
 
-  it('titles the gate card with 空项不参与筛选 and trims long helper copy', () => {
-    assert.match(html, /panel-icon">🔒<\/span>硬性门槛[\s\S]{0,80}空项不参与筛选/);
+  it('titles the gate section with 空项不参与筛选 and trims long helper copy', () => {
+    assert.match(html, /硬性门槛[\s\S]{0,80}空项不参与筛选/);
     // 旧长文案收进 title / 精简，不再整段摊在面板里
     assert.doesNotMatch(html, /改完点「保存当前筛选条件」，或开筛时自动保存/);
     assert.match(html, /条件会随开筛\/保存自动存，下次进入本岗自动回填/);
@@ -358,10 +368,10 @@ describe('screening tab card layout and gate two-column grid', () => {
 
 describe('settings 运行日志 panel', () => {
   it('rebrands the API card to 连接与模型 and replaces 接口观测 with 运行日志', () => {
-    assert.match(html, /<span class="panel-icon">🔗<\/span>连接与模型/);
-    assert.doesNotMatch(html, /panel-icon">🔗<\/span>API 配置/);
+    assert.match(html, /连接与模型/);
+    assert.doesNotMatch(html, /API 配置/);
     assert.doesNotMatch(html, /接口观测（排查用）/);
-    assert.match(html, /<span class="panel-icon">🛠️<\/span>运行日志/);
+    assert.match(html, /运行日志/);
   });
 
   it('keeps a single snapshot button inside the collapsed 排查工具 details', () => {

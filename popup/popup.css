@@ -22,6 +22,8 @@
   --radius: 6px;
   --radius-sm: 4px;
   --shadow-focus: 0 0 0 2px rgba(24, 144, 255, 0.15);
+  --row-hover-bg: #f6faff;
+  --row-hover-border: #cfe6ff;
 }
 
 * {
@@ -244,7 +246,7 @@ body {
 
 .mp-usage-line {
   margin-top: 3px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
   color: #8c8c8c;
   word-break: break-word;
@@ -589,8 +591,8 @@ body {
 }
 
 .mp-row:hover {
-  background: #f6faff;
-  border-color: #cfe6ff;
+  background: var(--row-hover-bg);
+  border-color: var(--row-hover-border);
 }
 
 .mp-row.scoring {
@@ -615,11 +617,21 @@ body {
   justify-content: center;
   font-size: 18px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .mp-score.pending {
   background: #d9d9d9;
   font-size: 12px;
+}
+
+/* 数字对齐：分数、计数、用量等多行数字用等宽数字，纵向看数不漂 */
+.mp-dim,
+.mp-usage-line,
+.mp-detail-line,
+#progress-count,
+.log-count {
+  font-variant-numeric: tabular-nums;
 }
 
 .mp-info {
@@ -796,7 +808,7 @@ body {
   border-radius: 999px;
   background: #fff8e1;
   color: #9a6700;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.4;
   vertical-align: 1px;
 }
@@ -827,7 +839,7 @@ body {
   border: 1px solid #d6e4ff;
   border-radius: 4px;
   padding: 0 6px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.7;
   cursor: help;
 }
@@ -857,7 +869,7 @@ body {
   border: 0;
   background: none;
   padding: 0;
-  font-size: 10px;
+  font-size: 11px;
   color: #8c8c8c;
   cursor: pointer;
   line-height: 1.4;
@@ -869,7 +881,7 @@ body {
 
 .mp-evidence-arrow {
   display: inline-block;
-  font-size: 10px;
+  font-size: 11px;
   transition: transform 0.15s ease;
 }
 
@@ -910,7 +922,7 @@ body {
 }
 
 .mp-col-title {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   margin-bottom: 4px;
   letter-spacing: 0.02em;
@@ -982,7 +994,7 @@ body {
   border-radius: 3px;
   background: #fff1f0;
   color: #cf1322;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 400;
   line-height: 1.5;
 }
@@ -1036,7 +1048,7 @@ body {
   border: 1px solid #ffccc7;
   border-radius: 4px;
   padding: 1px 6px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.6;
 }
 
@@ -1046,7 +1058,7 @@ body {
   border: 1px solid #ffe58f;
   border-radius: 4px;
   padding: 1px 6px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.6;
 }
 
@@ -1056,7 +1068,7 @@ body {
   border: 1px solid #b7eb8f;
   border-radius: 4px;
   padding: 1px 6px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.6;
 }
 
@@ -1066,7 +1078,7 @@ body {
   border: 1px solid #b7eb8f;
   border-radius: 4px;
   padding: 1px 6px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.6;
 }
 
@@ -1076,7 +1088,7 @@ body {
   border: 1px solid #ffd591;
   border-radius: 4px;
   padding: 1px 6px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.6;
 }
 
@@ -1103,15 +1115,10 @@ body {
   flex-wrap: wrap;
   gap: 4px 6px;
   margin-bottom: 14px;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text);
   line-height: 1.4;
-}
-
-.panel-icon {
-  font-size: 15px;
-  line-height: 1;
 }
 
 .panel-title-action {
@@ -1389,7 +1396,7 @@ select:focus {
 
 .chip-menu-title {
   padding: 2px 6px 4px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
 }
 
@@ -1832,7 +1839,7 @@ select:focus {
 .log-time {
   flex: none;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .log-badge {
@@ -1842,7 +1849,7 @@ select:focus {
   padding: 0 4px;
   border-radius: 3px;
   font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', Roboto, sans-serif;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
   color: #fff;
 }
@@ -1975,45 +1982,43 @@ select:focus {
   margin-bottom: 12px;
 }
 
-/* ===== 配置页卡片化（P1）+ 硬性门槛两列（P2）===== */
+/* ===== 配置页扁平分区（1.8.2：去卡片壳）+ 硬性门槛两列 ===== */
 #screening-tab {
-  padding-top: 12px;
+  padding-top: 4px;
 }
 
+/* 去卡片壳：分区不再整块描边加底，靠「图标 + 标题 + 细分割线」表达层级；
+   卡片质感只留给 dock 与结果卡 */
 #screening-tab .panel {
-  padding: 14px;
-  margin-bottom: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-panel);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  padding: 14px 0 16px;
+  margin-bottom: 0;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 #screening-tab .panel.panel-last {
-  margin-bottom: 0;
+  border-bottom: none;
 }
 
 #screening-tab .panel-title {
   margin-bottom: 12px;
 }
 
-/* 标题图标圆形浅色底：每区一色，弱化 emoji 裸放的单薄感 */
-#screening-tab .panel-icon {
+/* 分区图标：单色线性 SVG，跟随文字色；不再用彩色圆底 */
+.panel-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  font-size: 13px;
+  color: var(--text-secondary);
   flex: none;
 }
 
-#screening-tab .sec-job .panel-icon { background: #e6f7ff; }
-#screening-tab .sec-assignee .panel-icon { background: #f9f0ff; }
-#screening-tab .sec-understand .panel-icon { background: #fff7e6; }
-#screening-tab .sec-gate .panel-icon { background: #e6fffb; }
-#screening-tab .sec-keyword .panel-icon { background: #f6ffed; }
+.panel-icon svg {
+  display: block;
+}
 
 /* 硬性门槛：下拉类字段两两并排（学历|性别、经验|实习），整行留给多选/输入类 */
 #screening-tab .cond-grid {
