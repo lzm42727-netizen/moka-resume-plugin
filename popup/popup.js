@@ -1151,16 +1151,79 @@ document.getElementById('refresh-job-understanding')?.addEventListener('click', 
   });
 });
 
-// API 提供商切换时联动默认 Endpoint 占位
-safeEl('api-provider')?.addEventListener('change', (e) => {
-  const endpoint = document.getElementById('api-endpoint');
-  const map = {
-    openai: 'https://api.openai.com/v1/chat/completions',
-    claude: 'https://api.anthropic.com/v1/messages',
-    custom: '请填写你的自定义 API Endpoint'
-  };
-  endpoint.placeholder = map[e.target.value] || map.openai;
-});
+/* ==================== 连接配置：接口协议 + 自由提供商 + 预设 ====================
+ * 四项（协议 / 提供商 / Endpoint / Key / 模型）都可自由填写：
+ * - 接口协议是唯一硬约束（决定请求体、鉴权头、响应解析），只有 OpenAI 兼容 / Anthropic 两个值；
+ * - 提供商仅作标签与预设入口，填什么都行；
+ * - Endpoint 常显可编辑；Key 与模型名本就是文本框。
+ */
+const API_PRESETS = [
+  { name: 'OpenAI', protocol: 'openai', endpoint: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4o' },
+  { name: 'Anthropic Claude', protocol: 'claude', endpoint: 'https://api.anthropic.com/v1/messages', model: 'claude-3-5-sonnet-latest' },
+  { name: 'DeepSeek', protocol: 'openai', endpoint: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  { name: 'MiniMax', protocol: 'openai', endpoint: 'https://api.minimaxi.com/v1', model: 'MiniMax-M2.7' },
+  { name: '阿里通义千问', protocol: 'openai', endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
+  { name: '智谱 GLM', protocol: 'openai', endpoint: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-plus' },
+  { name: '本地 Ollama', protocol: 'openai', endpoint: 'http://localhost:11434/v1', model: 'qwen2.5:7b' },
+  { name: '自建 / 中转网关', protocol: 'openai', endpoint: '', model: '' }
+];
+
+const PROTOCOL_DEFAULT_ENDPOINT = {
+  openai: 'https://api.openai.com/v1/chat/completions',
+  claude: 'https://api.anthropic.com/v1/messages'
+};
+
+/** 协议切换时更新 Endpoint 占位；地址为空则顺手填上该协议的默认地址 */
+function syncEndpointPlaceholder() {
+  const protocolEl = document.getElementById('api-protocol');
+  const endpointEl = document.getElementById('api-endpoint');
+  if (!protocolEl || !endpointEl) return;
+  const protocol = protocolEl.value === 'claude' ? 'claude' : 'openai';
+  const fallback = PROTOCOL_DEFAULT_ENDPOINT[protocol];
+  endpointEl.placeholder = fallback;
+  if (!endpointEl.value.trim()) endpointEl.value = fallback;
+}
+
+/** 预填选项：数据源是 API_PRESETS，HTML 里只留一个空 datalist */
+function fillProviderPresets() {
+  const list = document.getElementById('api-provider-presets');
+  if (!list) return;
+  list.textContent = '';
+  API_PRESETS.forEach((p) => {
+    const opt = document.createElement('option');
+    opt.value = p.name;
+    list.appendChild(opt);
+  });
+}
+
+/** 选中/输入到预设名时，把协议、Endpoint、模型名一并填好（用户之后仍可手改）
+ *  预设未提供 Endpoint/模型（如「自建 / 中转网关」）时保持原值不动，避免清空用户已填内容 */
+function applyApiPreset(name) {
+  const key = String(name || '').trim().toLowerCase();
+  if (!key) return;
+  const preset = API_PRESETS.find((p) => p.name.toLowerCase() === key);
+  if (!preset) return;
+  const protocolEl = document.getElementById('api-protocol');
+  const endpointEl = document.getElementById('api-endpoint');
+  const modelEl = document.getElementById('model-name');
+  if (protocolEl) protocolEl.value = preset.protocol;
+  if (endpointEl && preset.endpoint) {
+    endpointEl.value = preset.endpoint;
+    endpointEl.placeholder = preset.endpoint;
+  }
+  if (modelEl && preset.model) modelEl.value = preset.model;
+}
+
+/** 老配置的 provider 值（openai/claude/custom）迁移成显示名；已是自由文本则原样保留 */
+function providerLabelFromLegacy(value) {
+  const v = String(value == null ? '' : value).trim();
+  if (!v) return '';
+  const map = { openai: 'OpenAI', claude: 'Anthropic Claude', custom: '自建 / 中转网关' };
+  return map[v.toLowerCase()] || v;
+}
+
+safeEl('api-protocol')?.addEventListener('change', syncEndpointPlaceholder);
+safeEl('api-provider')?.addEventListener('input', (e) => applyApiPreset(e.target.value));
 
 // API Key 显示/隐藏切换（图标用 CSS 切换睁眼/闭眼，不再操作 emoji 文本）
 safeEl('toggle-api-key')?.addEventListener('click', function () {
@@ -1179,15 +1242,24 @@ const LOCAL_FORCED = (typeof window !== 'undefined' && window.MOKA_LOCAL_SETTING
 
 function applyLocalForced() {
   if (!LOCAL_FORCED || !Object.keys(LOCAL_FORCED).length) return;
-  const map = { apiProvider: 'api-provider', apiEndpoint: 'api-endpoint', modelName: 'model-name' };
+  const map = { apiProtocol: 'api-protocol', apiProvider: 'api-provider', apiEndpoint: 'api-endpoint', modelName: 'model-name' };
   Object.entries(map).forEach(([k, id]) => {
     if (LOCAL_FORCED[k] == null) return;
     const el = document.getElementById(id);
     if (!el) return;
-    el.value = LOCAL_FORCED[k];
+    el.value = k === 'apiProvider' ? providerLabelFromLegacy(LOCAL_FORCED[k]) : LOCAL_FORCED[k];
     el.disabled = true;
     el.title = '已由本地私有配置锁定';
   });
+  // 旧私有配置只写了 apiProvider：按同一套迁移规则补出协议
+  if (LOCAL_FORCED.apiProtocol == null && LOCAL_FORCED.apiProvider != null) {
+    const protocolEl = document.getElementById('api-protocol');
+    if (protocolEl) {
+      protocolEl.value = LOCAL_FORCED.apiProvider === 'claude' ? 'claude' : 'openai';
+      protocolEl.disabled = true;
+      protocolEl.title = '已由本地私有配置锁定';
+    }
+  }
 }
 
 function readSettingsForm() {
@@ -1196,7 +1268,8 @@ function readSettingsForm() {
     ? Math.min(8, Math.max(1, Math.round(rawConcurrency)))
     : 6;
   return {
-    apiProvider: document.getElementById('api-provider').value,
+    apiProtocol: document.getElementById('api-protocol')?.value === 'claude' ? 'claude' : 'openai',
+    apiProvider: document.getElementById('api-provider').value.trim(),
     apiEndpoint: document.getElementById('api-endpoint').value.trim(),
     apiKey: document.getElementById('api-key').value,
     modelName: document.getElementById('model-name').value.trim(),
@@ -1273,15 +1346,8 @@ safeEl('save-settings')?.addEventListener('click', async () => {
   });
 });
 
-/** Endpoint 只在「自定义 API」时需要改：OpenAI/Claude 隐藏整组，减少界面干扰 */
-function applyProviderVisibility() {
-  const group = document.getElementById('endpoint-group');
-  if (!group) return;
-  const provider = document.getElementById('api-provider')?.value || 'openai';
-  group.hidden = provider !== 'custom';
-}
-
-document.getElementById('api-provider')?.addEventListener('change', applyProviderVisibility);
+// Endpoint 从 1.8.9 起常显可编辑：OpenAI 官方、中转、自建、本地服务都可能是任意地址，
+// 不再按提供商隐藏整组（旧的按提供商显隐那套逻辑已删除）。
 
 function showTestResult(message, type) {
   const resultDiv = document.getElementById('test-result');
@@ -1579,8 +1645,15 @@ async function loadSettings() {
     const result = await chrome.storage.local.get('mokaSettings');
     if (result.mokaSettings) {
       const s = result.mokaSettings;
-      document.getElementById('api-provider').value = s.apiProvider || 'openai';
-      document.getElementById('api-endpoint').value = s.apiEndpoint || 'https://api.openai.com/v1/chat/completions';
+      // 1.8.9 迁移：老配置只有 apiProvider（openai/claude/custom），拆成「接口协议 + 提供商标签」
+      const protocolEl = document.getElementById('api-protocol');
+      if (protocolEl) {
+        const legacyClaude = !s.apiProtocol && s.apiProvider === 'claude';
+        protocolEl.value = (s.apiProtocol === 'claude' || legacyClaude) ? 'claude' : 'openai';
+      }
+      document.getElementById('api-provider').value = providerLabelFromLegacy(s.apiProvider);
+      document.getElementById('api-endpoint').value = s.apiEndpoint
+        || PROTOCOL_DEFAULT_ENDPOINT[(protocolEl && protocolEl.value) === 'claude' ? 'claude' : 'openai'];
       document.getElementById('api-key').value = s.apiKey || '';
       document.getElementById('model-name').value = s.modelName || 'gpt-4o';
       document.getElementById('model-input-price').value = s.modelInputPrice != null ? s.modelInputPrice : '';
@@ -1603,8 +1676,9 @@ async function loadSettings() {
   } catch (error) {
     console.error('加载设置失败:', error);
   }
-  applyLocalForced(); // 本地私有配置：覆盖并锁定 provider/endpoint/model
-  applyProviderVisibility(); // 按当前提供商决定是否显示 Endpoint
+  applyLocalForced(); // 本地私有配置：覆盖并锁定协议/提供商/endpoint/模型
+  fillProviderPresets(); // 提供商输入框的常用服务候选（可自由填写，不限于候选）
+  syncEndpointPlaceholder(); // 按协议更新 Endpoint 占位；地址为空时才补默认值
 }
 
 // 获取当前窗口活动标签；侧栏点操作时活动标签通常仍是 Moka

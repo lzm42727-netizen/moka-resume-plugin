@@ -308,16 +308,17 @@
         <li>切换到 <b>设置</b> 标签页。</li>
         <li>填写：
           <ul>
-            <li><b>API 提供商</b>：OpenAI / Claude / 自定义（OpenAI 兼容接口选「自定义」）</li>
-            <li><b>API Endpoint</b>：如 <code>https://api.openai.com/v1</code> 或你们内网路由地址；插件会自动补全 <code>/chat/completions</code></li>
+            <li><b>接口协议</b>：<b>OpenAI 兼容</b>（大多数中转、自建网关、本地模型选这个）或 <b>Anthropic Claude</b></li>
+            <li><b>API 提供商</b>：可自由填写；从常用服务里选一个会自动带出 Endpoint 与模型名，之后仍可任意改</li>
+            <li><b>API Endpoint</b>：完整地址，如 <code>https://api.openai.com/v1</code> 或你们内网路由地址；只填到 <code>/v1</code> 时会自动补全 <code>/chat/completions</code></li>
             <li><b>API Key</b>：你的密钥</li>
             <li><b>模型名称</b>：如 <code>gpt-4o</code>、或内网模型名</li>
           </ul>
         </li>
-        <li>先点 <b>🧪 测试 API</b>，成功后再点 <b>💾 保存设置</b>。</li>
+        <li>点 <b>💾 保存并测试</b>，保存后会自动测一次连接，结果直接显示在按钮下方。</li>
       </ol>
       <div class="callout info">
-        <b>本地私有配置：</b>若你本地有 <code>config.local.js</code>（不入库），提供商 / Endpoint / 模型可能被锁定为内网值，只需填写 API Key 即可。
+        <b>本地私有配置：</b>若你本地有 <code>config.local.js</code>（不入库），协议 / 提供商 / Endpoint / 模型可能被锁定为内网值，只需填写 API Key 即可。
       </div>
     </section>
 

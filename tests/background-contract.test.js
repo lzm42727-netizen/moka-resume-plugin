@@ -132,9 +132,9 @@ describe('plugin run log (会话级运行日志) contract', () => {
 });
 
 describe('v1.8.5 JSON 模式、截断处置与并发设置', () => {
-  it('JSON mode：官方 OpenAI 恒开；custom 由设置开关控制（默认开）', () => {
+  it('JSON mode：OpenAI 兼容协议且开关打开（默认开）才带 response_format', () => {
     assert.match(bg, /forceJsonMode: true/);
-    assert.match(bg, /provider === 'openai' \|\| \(provider === 'custom' && settings\.forceJsonMode !== false\)/);
+    assert.match(bg, /&& provider === 'openai'\s*\n\s*&& settings\.forceJsonMode !== false;/);
     assert.match(bg, /if \(jsonMode\) \{\s*\n\s*body\.response_format = \{ type: 'json_object' \}/);
   });
 
@@ -213,5 +213,28 @@ describe('v1.8.6 超时策略与失败分类', () => {
     assert.match(bg, /const kind = classifyLlmError\(error\)/);
     assert.match(bg, /score: MokaScore\.scoreErrorResult\(msg, kind\)/);
     assert.match(bg, /meta: \{ cacheHit: false, model: settings\.modelName, errorKind: kind, calls: 0 \}/);
+  });
+});
+
+describe('v1.8.9 接口协议与自由提供商', () => {
+  it('默认设置新增 apiProtocol，提供商降级为自由标签', () => {
+    assert.match(bg, /apiProtocol: 'openai',/);
+    assert.match(bg, /apiProvider: '',/);
+    assert.match(bg, /const provider = resolveApiProtocol\(settings\);/);
+  });
+
+  it('协议解析优先 apiProtocol，老配置按 apiProvider 迁移', () => {
+    assert.match(bg, /function resolveApiProtocol\(settings\)/);
+    assert.match(bg, /if \(s\.apiProtocol === 'claude' \|\| s\.apiProtocol === 'openai'\) return s\.apiProtocol;/);
+    // 老配置只有 apiProvider：claude → claude，openai/custom/自由文本 → openai 兼容
+    assert.match(bg, /return String\(s\.apiProvider \|\| ''\)\.trim\(\)\.toLowerCase\(\) === 'claude' \? 'claude' : 'openai';/);
+    // provider 不再参与 jsonMode 判定（协议即事实来源）
+    assert.doesNotMatch(bg, /provider === 'custom'/);
+  });
+
+  it('Claude 协议仍走 /v1/messages + x-api-key，Endpoint 可被任意覆盖', () => {
+    assert.match(bg, /url: settings\.apiEndpoint \|\| 'https:\/\/api\.anthropic\.com\/v1\/messages'/);
+    assert.match(bg, /'x-api-key': settings\.apiKey,/);
+    assert.match(bg, /url: normalizeChatEndpoint\(settings\.apiEndpoint\)/);
   });
 });

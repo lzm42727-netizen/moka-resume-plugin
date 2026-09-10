@@ -265,19 +265,26 @@
                 <h3 class="panel-title"><span class="panel-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.8 9.2l2.4-2.4"/><path d="M7.3 5.6l1.1-1.1a2.4 2.4 0 0 1 3.4 3.4l-1.1 1.1"/><path d="M8.7 10.4l-1.1 1.1a2.4 2.4 0 0 1-3.4-3.4l1.1-1.1"/></svg></span>连接与模型</h3>
 
                 <div class="form-group">
-                    <label for="api-provider">API 提供商</label>
-                    <select id="api-provider">
-                        <option value="openai">OpenAI</option>
-                        <option value="claude">Claude</option>
-                        <option value="custom">自定义 API</option>
+                    <label for="api-protocol">接口协议</label>
+                    <select id="api-protocol">
+                        <option value="openai">OpenAI 兼容（/chat/completions）</option>
+                        <option value="claude">Anthropic Claude（/v1/messages）</option>
                     </select>
+                    <small>决定请求格式与鉴权头；自建网关、中转、本地模型多选 OpenAI 兼容</small>
                 </div>
 
-                <!-- 中转/自建才需要改 Endpoint：选 OpenAI/Claude 时整组隐藏，减少干扰 -->
-                <div class="form-group" id="endpoint-group" hidden>
+                <div class="form-group">
+                    <label for="api-provider">API 提供商</label>
+                    <input type="text" id="api-provider" list="api-provider-presets" placeholder="可自由填写，如 OpenAI / DeepSeek / 企业网关" class="input-field">
+                    <datalist id="api-provider-presets"></datalist>
+                    <small>选一个常用服务会自动填好 Endpoint 与模型名，之后仍可任意手改</small>
+                </div>
+
+                <!-- Endpoint 常显可编辑：OpenAI 官方地址、中转、自建、本地服务都能填 -->
+                <div class="form-group" id="endpoint-group">
                     <label for="api-endpoint">API Endpoint</label>
                     <input type="text" id="api-endpoint" placeholder="https://api.openai.com/v1/chat/completions" class="input-field">
-                    <small>中转/自建服务填 OpenAI 兼容的完整地址；保存时会申请访问该域名</small>
+                    <small>填完整地址；只填到 /v1 会自动补 /chat/completions。保存时会申请访问该域名</small>
                 </div>
 
                 <div class="form-group">

@@ -57,7 +57,10 @@ function storeSet(items, context) {
 }
 
 const DEFAULT_SETTINGS = {
-  apiProvider: 'openai',
+  // 接口协议（唯一硬约束）：openai = /chat/completions + Bearer；claude = /v1/messages + x-api-key
+  apiProtocol: 'openai',
+  // 提供商仅作标签/预设入口，可自由填写（1.8.9 起不再是枚举）
+  apiProvider: '',
   apiEndpoint: 'https://api.openai.com/v1/chat/completions',
   apiKey: '',
   modelName: 'gpt-4o',
@@ -695,11 +698,22 @@ async function handleTestApi(inputSettings) {
 }
 
 /**
- * 调用 LLM（自动按 provider 适配、带指数退避重试）
+ * 解析接口协议（openai | claude）——请求体、鉴权头、响应解析都由它决定。
+ * 1.8.9 起首选 settings.apiProtocol；老配置没有该字段时按旧的 apiProvider 迁移
+ * （'claude' → claude；openai/custom 及任何自由文本 → openai 兼容）。
+ */
+function resolveApiProtocol(settings) {
+  const s = settings || {};
+  if (s.apiProtocol === 'claude' || s.apiProtocol === 'openai') return s.apiProtocol;
+  return String(s.apiProvider || '').trim().toLowerCase() === 'claude' ? 'claude' : 'openai';
+}
+
+/**
+ * 调用 LLM（自动按协议适配、带指数退避重试）
  * 返回 { content, usage, finishReason }：finishReason 用于识别输出被截断（length/max_tokens）
  */
 async function callLLM(settings, systemPrompt, userPrompt, opts = {}) {
-  const provider = settings.apiProvider || 'openai';
+  const provider = resolveApiProtocol(settings);
   let req = buildRequest(provider, settings, systemPrompt, userPrompt, opts);
   const jsonModeActive = !!(req.body && req.body.response_format);
   let jsonModeDegraded = false;
@@ -811,11 +825,12 @@ function buildRequest(provider, settings, systemPrompt, userPrompt, opts) {
   const temperature = typeof opts.temperature === 'number' ? opts.temperature : 0.7;
   const forceJson = opts.forceJson !== false; // 默认要求返回 JSON
 
-  // JSON mode：官方 OpenAI 恒开；custom（自建/中转，OpenAI 兼容）由设置开关控制，
-  // 网关拒绝时 callLLM 会自动去掉该参数降级重试一次。
+  // JSON mode：OpenAI 兼容协议由设置开关控制（默认开）；网关不支持时 callLLM 会自动
+  // 去掉该参数降级重试一次。Claude 协议走 tool/文本约束，不带 response_format。
   const jsonMode = forceJson
     && opts.jsonMode !== false
-    && (provider === 'openai' || (provider === 'custom' && settings.forceJsonMode !== false));
+    && provider === 'openai'
+    && settings.forceJsonMode !== false;
 
   if (provider === 'claude') {
     return {
@@ -837,7 +852,7 @@ function buildRequest(provider, settings, systemPrompt, userPrompt, opts) {
     };
   }
 
-  // openai 与 custom（默认按 OpenAI 兼容协议处理，适配 Ollama 等本地服务）
+  // openai 协议分支：官方 OpenAI、中转、自建网关、本地 Ollama 等都走这套请求体
   const body = {
     model: settings.modelName || 'gpt-4o',
     messages: [

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.8.9 - 2026-09-10
+
+- **连接配置全面自由化**：新增「接口协议」二选一（OpenAI 兼容 / Anthropic Claude）作为唯一的硬约束；「API 提供商」从三选一下拉改为**自由文本框**，只作标签，选常用服务（OpenAI / Claude / DeepSeek / MiniMax / 通义 / GLM / 本地 Ollama / 自建中转）时自动带出 Endpoint 与模型名，之后仍可任意手改
+- **API Endpoint 常显可编辑**：此前只在选「自定义 API」时显示，OpenAI/Claude 下地址改不了；现在任何协议/提供商下都能填任意地址（官方、中转、自建、本地 localhost），只填到 `/v1` 会自动补 `/chat/completions`
+- **老配置自动迁移**：旧 `apiProvider`（openai/claude/custom）映射为「协议 + 提供商标签」（claude → Claude 协议，openai/custom → OpenAI 兼容），Endpoint、Key、模型名原值保留，无需重填；本地私有配置 `config.local.js` 同步支持 `apiProtocol`，只写老字段也能用
+- JSON 模式判定改为跟随协议（OpenAI 兼容 + 开关开启，默认开），不再依赖「自定义」这个枚举值
+- 测试 459 → 463（协议解析与迁移、Endpoint 常显、预设与占位联动）；`npm run check` 全绿
+
 ## 1.8.8 - 2026-09-10
 
 - **结果页首行改版**：原「用量：LLM 调用 3 次 · 输入 7,820 / 输出 16,656 tokens · 约 ¥0.156」改为「**用时 2 分 41 秒 · 预估花费 ¥0.156**」——调用次数与 token 是排障信息，收进运行日志与筛选中的进度行，结果页只留日常关心的耗时与费用

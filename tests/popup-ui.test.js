@@ -454,11 +454,32 @@ describe('settings 运行日志 panel', () => {
 });
 
 describe('settings UI de-clutter (endpoint visibility / advanced fold / save-and-test / icon toolbar)', () => {
-  it('hides the Endpoint group unless 自定义 API is selected', () => {
-    assert.match(html, /<div class="form-group" id="endpoint-group" hidden>/);
-    assert.match(js, /function applyProviderVisibility[\s\S]{0,200}group\.hidden = provider !== 'custom'/);
-    assert.match(js, /api-provider'\)\?\.addEventListener\('change', applyProviderVisibility\)/);
-    assert.match(js, /applyLocalForced\(\);[\s\S]{0,80}applyProviderVisibility\(\);/);
+  it('1.8.9 起 Endpoint 常显可编辑，「接口协议 + 自由提供商」取代三选一', () => {
+    // Endpoint 组不再按提供商隐藏（旧 applyProviderVisibility 已删）
+    assert.match(html, /<div class="form-group" id="endpoint-group">/);
+    assert.doesNotMatch(html, /id="endpoint-group" hidden/);
+    assert.doesNotMatch(js, /applyProviderVisibility/);
+    // 协议是唯一硬约束，只有 openai / claude 两个值
+    assert.match(html, /<select id="api-protocol">[\s\S]{0,200}<option value="openai">/);
+    assert.match(html, /<option value="claude">/);
+    // 提供商改为自由文本 + datalist 预设，不再是三选一 select
+    assert.match(html, /<input type="text" id="api-provider" list="api-provider-presets"/);
+    assert.doesNotMatch(html, /<select id="api-provider">/);
+    assert.match(js, /const API_PRESETS = \[/);
+    assert.match(js, /function fillProviderPresets\(\)/);
+    assert.match(js, /function applyApiPreset\(name\)/);
+    assert.match(js, /api-provider'\)\?\.addEventListener\('input', \(e\) => applyApiPreset\(e\.target\.value\)\)/);
+    // 协议切换联动 Endpoint 占位/默认值
+    assert.match(js, /api-protocol'\)\?\.addEventListener\('change', syncEndpointPlaceholder\)/);
+    assert.match(js, /applyLocalForced\(\);[\s\S]{0,140}fillProviderPresets\(\);[\s\S]{0,120}syncEndpointPlaceholder\(\);/);
+  });
+
+  it('老配置自动迁移：只有 apiProvider 时也能还原出协议与提供商名', () => {
+    assert.match(js, /function providerLabelFromLegacy\(value\)/);
+    assert.match(js, /openai: 'OpenAI', claude: 'Anthropic Claude', custom: '自建 \/ 中转网关'/);
+    assert.match(js, /const legacyClaude = !s\.apiProtocol && s\.apiProvider === 'claude'/);
+    assert.match(js, /protocolEl\.value = \(s\.apiProtocol === 'claude' \|\| legacyClaude\) \? 'claude' : 'openai'/);
+    assert.match(js, /apiProtocol: document\.getElementById\('api-protocol'\)\?\.value === 'claude' \? 'claude' : 'openai'/);
   });
 
   it('folds the optional custom price into an 高级 · 费用估算 details', () => {
