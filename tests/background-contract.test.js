@@ -239,14 +239,16 @@ describe('v1.8.9 接口协议与自由提供商', () => {
   });
 });
 
-describe('v1.9.0 本地私有配置降为默认值', () => {
-  it('本地配置只做兜底：优先级 内置默认 < 本地 < 用户保存值', () => {
-    assert.match(bg, /function localDefaultSettings\(\)/);
-    assert.match(bg, /resolve\(\{ \.\.\.DEFAULT_SETTINGS, \.\.\.localDefaultSettings\(\), \.\.\.\(result\.mokaSettings \|\| \{\}\) \}\)/);
+describe('v1.9.1 本地私有配置：连接三项锁定、模型名可改', () => {
+  it('协议/提供商/Endpoint 由本地配置强制覆盖（私网地址不被误改）', () => {
+    assert.match(bg, /const LOCAL_LOCKED_KEYS = \['apiProtocol', 'apiProvider', 'apiEndpoint'\]/);
+    assert.match(bg, /LOCAL_LOCKED_KEYS\.forEach\(\(k\) => \{[\s\S]{0,80}out\[k\] = local\[k\];/);
     assert.doesNotMatch(bg, /localForcedSettings/);
   });
 
-  it('测试连接同样让表单值压过本地配置（否则改了也测不出真实效果）', () => {
-    assert.match(bg, /const settings = \{ \.\.\.DEFAULT_SETTINGS, \.\.\.localDefaultSettings\(\), \.\.\.\(inputSettings \|\| \{\}\) \}/);
+  it('模型名等其余字段只作兜底：调用方给了就优先（默认值合并）', () => {
+    assert.match(bg, /const out = \{ \.\.\.DEFAULT_SETTINGS, \.\.\.local, \.\.\.\(input \|\| \{\}\) \}/);
+    assert.match(bg, /resolve\(withLocalSettings\(result\.mokaSettings\)\)/);
+    assert.match(bg, /const settings = withLocalSettings\(inputSettings\);/);
   });
 });

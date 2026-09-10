@@ -32,9 +32,25 @@ safeImportScripts('lib/feedback.js');
 safeImportScripts('lib/screening-job.js');
 safeImportScripts('lib/usage.js');
 safeImportScripts('lib/plugin-log.js');
-/** 本地私有配置（config.local.js）：1.9.0 起只作「默认值兜底」，不再强制覆盖已保存设置 */
-function localDefaultSettings() {
+/** 本地私有配置（config.local.js）：三项连接信息强制覆盖，其余只作默认值兜底 */
+const LOCAL_LOCKED_KEYS = ['apiProtocol', 'apiProvider', 'apiEndpoint'];
+
+function localPrivateSettings() {
   return (typeof self !== 'undefined' && self.MOKA_LOCAL_SETTINGS) ? self.MOKA_LOCAL_SETTINGS : {};
+}
+
+/**
+ * 合并本地私有配置：
+ * - 先把它当默认值（用户/存储里有值就覆盖它）——模型名、单价等因此始终可改；
+ * - 再把协议/提供商/Endpoint 按本地值锁回去（私网地址不允许被界面误改）。
+ */
+function withLocalSettings(input) {
+  const local = localPrivateSettings();
+  const out = { ...DEFAULT_SETTINGS, ...local, ...(input || {}) };
+  LOCAL_LOCKED_KEYS.forEach((k) => {
+    if (local[k] != null) out[k] = local[k];
+  });
+  return out;
 }
 
 /** 存储写入统一封装（P1-10）：失败读 lastError / 捕获异常并 console.error，不再静默丢数据。
@@ -685,7 +701,7 @@ async function getModelPriceInfo() {
  * 测试 API 连接
  */
 async function handleTestApi(inputSettings) {
-  const settings = { ...DEFAULT_SETTINGS, ...localDefaultSettings(), ...(inputSettings || {}) };
+  const settings = withLocalSettings(inputSettings);
   if (!settings.apiKey) {
     return { ok: false, error: '请输入 API Key' };
   }
@@ -1370,8 +1386,8 @@ async function safeText(response) {
 function getSettings() {
   return new Promise((resolve) => {
     chrome.storage.local.get('mokaSettings', (result) => {
-      // 优先级：内置默认 < 本地私有配置（兜底） < 用户在设置页保存的值
-      resolve({ ...DEFAULT_SETTINGS, ...localDefaultSettings(), ...(result.mokaSettings || {}) });
+      // 本地私有配置：协议/提供商/Endpoint 强制覆盖；模型名等其余字段以用户保存的为准
+      resolve(withLocalSettings(result.mokaSettings));
     });
   });
 }

@@ -1237,10 +1237,25 @@ safeEl('toggle-api-key')?.addEventListener('click', function () {
   }
 });
 
-/* 本地私有配置（config.local.js，已 gitignore）：1.9.0 起只作「默认值兜底」——
- * 已保存的设置优先，本地值既不被写进界面锁定、也不会覆盖用户改动。
- * 排序与后台 getSettings 一致：DEFAULT_SETTINGS < 本地配置 < 存储里的设置。 */
+/* 本地私有配置（config.local.js，已 gitignore）：
+ * - 接口协议 / API 提供商 / Endpoint 三项：锁为本地私网值（置灰不可改，后台也强制覆盖），避免误改；
+ * - 其余（模型名、单价等）只作默认值兜底：本地没写才用，写过的以设置页为准，随时可改。
+ * 排序与后台一致：DEFAULT_SETTINGS < 本地配置 < 存储里的设置。 */
 const LOCAL_DEFAULTS = (typeof window !== 'undefined' && window.MOKA_LOCAL_SETTINGS) ? window.MOKA_LOCAL_SETTINGS : {};
+
+/** 锁定本地私有配置里的连接三项（模型名与 API Key 仍可自由修改） */
+function lockLocalConnection() {
+  if (!LOCAL_DEFAULTS || !Object.keys(LOCAL_DEFAULTS).length) return;
+  const map = { apiProtocol: 'api-protocol', apiProvider: 'api-provider', apiEndpoint: 'api-endpoint' };
+  Object.entries(map).forEach(([k, id]) => {
+    if (LOCAL_DEFAULTS[k] == null) return;
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.value = k === 'apiProvider' ? providerLabelFromLegacy(LOCAL_DEFAULTS[k]) : LOCAL_DEFAULTS[k];
+    el.disabled = true;
+    el.title = '已由本地私有配置锁定，如需修改请编辑 config.local.js';
+  });
+}
 
 function readSettingsForm() {
   const rawConcurrency = Number(document.getElementById('score-concurrency')?.value || 0);
@@ -1648,6 +1663,7 @@ async function loadSettings() {
   } catch (error) {
     console.error('加载设置失败:', error);
   }
+  lockLocalConnection(); // 协议/提供商/Endpoint 由本地私有配置锁定（模型名与 Key 可改）
   fillProviderPresets(); // 提供商输入框的常用服务候选（可自由填写，不限于候选）
   syncEndpointPlaceholder(); // 按协议更新 Endpoint 占位；地址为空时才补默认值
 }

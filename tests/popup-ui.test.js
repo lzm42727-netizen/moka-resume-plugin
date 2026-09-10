@@ -474,14 +474,17 @@ describe('settings UI de-clutter (endpoint visibility / advanced fold / save-and
     assert.match(js, /fillProviderPresets\(\);[\s\S]{0,120}syncEndpointPlaceholder\(\);/);
   });
 
-  it('1.9.0 本地私有配置降为默认值：不锁定、不覆盖设置页的值', () => {
-    // 本地配置只参与合并，且排在存储设置之前（存储优先）
+  it('1.9.1 本地私有配置：连接三项锁定，模型名仍可改', () => {
+    // 本地配置先当默认值参与合并（所以模型名可被设置页覆盖）
     assert.match(js, /const LOCAL_DEFAULTS = \(typeof window !== 'undefined' && window\.MOKA_LOCAL_SETTINGS\)/);
     assert.match(js, /const s = \{ \.\.\.LOCAL_DEFAULTS, \.\.\.\(result\.mokaSettings \|\| \{\}\) \}/);
-    // 不再置灰锁定，表单读取也不再被本地值覆盖
-    assert.doesNotMatch(js, /applyLocalForced/);
-    assert.doesNotMatch(js, /已由本地私有配置锁定/);
-    assert.doesNotMatch(js, /\.\.\.LOCAL_FORCED/);
+    // 连接三项锁回去（置灰 + 提示改文件）
+    assert.match(js, /function lockLocalConnection\(\)/);
+    assert.match(js, /const map = \{ apiProtocol: 'api-protocol', apiProvider: 'api-provider', apiEndpoint: 'api-endpoint' \}/);
+    assert.match(js, /已由本地私有配置锁定，如需修改请编辑 config\.local\.js/);
+    // 模型名不在锁定名单里
+    assert.doesNotMatch(js, /modelName: 'model-name'/);
+    assert.match(js, /lockLocalConnection\(\);[\s\S]{0,120}fillProviderPresets\(\);/);
   });
 
   it('老配置自动迁移：只有 apiProvider 时也能还原出协议与提供商名', () => {
