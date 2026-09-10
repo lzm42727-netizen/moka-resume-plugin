@@ -2509,6 +2509,7 @@ window.addEventListener('load', async () => {
 
 const DIM_LABEL = { experience: '经验', skill: '技能', education: '教育', potential: '潜力' };
 const FIT_LABEL = { coreDuty: '核心职责', business: '业务场景', skill: '专业技能', scope: '责任范围' };
+const FIT_WEIGHT_PCT = { coreDuty: 40, business: 25, skill: 20, scope: 15 };
 const CONFIDENCE_LABEL = { high: '高', medium: '中', low: '低' };
 const ROW_STAGE = { enrich: '① 补全经历…', score: '② AI 评分中…' };
 
@@ -3145,8 +3146,14 @@ function buildEvidenceSplit(appId, cols, fitDetail) {
       const body = document.createElement('div');
       body.className = 'mp-miss-text';
       const mark = document.createElement('span');
-      mark.className = 'mp-mark no';
-      mark.textContent = r.kind === 'waived' ? '○' : '✕';
+      if (r.kind === 'unmet') {
+        // 门槛条目用「门槛」徽章区分于普通未体现项，正文只留「条目：原因」
+        mark.className = 'mp-mark gate';
+        mark.textContent = '门槛';
+      } else {
+        mark.className = 'mp-mark no';
+        mark.textContent = r.kind === 'waived' ? '○' : '✕';
+      }
       body.appendChild(mark);
       body.appendChild(document.createTextNode(r.text));
       line.appendChild(body);
@@ -3219,6 +3226,30 @@ function buildEvidenceSplit(appId, cols, fitDetail) {
     detailToggle.appendChild(detailArrow);
     const detailBody = document.createElement('div');
     detailBody.className = 'mp-evidence-body hidden';
+    const appendDetailLine = (text, strong) => {
+      const line = document.createElement('div');
+      line.className = 'mp-detail-line' + (strong ? ' strong' : '');
+      line.textContent = text;
+      detailBody.appendChild(line);
+    };
+    // 计算链：把卡面唯一保留的决策分是怎么来的讲清楚，避免分数散落各处
+    const weightParts = ['coreDuty', 'business', 'skill', 'scope']
+      .filter((k) => breakdown[k] && breakdown[k].score != null)
+      .map((k) => breakdown[k].score + '×' + (FIT_WEIGHT_PCT[k] || 0) + '%');
+    if (weightParts.length === 4 && detail.matchScore != null) {
+      appendDetailLine('匹配分 ' + detail.matchScore + ' ＝ ' + weightParts.join(' + '), true);
+    }
+    const unmetCount = Number(detail.unmetCount) || 0;
+    if (unmetCount > 0) {
+      appendDetailLine(unmetCount <= 7
+        ? '决策分 ' + detail.score + ' ＝ 49 − 7 × ' + unmetCount + ' 条未过门槛'
+        : '决策分 ' + detail.score + ' ＝ 未过门槛 ' + unmetCount + ' 条，封顶为 0', true);
+    } else if (Number(detail.bonusApplied) > 0) {
+      appendDetailLine(
+        '决策分 ' + detail.score + ' ＝ 匹配分 ' + detail.matchScore + ' + 加分 ' + detail.bonusApplied,
+        true
+      );
+    }
     ['coreDuty', 'business', 'skill', 'scope'].forEach((k) => {
       const d = breakdown[k];
       if (!d || d.score == null) return;
@@ -3407,6 +3438,15 @@ function createResultRow(view) {
       cut.textContent = scoreDetailText;
       level.appendChild(cut);
     }
+    // 档位原因并入同一行；门槛明细只在「未体现」列出现一次，不再另起标签行
+    if (s.level !== '错误' && (s.advanceReason === 'gate' || s.advanceReason === 'match')) {
+      const note = document.createElement('span');
+      note.className = 'mp-level-note';
+      note.textContent = s.advanceReason === 'gate'
+        ? '· 未过门槛 ' + ((Array.isArray(s.unmet) && s.unmet.length) || 0) + ' 项（见未体现）'
+        : '· 经历/技能匹配不足';
+      level.appendChild(note);
+    }
     if (s.level === '错误') {
       const retry = document.createElement('button');
       retry.type = 'button';
@@ -3430,29 +3470,6 @@ function createResultRow(view) {
       err.textContent = failMsg;
       err.title = failMsg;
       info.appendChild(err);
-    }
-
-    if (s.level !== '错误' && (s.advanceReason === 'gate' || s.advanceReason === 'match')) {
-      const reason = document.createElement('div');
-      reason.className = 'mp-advance-reason';
-      reason.textContent = s.advanceReason === 'gate'
-        ? '未过门槛'
-        : '经历/技能匹配不足';
-      info.appendChild(reason);
-      if (s.advanceReason === 'gate' && Array.isArray(s.unmet) && s.unmet.length) {
-        const gateList = document.createElement('div');
-        gateList.className = 'mp-gate-list mp-tags';
-        s.unmet.forEach((gate) => {
-          const item = String((gate && gate.item) || '').trim();
-          if (!item) return;
-          const tag = document.createElement('span');
-          tag.className = 'mp-tag-fail';
-          tag.textContent = item;
-          if (gate.reason) tag.title = gate.reason;
-          gateList.appendChild(tag);
-        });
-        if (gateList.childNodes.length) info.appendChild(gateList);
-      }
     }
 
     // 信息不足（unknown）：简历没提及、无法判定，不扣分但要让招聘方知道「这几项要人工核对」
@@ -3509,7 +3526,11 @@ function createResultRow(view) {
       const cols = MokaMatch.evidenceColumnsFromScore(s);
       const fitDetail = {
         breakdown: s.scoreBreakdown || null,
-        confidence: s.confidence || null
+        confidence: s.confidence || null,
+        matchScore: s.matchScore != null ? s.matchScore : null,
+        score: s.score != null ? s.score : null,
+        unmetCount: Array.isArray(s.unmet) ? s.unmet.length : 0,
+        bonusApplied: s.bonusApplied || 0
       };
       const hasCols = cols.left.length || cols.right.length || (cols.evidence && cols.evidence.length);
       if (hasCols || fitDetail.breakdown) {

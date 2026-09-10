@@ -272,9 +272,26 @@ describe('screening configuration UI', () => {
     assert.doesNotMatch(js, /buildEvidenceSplit[\s\S]{0,200}graduationRisk/);
   });
 
-  it('renders the actual unmet gate list on result cards', () => {
-    assert.match(js, /mp-gate-list/);
-    assert.match(js, /s\.unmet/);
+  it('states the gate count on the level line instead of a duplicated tag row', () => {
+    // 门槛明细只在「未体现」列出现一次（带「门槛」徽章）；卡面档位行只说明条数
+    assert.match(js, /mp-level-note/);
+    assert.match(js, /'· 未过门槛 ' \+ \(\(Array\.isArray\(s\.unmet\) && s\.unmet\.length\) \|\| 0\) \+ ' 项（见未体现）'/);
+    assert.match(js, /mark\.className = 'mp-mark gate'/);
+    // 旧的门槛标签行（遍历 s.unmet 逐条平铺红标签）已删除，防止再长回来
+    // 用 (gate) 锚定旧的门槛循环，避免撞上 niceTags.unmet.forEach
+    assert.doesNotMatch(js, /s\.unmet\.forEach\(\(gate\)/);
+  });
+
+  it('keeps the unknown (待确认) tag row for items the resume never mentions', () => {
+    assert.match(js, /mp-tag-warn/);
+    assert.match(js, /'待确认 · ' \+ item/);
+  });
+
+  it('explains the score chain inside 评分明细 instead of scattering numbers on the card face', () => {
+    assert.match(js, /FIT_WEIGHT_PCT/);
+    assert.match(js, /'匹配分 ' \+ detail\.matchScore \+ ' ＝ '/);
+    assert.match(js, /' ＝ 49 − 7 × ' \+ unmetCount \+ ' 条未过门槛'/);
+    assert.match(js, /mp-detail-line/);
   });
 
   it('renders an empty 具备 hint and a collapsible 经历证据 section', () => {

@@ -269,6 +269,35 @@ describe('bonusScoreDisplay', () => {
     );
   });
 
+  it('drops the match-score prefix from the card face once a structured breakdown exists', () => {
+    // 匹配分改由「评分明细」的计算链解释，卡面不再出现第二个分数
+    assert.equal(
+      bonusScoreDisplay({
+        level: '不建议推进',
+        score: 42,
+        matchScore: 90,
+        advanceReason: 'gate',
+        bonusMetCount: 2,
+        bonusTotalCount: 2,
+        bonusApplied: 0,
+        scoreBreakdown: { coreDuty: { score: 90 } }
+      }),
+      '加分看 2/2（未计入）'
+    );
+    assert.equal(
+      bonusScoreDisplay({
+        level: '优先推进',
+        score: 81,
+        matchScore: 78,
+        bonusMetCount: 1,
+        bonusTotalCount: 3,
+        bonusApplied: 3,
+        scoreBreakdown: { coreDuty: { score: 90 } }
+      }),
+      '加分 +3'
+    );
+  });
+
   it('hides bonus details for errors or no configured bonus keywords', () => {
     assert.equal(bonusScoreDisplay({ level: '错误', bonusTotalCount: 3 }), '');
     assert.equal(bonusScoreDisplay({ level: '可推进', bonusTotalCount: 0 }), '');
@@ -491,7 +520,18 @@ describe('buildEvidenceColumns', () => {
     assert.equal(cols.right[0].kind, 'unmet');
     assert.equal(cols.right[0].item, '党员');
     assert.equal(cols.right[0].action, null);
-    assert.equal(cols.right[0].text, '未过门槛「党员」（简历未写明）');
+    // 卡面已带「门槛」徽章，正文不再重复「未过门槛「」」前缀
+    assert.equal(cols.right[0].text, '党员：简历未写明');
+  });
+
+  it('falls back to the bare gate name when no reason is given', () => {
+    const cols = buildEvidenceColumns({
+      highlights: [],
+      concerns: [],
+      unmet: [{ item: '党员' }],
+      waivedUnmet: []
+    });
+    assert.equal(cols.right[0].text, '党员');
   });
 
   it('keeps a concern that does not overlap an unmet item', () => {

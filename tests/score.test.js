@@ -619,6 +619,28 @@ describe('matchScoreDisplayText', () => {
     assert.equal(failed.level, '错误');
     assert.equal(matchScoreDisplayText(failed), '');
   });
+
+  it('hides the match score on the card face once a structured breakdown exists', () => {
+    // 结构化评分把匹配分收进「评分明细」的计算链，卡面只留决策分一个数
+    const structured = composeFinalScore(
+      {
+        scoreBreakdown: {
+          coreDuty: { score: 80, reason: '' },
+          business: { score: 60, reason: '' },
+          skill: { score: 70, reason: '' },
+          scope: { score: 50, reason: '' }
+        },
+        highlights: [],
+        concerns: [],
+        handwrittenGateResults: [{ item: '日语 N1', status: 'fail' }]
+      },
+      [],
+      []
+    );
+    assert.ok(structured.scoreBreakdown, '结构化结果必须带 scoreBreakdown');
+    assert.ok(structured.matchScore !== structured.score, '门槛降分后匹配分与决策分不同');
+    assert.equal(matchScoreDisplayText(structured), '');
+  });
 });
 
 describe('scoreFailureMessage', () => {
