@@ -296,7 +296,7 @@ describe('v1.8.6 续筛 epoch 与并发自适应', () => {
 
     contentApi.setScoreConcurrencyForTest(6);
     contentApi.resetConcurrencyController();
-    assert.deepEqual(contentApi.concurrencyStateForTest(), { effective: 6, ceiling: 6, streak: 0 });
+    assert.deepEqual(contentApi.concurrencyStateForTest(), { effective: 6, ceiling: 6, streak: 0, failureStreak: 0 });
 
     assert.equal(contentApi.degradeConcurrency('网关返回 429/5xx'), true);
     assert.equal(contentApi.concurrencyStateForTest().effective, 4);
@@ -341,8 +341,7 @@ describe('v1.8.6 续筛 epoch 与并发自适应', () => {
     // 取槽 → 处理 → 释放（中间隔着整段单卡处理逻辑，两处分别锚定）
     assert.match(src, /await acquireScoreSlot\(\);/);
     assert.match(src, /finally \{\s*\n\s*releaseScoreSlot\(\);/);
-    assert.match(src, /if \(failKind === 'overload'\) degradeConcurrency/);
-    assert.match(src, /else if \(failKind === 'timeout'\) degradeConcurrency/);
+    assert.match(src, /if \(failKind === 'overload' \|\| failKind === 'timeout'\) noteConcurrencyFailure\(failKind\)/);
     assert.match(src, /const failKind = \(scoredRes\.meta && scoredRes\.meta\.errorKind\) \|\| ''/);
   });
 
@@ -350,5 +349,38 @@ describe('v1.8.6 续筛 epoch 与并发自适应', () => {
     assert.match(contentApi.scoreDiagnosticsText({ errorKind: 'timeout' }, { level: '错误' }), /失败类型：timeout/);
     const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../content.js'), 'utf8');
     assert.match(src, /const SCORE_RESPONSE_TIMEOUT_MS = 330 \* 1000/);
+  });
+});
+
+describe('v1.8.7 降档抗抖与并发可见', () => {
+  it('降档抗抖：单次超时/过载不降档，连续 2 次才降一档', () => {
+    contentApi.setScoreConcurrencyForTest(6);
+    contentApi.resetConcurrencyController();
+    assert.equal(contentApi.noteConcurrencyFailure('timeout'), false, '单次抖动不降档');
+    assert.equal(contentApi.concurrencyStateForTest().effective, 6);
+    assert.equal(contentApi.concurrencyStateForTest().failureStreak, 1);
+    assert.equal(contentApi.noteConcurrencyFailure('overload'), true, '连续第 2 次才降一档');
+    assert.equal(contentApi.concurrencyStateForTest().effective, 4);
+    assert.equal(contentApi.concurrencyStateForTest().failureStreak, 0, '降档后失败计数清零');
+  });
+
+  it('一次出分会打断失败连续计数（避免间歇抖动累积误降档）', () => {
+    contentApi.setScoreConcurrencyForTest(6);
+    contentApi.resetConcurrencyController();
+    contentApi.noteConcurrencyFailure('timeout');
+    contentApi.noteScoreSuccess();
+    assert.equal(contentApi.concurrencyStateForTest().failureStreak, 0);
+    assert.equal(contentApi.noteConcurrencyFailure('overload'), false, '成功后又只剩 1 次失败，不降档');
+    assert.equal(contentApi.concurrencyStateForTest().effective, 6);
+    contentApi.resetConcurrencyController(6);
+    contentApi.setScoreConcurrencyForTest(6);
+  });
+
+  it('开筛/续筛把生效并发写进运行日志（设 6 跑 4 不再看不懂）', () => {
+    const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../content.js'), 'utf8');
+    assert.match(src, /logConcurrencyStart\('恢复'\)/);
+    assert.match(src, /logConcurrencyStart\('开始筛选'\)/);
+    assert.match(src, /设置上限 \$\{concurrencyCeiling\}/);
+    assert.match(src, /已按网关反馈降档/);
   });
 });

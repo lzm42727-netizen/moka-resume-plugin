@@ -28,12 +28,15 @@ function normalizeScoreConcurrency(value) {
  * 并发自适应：以设置值为上限，但运行时按网关反馈调整——
  * 遇到网关过载（503/429）或超时降一档（8→6→4→3→2），连续成功若干次再回升一档。
  * 依据：企业网关容量未知，打满并发会 503→重试→雪崩（v1.8.6 前实测过）。
+ * 抗抖：单次抖动不降档，需连续 CONCURRENCY_DEGRADE_AFTER 次过载/超时信号（中间没有成功）才降。
  */
 const CONCURRENCY_STEPS = [2, 3, 4, 6, 8];
 const CONCURRENCY_RECOVER_AFTER = 10;
+const CONCURRENCY_DEGRADE_AFTER = 2;
 let effectiveConcurrency = DEFAULT_SCORE_CONCURRENCY;
 let concurrencyCeiling = DEFAULT_SCORE_CONCURRENCY;
 let concurrencySuccessStreak = 0;
+let concurrencyFailureStreak = 0;
 
 /** 取不超过 target 的最大档位 */
 function resolveConcurrencyStep(value) {
@@ -48,14 +51,16 @@ function resetConcurrencyController(value) {
   concurrencyCeiling = base;
   effectiveConcurrency = resolveConcurrencyStep(base);
   concurrencySuccessStreak = 0;
+  concurrencyFailureStreak = 0;
 }
 
-/** 降一档；已在最低档返回 false */
+/** 实际降一档；已在最低档返回 false */
 function degradeConcurrency(reason) {
   const idx = CONCURRENCY_STEPS.indexOf(effectiveConcurrency);
   if (idx <= 0) return false;
   effectiveConcurrency = CONCURRENCY_STEPS[idx - 1];
   concurrencySuccessStreak = 0;
+  concurrencyFailureStreak = 0;
   pushPluginLog({
     cat: 'warn',
     text: `评分并发降为 ${effectiveConcurrency}（${reason}），网关恢复后会自动回升`
@@ -63,8 +68,17 @@ function degradeConcurrency(reason) {
   return true;
 }
 
+/** 记一次过载/超时信号：连续够多才降一档，单次抖动不降 */
+function noteConcurrencyFailure(kind) {
+  concurrencySuccessStreak = 0;
+  concurrencyFailureStreak += 1;
+  if (concurrencyFailureStreak < CONCURRENCY_DEGRADE_AFTER) return false;
+  return degradeConcurrency(kind === 'overload' ? '网关返回 429/5xx' : '单次评分超时');
+}
+
 /** 记一次成功；连续成功够多则回升一档（不超过设置上限） */
 function noteScoreSuccess() {
+  concurrencyFailureStreak = 0;
   concurrencySuccessStreak += 1;
   if (concurrencySuccessStreak < CONCURRENCY_RECOVER_AFTER) return false;
   const idx = CONCURRENCY_STEPS.indexOf(effectiveConcurrency);
@@ -74,6 +88,15 @@ function noteScoreSuccess() {
   effectiveConcurrency = CONCURRENCY_STEPS[idx + 1];
   pushPluginLog({ cat: 'info', text: `评分并发回升为 ${effectiveConcurrency}` });
   return true;
+}
+
+/** 开筛/续筛时把生效并发写进运行日志，避免「设了 6 实际跑 4」看不明白 */
+function logConcurrencyStart(scope) {
+  pushPluginLog({
+    cat: 'info',
+    text: `${scope}评分并发 ${effectiveConcurrency}（设置上限 ${concurrencyCeiling}）`
+      + (effectiveConcurrency < concurrencyCeiling ? ' · 已按网关反馈降档' : '')
+  });
 }
 
 // 评分并发信号量：worker 池按上限开，但同一时刻真正在跑的不超过 effectiveConcurrency
@@ -2450,10 +2473,9 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
         if (scoredRes.usage && (scoredRes.usage.calls || scoredRes.usage.cacheHits)) {
           runUsage = MokaUsage.mergeUsage(runUsage, scoredRes.usage);
         }
-        // 网关过载/超时 → 降并发自保；正常出分则累计成功后逐档回升
+        // 网关过载/超时 → 连续 2 次才降并发自保；正常出分则累计成功后逐档回升
         const failKind = (scoredRes.meta && scoredRes.meta.errorKind) || '';
-        if (failKind === 'overload') degradeConcurrency('网关返回 429/5xx');
-        else if (failKind === 'timeout') degradeConcurrency('单次评分超时');
+        if (failKind === 'overload' || failKind === 'timeout') noteConcurrencyFailure(failKind);
         else if (!MokaScore.isScoreFailure(item.score)) noteScoreSuccess();
         const sc = item.score;
         const uBit = scoredRes.usage
@@ -2580,6 +2602,7 @@ async function resumeScreeningFromJob() {
   // 续筛接上之前的用量与单价口径，不因刷新断账
   seedRunUsageFromJob(job);
   await refreshRunPriceInfo();
+  logConcurrencyStart('恢复');
   await patchScreeningJob({
     status: 'running',
     total: results.length,
@@ -2741,6 +2764,7 @@ async function performScreening(config, epoch) {
     // 提前取一次单价，写入任务快照；续筛/暂停恢复后可直接沿用估算口径
     await refreshRunPriceInfo();
     resetConcurrencyController(); // 新一轮筛选：并发回到设置上限，清掉上一轮的降档
+    logConcurrencyStart('开始筛选');
     await saveScreeningJob({
       status: 'running',
       pipelineId,
@@ -3879,10 +3903,16 @@ if (typeof module !== 'undefined' && module.exports) {
     resolveConcurrencyStep,
     resetConcurrencyController,
     degradeConcurrency,
+    noteConcurrencyFailure,
     noteScoreSuccess,
     scoreConcurrencyForTest: () => scoreConcurrency,
     setScoreConcurrencyForTest: (v) => { scoreConcurrency = normalizeScoreConcurrency(v); },
-    concurrencyStateForTest: () => ({ effective: effectiveConcurrency, ceiling: concurrencyCeiling, streak: concurrencySuccessStreak }),
+    concurrencyStateForTest: () => ({
+      effective: effectiveConcurrency,
+      ceiling: concurrencyCeiling,
+      streak: concurrencySuccessStreak,
+      failureStreak: concurrencyFailureStreak
+    }),
     acquireScoreSlot,
     releaseScoreSlot,
     activeScoreSlotsForTest: () => activeScoreSlots,
