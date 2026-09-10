@@ -1237,30 +1237,10 @@ safeEl('toggle-api-key')?.addEventListener('click', function () {
   }
 });
 
-// 本地私有配置（config.local.js，已 gitignore）：如存在则强制/锁定这三项
-const LOCAL_FORCED = (typeof window !== 'undefined' && window.MOKA_LOCAL_SETTINGS) ? window.MOKA_LOCAL_SETTINGS : {};
-
-function applyLocalForced() {
-  if (!LOCAL_FORCED || !Object.keys(LOCAL_FORCED).length) return;
-  const map = { apiProtocol: 'api-protocol', apiProvider: 'api-provider', apiEndpoint: 'api-endpoint', modelName: 'model-name' };
-  Object.entries(map).forEach(([k, id]) => {
-    if (LOCAL_FORCED[k] == null) return;
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.value = k === 'apiProvider' ? providerLabelFromLegacy(LOCAL_FORCED[k]) : LOCAL_FORCED[k];
-    el.disabled = true;
-    el.title = '已由本地私有配置锁定';
-  });
-  // 旧私有配置只写了 apiProvider：按同一套迁移规则补出协议
-  if (LOCAL_FORCED.apiProtocol == null && LOCAL_FORCED.apiProvider != null) {
-    const protocolEl = document.getElementById('api-protocol');
-    if (protocolEl) {
-      protocolEl.value = LOCAL_FORCED.apiProvider === 'claude' ? 'claude' : 'openai';
-      protocolEl.disabled = true;
-      protocolEl.title = '已由本地私有配置锁定';
-    }
-  }
-}
+/* 本地私有配置（config.local.js，已 gitignore）：1.9.0 起只作「默认值兜底」——
+ * 已保存的设置优先，本地值既不被写进界面锁定、也不会覆盖用户改动。
+ * 排序与后台 getSettings 一致：DEFAULT_SETTINGS < 本地配置 < 存储里的设置。 */
+const LOCAL_DEFAULTS = (typeof window !== 'undefined' && window.MOKA_LOCAL_SETTINGS) ? window.MOKA_LOCAL_SETTINGS : {};
 
 function readSettingsForm() {
   const rawConcurrency = Number(document.getElementById('score-concurrency')?.value || 0);
@@ -1277,8 +1257,7 @@ function readSettingsForm() {
     modelOutputPrice: String(document.getElementById('model-output-price')?.value || '').trim(),
     // 默认开：网关不支持时后台自动降级，用户无感
     forceJsonMode: document.getElementById('force-json-mode')?.checked !== false,
-    scoreConcurrency: concurrency,
-    ...LOCAL_FORCED // 强制覆盖 provider/endpoint/model
+    scoreConcurrency: concurrency
   };
 }
 
@@ -1643,40 +1622,32 @@ document.getElementById('copy-assignee-snapshot')?.addEventListener('click', asy
 async function loadSettings() {
   try {
     const result = await chrome.storage.local.get('mokaSettings');
-    if (result.mokaSettings) {
-      const s = result.mokaSettings;
-      // 1.8.9 迁移：老配置只有 apiProvider（openai/claude/custom），拆成「接口协议 + 提供商标签」
-      const protocolEl = document.getElementById('api-protocol');
-      if (protocolEl) {
-        const legacyClaude = !s.apiProtocol && s.apiProvider === 'claude';
-        protocolEl.value = (s.apiProtocol === 'claude' || legacyClaude) ? 'claude' : 'openai';
-      }
-      document.getElementById('api-provider').value = providerLabelFromLegacy(s.apiProvider);
-      document.getElementById('api-endpoint').value = s.apiEndpoint
-        || PROTOCOL_DEFAULT_ENDPOINT[(protocolEl && protocolEl.value) === 'claude' ? 'claude' : 'openai'];
-      document.getElementById('api-key').value = s.apiKey || '';
-      document.getElementById('model-name').value = s.modelName || 'gpt-4o';
-      document.getElementById('model-input-price').value = s.modelInputPrice != null ? s.modelInputPrice : '';
-      document.getElementById('model-output-price').value = s.modelOutputPrice != null ? s.modelOutputPrice : '';
-      // 老配置没有这两个字段：按默认值回填（JSON 输出开、并发 6）
-      const concurrencyEl = document.getElementById('score-concurrency');
-      if (concurrencyEl) {
-        const c = Number(s.scoreConcurrency);
-        concurrencyEl.value = Number.isFinite(c) && c > 0 ? String(Math.min(8, Math.max(1, Math.round(c)))) : '6';
-      }
-      const jsonModeEl = document.getElementById('force-json-mode');
-      if (jsonModeEl) jsonModeEl.checked = s.forceJsonMode !== false;
-    } else {
-      // 首次使用（尚无配置）：展示默认值
-      const jsonModeEl = document.getElementById('force-json-mode');
-      if (jsonModeEl) jsonModeEl.checked = true;
-      const concurrencyEl = document.getElementById('score-concurrency');
-      if (concurrencyEl) concurrencyEl.value = '6';
+    // 1.9.0：本地私有配置只作默认值兜底——已保存的设置优先，界面全部可编辑
+    const s = { ...LOCAL_DEFAULTS, ...(result.mokaSettings || {}) };
+    // 1.8.9 迁移：老配置只有 apiProvider（openai/claude/custom），拆成「接口协议 + 提供商标签」
+    const protocolEl = document.getElementById('api-protocol');
+    if (protocolEl) {
+      const legacyClaude = !s.apiProtocol && s.apiProvider === 'claude';
+      protocolEl.value = (s.apiProtocol === 'claude' || legacyClaude) ? 'claude' : 'openai';
     }
+    document.getElementById('api-provider').value = s.apiProvider ? providerLabelFromLegacy(s.apiProvider) : '';
+    document.getElementById('api-endpoint').value = s.apiEndpoint
+      || PROTOCOL_DEFAULT_ENDPOINT[(protocolEl && protocolEl.value) === 'claude' ? 'claude' : 'openai'];
+    document.getElementById('api-key').value = s.apiKey || '';
+    document.getElementById('model-name').value = s.modelName || 'gpt-4o';
+    document.getElementById('model-input-price').value = s.modelInputPrice != null ? s.modelInputPrice : '';
+    document.getElementById('model-output-price').value = s.modelOutputPrice != null ? s.modelOutputPrice : '';
+    // 老配置没有这两个字段：按默认值回填（JSON 输出开、并发 6）
+    const concurrencyEl = document.getElementById('score-concurrency');
+    if (concurrencyEl) {
+      const c = Number(s.scoreConcurrency);
+      concurrencyEl.value = Number.isFinite(c) && c > 0 ? String(Math.min(8, Math.max(1, Math.round(c)))) : '6';
+    }
+    const jsonModeEl = document.getElementById('force-json-mode');
+    if (jsonModeEl) jsonModeEl.checked = s.forceJsonMode !== false;
   } catch (error) {
     console.error('加载设置失败:', error);
   }
-  applyLocalForced(); // 本地私有配置：覆盖并锁定协议/提供商/endpoint/模型
   fillProviderPresets(); // 提供商输入框的常用服务候选（可自由填写，不限于候选）
   syncEndpointPlaceholder(); // 按协议更新 Endpoint 占位；地址为空时才补默认值
 }

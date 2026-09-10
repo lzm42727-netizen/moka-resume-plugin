@@ -238,3 +238,15 @@ describe('v1.8.9 接口协议与自由提供商', () => {
     assert.match(bg, /url: normalizeChatEndpoint\(settings\.apiEndpoint\)/);
   });
 });
+
+describe('v1.9.0 本地私有配置降为默认值', () => {
+  it('本地配置只做兜底：优先级 内置默认 < 本地 < 用户保存值', () => {
+    assert.match(bg, /function localDefaultSettings\(\)/);
+    assert.match(bg, /resolve\(\{ \.\.\.DEFAULT_SETTINGS, \.\.\.localDefaultSettings\(\), \.\.\.\(result\.mokaSettings \|\| \{\}\) \}\)/);
+    assert.doesNotMatch(bg, /localForcedSettings/);
+  });
+
+  it('测试连接同样让表单值压过本地配置（否则改了也测不出真实效果）', () => {
+    assert.match(bg, /const settings = \{ \.\.\.DEFAULT_SETTINGS, \.\.\.localDefaultSettings\(\), \.\.\.\(inputSettings \|\| \{\}\) \}/);
+  });
+});

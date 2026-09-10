@@ -32,7 +32,8 @@ safeImportScripts('lib/feedback.js');
 safeImportScripts('lib/screening-job.js');
 safeImportScripts('lib/usage.js');
 safeImportScripts('lib/plugin-log.js');
-function localForcedSettings() {
+/** 本地私有配置（config.local.js）：1.9.0 起只作「默认值兜底」，不再强制覆盖已保存设置 */
+function localDefaultSettings() {
   return (typeof self !== 'undefined' && self.MOKA_LOCAL_SETTINGS) ? self.MOKA_LOCAL_SETTINGS : {};
 }
 
@@ -684,7 +685,7 @@ async function getModelPriceInfo() {
  * 测试 API 连接
  */
 async function handleTestApi(inputSettings) {
-  const settings = { ...DEFAULT_SETTINGS, ...(inputSettings || {}), ...localForcedSettings() };
+  const settings = { ...DEFAULT_SETTINGS, ...localDefaultSettings(), ...(inputSettings || {}) };
   if (!settings.apiKey) {
     return { ok: false, error: '请输入 API Key' };
   }
@@ -1369,8 +1370,8 @@ async function safeText(response) {
 function getSettings() {
   return new Promise((resolve) => {
     chrome.storage.local.get('mokaSettings', (result) => {
-      // 本地私有配置优先级最高，强制覆盖 provider/endpoint/model
-      resolve({ ...DEFAULT_SETTINGS, ...(result.mokaSettings || {}), ...localForcedSettings() });
+      // 优先级：内置默认 < 本地私有配置（兜底） < 用户在设置页保存的值
+      resolve({ ...DEFAULT_SETTINGS, ...localDefaultSettings(), ...(result.mokaSettings || {}) });
     });
   });
 }

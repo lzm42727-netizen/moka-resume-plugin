@@ -471,7 +471,17 @@ describe('settings UI de-clutter (endpoint visibility / advanced fold / save-and
     assert.match(js, /api-provider'\)\?\.addEventListener\('input', \(e\) => applyApiPreset\(e\.target\.value\)\)/);
     // 协议切换联动 Endpoint 占位/默认值
     assert.match(js, /api-protocol'\)\?\.addEventListener\('change', syncEndpointPlaceholder\)/);
-    assert.match(js, /applyLocalForced\(\);[\s\S]{0,140}fillProviderPresets\(\);[\s\S]{0,120}syncEndpointPlaceholder\(\);/);
+    assert.match(js, /fillProviderPresets\(\);[\s\S]{0,120}syncEndpointPlaceholder\(\);/);
+  });
+
+  it('1.9.0 本地私有配置降为默认值：不锁定、不覆盖设置页的值', () => {
+    // 本地配置只参与合并，且排在存储设置之前（存储优先）
+    assert.match(js, /const LOCAL_DEFAULTS = \(typeof window !== 'undefined' && window\.MOKA_LOCAL_SETTINGS\)/);
+    assert.match(js, /const s = \{ \.\.\.LOCAL_DEFAULTS, \.\.\.\(result\.mokaSettings \|\| \{\}\) \}/);
+    // 不再置灰锁定，表单读取也不再被本地值覆盖
+    assert.doesNotMatch(js, /applyLocalForced/);
+    assert.doesNotMatch(js, /已由本地私有配置锁定/);
+    assert.doesNotMatch(js, /\.\.\.LOCAL_FORCED/);
   });
 
   it('老配置自动迁移：只有 apiProvider 时也能还原出协议与提供商名', () => {
@@ -604,7 +614,8 @@ describe('v1.8.5 设置页新增并发数 / JSON 模式', () => {
   it('loadSettings 回填两个新字段；老配置/首次使用都有默认值', () => {
     assert.match(js, /jsonModeEl\.checked = s\.forceJsonMode !== false/);
     assert.match(js, /concurrencyEl\.value = Number\.isFinite\(c\) && c > 0 \? String\(Math\.min\(8, Math\.max\(1, Math\.round\(c\)\)\)\) : '6'/);
-    // 首次使用（无 mokaSettings）也要显示默认：JSON 模式勾选 + 并发 6
-    assert.match(js, /\} else \{[\s\S]{0,200}jsonModeEl\.checked = true[\s\S]{0,200}concurrencyEl\.value = '6'/);
+    // 首次使用（无 mokaSettings）没有独立分支：合并默认值即可覆盖，JSON 模式开、并发 6
+    assert.match(js, /const s = \{ \.\.\.LOCAL_DEFAULTS, \.\.\.\(result\.mokaSettings \|\| \{\}\) \}/);
+    assert.doesNotMatch(js, /\} else \{[\s\S]{0,200}jsonModeEl\.checked = true/);
   });
 });
