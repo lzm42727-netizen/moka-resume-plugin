@@ -258,11 +258,13 @@ describe('v1.8.5 评分并发可配置与诊断日志', () => {
 
   it('评分 worker 用可配置并发数，且不再硬编码 CONCURRENCY', () => {
     const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../content.js'), 'utf8');
-    assert.match(src, /Math\.min\(scoreConcurrency, Math\.max\(total, 1\)\)/);
+    // worker 池按上限开，实际并发由信号量按 effectiveConcurrency 控制（v1.8.6 起自适应降档）
+    assert.match(src, /Math\.min\(concurrencyCeiling, Math\.max\(total, 1\)\)/);
     assert.doesNotMatch(src, /Math\.min\(CONCURRENCY/);
     assert.doesNotMatch(src, /^const CONCURRENCY =/m);
     // 开筛时从后台（modelPriceInfo）取生效并发
-    assert.match(src, /response\.concurrency != null\) scoreConcurrency = normalizeScoreConcurrency/);
+    assert.match(src, /response\.concurrency != null\)/);
+    assert.match(src, /scoreConcurrency = normalizeScoreConcurrency\(response\.concurrency\)/);
   });
 
   it('评分日志追加诊断尾部（输出长度/截断/含思考/多次调用）', () => {
@@ -275,5 +277,78 @@ describe('v1.8.5 评分并发可配置与诊断日志', () => {
     const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../content.js'), 'utf8');
     assert.match(src, /const scoredRes = await scoreViaBackgroundWithRetry\(item\.profile, \{[\s\S]{0,400}applyScoreResult\(item, scoredRes\.score\)/);
     assert.doesNotMatch(src, /const raw = await scoreViaBackgroundWithRetry\(item\.profile/);
+  });
+});
+
+describe('v1.8.6 续筛 epoch 与并发自适应', () => {
+  it('续筛链路持有 epoch：新一轮开筛能叫停旧 worker（不再双跑评同一批人）', () => {
+    const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../content.js'), 'utf8');
+    assert.match(src, /const epoch = \+\+screeningEpoch;[\s\S]{0,200}resetConcurrencyController\(\);/);
+    assert.match(src, /scoreResultsBatch\(\s*\n?\s*scoreConfig, weights, hc, keywords, \{ onlyPending: true, epoch \}/);
+    assert.doesNotMatch(src, /scoreResultsBatch\(\s*\n\s*scoreConfig, weights, hc, keywords, \{ onlyPending: true \}\s*\n/);
+  });
+
+  it('并发档位取不超过目标值的最大档，并在过载时逐档下探、成功后回升', () => {
+    assert.equal(contentApi.resolveConcurrencyStep(1), 2, '最低档 2');
+    assert.equal(contentApi.resolveConcurrencyStep(6), 6);
+    assert.equal(contentApi.resolveConcurrencyStep(7), 6);
+    assert.equal(contentApi.resolveConcurrencyStep(8), 8);
+
+    contentApi.setScoreConcurrencyForTest(6);
+    contentApi.resetConcurrencyController();
+    assert.deepEqual(contentApi.concurrencyStateForTest(), { effective: 6, ceiling: 6, streak: 0 });
+
+    assert.equal(contentApi.degradeConcurrency('网关返回 429/5xx'), true);
+    assert.equal(contentApi.concurrencyStateForTest().effective, 4);
+    contentApi.degradeConcurrency('x');
+    contentApi.degradeConcurrency('x');
+    assert.equal(contentApi.concurrencyStateForTest().effective, 2);
+    assert.equal(contentApi.degradeConcurrency('x'), false, '已到最低档不再降');
+
+    // 连续成功 10 次回升一档
+    for (let i = 0; i < 9; i++) contentApi.noteScoreSuccess();
+    assert.equal(contentApi.concurrencyStateForTest().effective, 2);
+    assert.equal(contentApi.noteScoreSuccess(), true);
+    assert.equal(contentApi.concurrencyStateForTest().effective, 3);
+    contentApi.resetConcurrencyController(6);
+    contentApi.setScoreConcurrencyForTest(6);
+  });
+
+  it('并发信号量：超出当前并发的 acquire 会等待，释放后放行', async () => {
+    contentApi.setScoreConcurrencyForTest(2);
+    contentApi.resetConcurrencyController();
+    await contentApi.acquireScoreSlot();
+    await contentApi.acquireScoreSlot();
+    assert.equal(contentApi.activeScoreSlotsForTest(), 2);
+
+    let thirdAcquired = false;
+    const third = contentApi.acquireScoreSlot().then(() => { thirdAcquired = true; });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(thirdAcquired, false, '第三个应被闸门挡住');
+    contentApi.releaseScoreSlot();
+    await third;
+    assert.equal(thirdAcquired, true);
+    contentApi.releaseScoreSlot();
+    contentApi.releaseScoreSlot();
+    assert.equal(contentApi.activeScoreSlotsForTest(), 0);
+    contentApi.resetConcurrencyController(6);
+    contentApi.setScoreConcurrencyForTest(6);
+  });
+
+  it('worker 池按上限开、闸门控实际并发；失败类型写进日志', () => {
+    const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../content.js'), 'utf8');
+    assert.match(src, /Math\.min\(concurrencyCeiling, Math\.max\(total, 1\)\)/);
+    // 取槽 → 处理 → 释放（中间隔着整段单卡处理逻辑，两处分别锚定）
+    assert.match(src, /await acquireScoreSlot\(\);/);
+    assert.match(src, /finally \{\s*\n\s*releaseScoreSlot\(\);/);
+    assert.match(src, /if \(failKind === 'overload'\) degradeConcurrency/);
+    assert.match(src, /else if \(failKind === 'timeout'\) degradeConcurrency/);
+    assert.match(src, /const failKind = \(scoredRes\.meta && scoredRes\.meta\.errorKind\) \|\| ''/);
+  });
+
+  it('诊断文案含失败类型；后台单次评分等待上限 330s（对齐 150s 超时 + 一次重试）', () => {
+    assert.match(contentApi.scoreDiagnosticsText({ errorKind: 'timeout' }, { level: '错误' }), /失败类型：timeout/);
+    const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../content.js'), 'utf8');
+    assert.match(src, /const SCORE_RESPONSE_TIMEOUT_MS = 330 \* 1000/);
   });
 });

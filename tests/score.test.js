@@ -5,6 +5,7 @@ const {
   scoreErrorResult,
   isScoreFailure,
   isRetryableScoreFailure,
+  NON_RETRYABLE_FAILURE_KINDS,
   SCORE_AUTO_RETRY_MAX,
   hardConditionsPromptBlock,
   dimensionScoringNotes,
@@ -737,5 +738,28 @@ describe('legacy scoring exports', () => {
     assert.equal(score.NICE_BONUS_PER, undefined);
     assert.equal(score.normalizeWeightPercents, undefined);
     assert.equal(score.normalizeWeightRatios, undefined);
+  });
+});
+
+describe('评分失败的调用层分类（v1.8.6）', () => {
+  it('scoreErrorResult 可携带 failureKind，供内容侧判断重试与降并发', () => {
+    assert.equal(scoreErrorResult('超时').failureKind, undefined);
+    assert.equal(scoreErrorResult('超时', 'timeout').failureKind, 'timeout');
+    assert.equal(scoreErrorResult('超时', 'timeout').parseError, true, '仍标记 parseError，卡片照旧显示错误');
+  });
+
+  it('超时/过载/网络/配置类失败不在单卡内重试（交给末尾统一补评）', () => {
+    for (const kind of ['timeout', 'overload', 'network', 'config']) {
+      assert.equal(
+        isRetryableScoreFailure(scoreErrorResult('x', kind)),
+        false,
+        `${kind} 不应在卡内重试`
+      );
+    }
+    // 模型输出类失败仍值得带纠偏指令再试
+    assert.equal(isRetryableScoreFailure(scoreErrorResult('模型返回解析失败', 'other')), true);
+    // 没有 failureKind 的历史结果沿用旧语义
+    assert.equal(isRetryableScoreFailure({ dimensions: null, error: '429 Too Many Requests' }), true);
+    assert.equal(NON_RETRYABLE_FAILURE_KINDS.length, 4);
   });
 });

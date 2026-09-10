@@ -23,6 +23,76 @@ function normalizeScoreConcurrency(value) {
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_SCORE_CONCURRENCY;
   return Math.min(MAX_SCORE_CONCURRENCY, Math.max(MIN_SCORE_CONCURRENCY, Math.round(n)));
 }
+
+/**
+ * 并发自适应：以设置值为上限，但运行时按网关反馈调整——
+ * 遇到网关过载（503/429）或超时降一档（8→6→4→3→2），连续成功若干次再回升一档。
+ * 依据：企业网关容量未知，打满并发会 503→重试→雪崩（v1.8.6 前实测过）。
+ */
+const CONCURRENCY_STEPS = [2, 3, 4, 6, 8];
+const CONCURRENCY_RECOVER_AFTER = 10;
+let effectiveConcurrency = DEFAULT_SCORE_CONCURRENCY;
+let concurrencyCeiling = DEFAULT_SCORE_CONCURRENCY;
+let concurrencySuccessStreak = 0;
+
+/** 取不超过 target 的最大档位 */
+function resolveConcurrencyStep(value) {
+  const target = normalizeScoreConcurrency(value);
+  let picked = CONCURRENCY_STEPS[0];
+  CONCURRENCY_STEPS.forEach((step) => { if (step <= target) picked = step; });
+  return picked;
+}
+
+function resetConcurrencyController(value) {
+  const base = value == null ? scoreConcurrency : normalizeScoreConcurrency(value);
+  concurrencyCeiling = base;
+  effectiveConcurrency = resolveConcurrencyStep(base);
+  concurrencySuccessStreak = 0;
+}
+
+/** 降一档；已在最低档返回 false */
+function degradeConcurrency(reason) {
+  const idx = CONCURRENCY_STEPS.indexOf(effectiveConcurrency);
+  if (idx <= 0) return false;
+  effectiveConcurrency = CONCURRENCY_STEPS[idx - 1];
+  concurrencySuccessStreak = 0;
+  pushPluginLog({
+    cat: 'warn',
+    text: `评分并发降为 ${effectiveConcurrency}（${reason}），网关恢复后会自动回升`
+  });
+  return true;
+}
+
+/** 记一次成功；连续成功够多则回升一档（不超过设置上限） */
+function noteScoreSuccess() {
+  concurrencySuccessStreak += 1;
+  if (concurrencySuccessStreak < CONCURRENCY_RECOVER_AFTER) return false;
+  const idx = CONCURRENCY_STEPS.indexOf(effectiveConcurrency);
+  const ceilingIdx = CONCURRENCY_STEPS.indexOf(resolveConcurrencyStep(concurrencyCeiling));
+  concurrencySuccessStreak = 0;
+  if (idx < 0 || idx >= ceilingIdx) return false;
+  effectiveConcurrency = CONCURRENCY_STEPS[idx + 1];
+  pushPluginLog({ cat: 'info', text: `评分并发回升为 ${effectiveConcurrency}` });
+  return true;
+}
+
+// 评分并发信号量：worker 池按上限开，但同一时刻真正在跑的不超过 effectiveConcurrency
+let activeScoreSlots = 0;
+const scoreSlotWaiters = [];
+
+async function acquireScoreSlot() {
+  while (activeScoreSlots >= effectiveConcurrency) {
+    await new Promise((resolve) => scoreSlotWaiters.push(resolve));
+  }
+  activeScoreSlots += 1;
+}
+
+function releaseScoreSlot() {
+  if (activeScoreSlots > 0) activeScoreSlots -= 1;
+  const next = scoreSlotWaiters.shift();
+  if (next) next();
+}
+
 const DEFAULT_LIMIT = 30;
 const MAX_PAGES = 300; // 安全上限：300 页 × 30 ≈ 9000 人
 const MOKA_TIMEOUT_MS = 25000;
@@ -107,7 +177,10 @@ function refreshRunPriceInfo() {
           ? { inputPerM: response.price.inputPerM, outputPerM: response.price.outputPerM, priced: true }
           : null;
         if (response.model) runUsage.model = String(response.model);
-        if (response.concurrency != null) scoreConcurrency = normalizeScoreConcurrency(response.concurrency);
+        if (response.concurrency != null) {
+          scoreConcurrency = normalizeScoreConcurrency(response.concurrency);
+          resetConcurrencyController(scoreConcurrency);
+        }
         resolve(response);
       });
     } catch (e) {
@@ -2327,6 +2400,8 @@ function scoreDiagnosticsText(meta, score) {
   if (Number(m.calls) > 1) bits.push(m.calls + ' 次调用');
   const kind = (score && score.parseFailureKind) || m.parseFailureKind;
   if (score && score.level === '错误' && kind) bits.push('解析失败：' + kind);
+  // 调用层失败类型（超时/网关过载/网络/配置）——失败卡不再只有「错误 0 分」
+  if (m.errorKind) bits.push('失败类型：' + m.errorKind);
   return bits.length ? ' · ' + bits.join(' · ') : '';
 }
 
@@ -2350,6 +2425,10 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
       const item = results[index];
       if (onlyPending && !hasPendingScore(item)) continue;
 
+      // 并发闸门：同一时刻在跑的候选人数受 effectiveConcurrency 约束（自适应降档时才真正生效）
+      await acquireScoreSlot();
+      try {
+      // 内层 try：单个候选人失败只落本卡错误，不影响本轮；外层 finally 负责释放并发槽
       try {
         setRowStage(item.app.id, 'enrich');
         await enrichCandidate(item.app);
@@ -2371,6 +2450,11 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
         if (scoredRes.usage && (scoredRes.usage.calls || scoredRes.usage.cacheHits)) {
           runUsage = MokaUsage.mergeUsage(runUsage, scoredRes.usage);
         }
+        // 网关过载/超时 → 降并发自保；正常出分则累计成功后逐档回升
+        const failKind = (scoredRes.meta && scoredRes.meta.errorKind) || '';
+        if (failKind === 'overload') degradeConcurrency('网关返回 429/5xx');
+        else if (failKind === 'timeout') degradeConcurrency('单次评分超时');
+        else if (!MokaScore.isScoreFailure(item.score)) noteScoreSuccess();
         const sc = item.score;
         const uBit = scoredRes.usage
           ? (scoredRes.usage.cacheHits ? ' · 缓存命中'
@@ -2420,10 +2504,13 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
         Math.round((completed / Math.max(total, 1)) * 100),
         usageMsg ? (progressMsg + ' · ' + usageMsg) : progressMsg
       );
+      } finally {
+        releaseScoreSlot();
+      }
     }
   }
 
-  await Promise.all(Array.from({ length: Math.min(scoreConcurrency, Math.max(total, 1)) }, worker));
+  await Promise.all(Array.from({ length: Math.min(concurrencyCeiling, Math.max(total, 1)) }, worker));
 
   // 自动补评：主轮结束仍有评分失败的（多为模型偶发输出异常），自动整体再补一轮；
   // 只补一轮不递归，补评仍失败的落卡等手动「重评」。断点续筛（onlyPending）不再嵌套补评。
@@ -2485,6 +2572,10 @@ async function resumeScreeningFromJob() {
   };
 
   isScreening = true;
+  // 续筛也必须持有一轮 epoch：否则「恢复筛选」的 worker 在新一轮开筛时不会停手
+  // （alive() 判定 epoch == null 即视为有效），两条链路并发评同一批人 → 并发翻倍、网关被打爆
+  const epoch = ++screeningEpoch;
+  resetConcurrencyController();
   startScreeningKeepalive();
   // 续筛接上之前的用量与单价口径，不因刷新断账
   seedRunUsageFromJob(job);
@@ -2504,7 +2595,7 @@ async function resumeScreeningFromJob() {
 
   try {
     const { completed, enrichedExp, total } = await scoreResultsBatch(
-      scoreConfig, weights, hc, keywords, { onlyPending: true }
+      scoreConfig, weights, hc, keywords, { onlyPending: true, epoch }
     );
     sortRows();
     persistLastScreening();
@@ -2649,6 +2740,7 @@ async function performScreening(config, epoch) {
     if (pipelineId) lastKnownPipelineId = String(pipelineId);
     // 提前取一次单价，写入任务快照；续筛/暂停恢复后可直接沿用估算口径
     await refreshRunPriceInfo();
+    resetConcurrencyController(); // 新一轮筛选：并发回到设置上限，清掉上一轮的降档
     await saveScreeningJob({
       status: 'running',
       pipelineId,
@@ -2757,7 +2849,8 @@ function loadFeedbackBundle(jobId) {
 
 // background 是 MV3 Service Worker，可能在请求途中被回收导致回调永不触发；
 // 没有超时会让 worker 永久挂起，进而 isScreening 永远为真、侧栏无法再开筛。
-const SCORE_RESPONSE_TIMEOUT_MS = 120 * 1000;
+// 单次评分最长 = LLM 超时 150s + 5s 退避 + 150s 重试，故这里给 330s（比后台慢一步判定超时）
+const SCORE_RESPONSE_TIMEOUT_MS = 330 * 1000;
 
 function scoreViaBackground(profile, config) {
   return new Promise((resolve) => {
@@ -3783,8 +3876,16 @@ if (typeof module !== 'undefined' && module.exports) {
     getAssigneeDiagnostics,
     normalizeScoreConcurrency,
     scoreDiagnosticsText,
+    resolveConcurrencyStep,
+    resetConcurrencyController,
+    degradeConcurrency,
+    noteScoreSuccess,
     scoreConcurrencyForTest: () => scoreConcurrency,
     setScoreConcurrencyForTest: (v) => { scoreConcurrency = normalizeScoreConcurrency(v); },
+    concurrencyStateForTest: () => ({ effective: effectiveConcurrency, ceiling: concurrencyCeiling, streak: concurrencySuccessStreak }),
+    acquireScoreSlot,
+    releaseScoreSlot,
+    activeScoreSlotsForTest: () => activeScoreSlots,
     detailSeenAppsForTest: () => Object.fromEntries(detailSeenApps),
     memberNamesForTest: () => Object.fromEntries(memberNames)
   };

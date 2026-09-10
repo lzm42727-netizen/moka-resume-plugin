@@ -185,3 +185,33 @@ describe('v1.8.5 JSON 模式、截断处置与并发设置', () => {
     assert.match(bg, /sendResponse\(\{ ok: true, model: info\.model, price: info\.price, concurrency: info\.concurrency \}\)/);
   });
 });
+
+describe('v1.8.6 超时策略与失败分类', () => {
+  it('单次调用超时 150s（思考型模型真实耗时可能 60–150s）', () => {
+    assert.match(bg, /const LLM_TIMEOUT_MS = 150000/);
+    assert.match(bg, /const TIMEOUT_RETRY_MAX = 1/);
+    assert.match(bg, /const TIMEOUT_RETRY_DELAY_MS = 5000/);
+  });
+
+  it('超时最多补一次，失败不再 3 连发（防网关过载雪崩）', () => {
+    assert.match(bg, /if \(isTimeoutError\(error\)\) \{[\s\S]{0,260}timeoutRetries < TIMEOUT_RETRY_MAX/);
+    assert.match(bg, /s 后重试最后一次/);
+    assert.match(bg, /已重试 \$\{TIMEOUT_RETRY_MAX\} 次/);
+    // 超时不再走通用网络重试分支
+    assert.match(bg, /if \(error\.name === 'AbortError' \|\| \/请求超时\/\.test\(msg\)\) return false;/);
+  });
+
+  it('classifyLlmError 把失败归成 timeout/overload/network/config/other', () => {
+    assert.match(bg, /function classifyLlmError\(error\)/);
+    assert.match(bg, /if \(\/未配置\\s\*API\\s\*Key\/i\.test\(msg\)\) return 'config'/);
+    assert.match(bg, /if \(isTimeoutError\(error\)\) return 'timeout'/);
+    assert.match(bg, /return 'overload'/);
+    assert.match(bg, /const OVERLOAD_STATUS_RE = \/API \(\?:错误\|HTTP\) \(429\|50\\d\)\//);
+  });
+
+  it('调用层异常也回包（带 failureKind + meta.errorKind），不再整条请求失败', () => {
+    assert.match(bg, /const kind = classifyLlmError\(error\)/);
+    assert.match(bg, /score: MokaScore\.scoreErrorResult\(msg, kind\)/);
+    assert.match(bg, /meta: \{ cacheHit: false, model: settings\.modelName, errorKind: kind, calls: 0 \}/);
+  });
+});

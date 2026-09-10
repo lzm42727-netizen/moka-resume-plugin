@@ -66,7 +66,10 @@ describe('content.js 任务状态守卫（1.6.18 第一批）', () => {
     assert.match(js, /delete merged\.status;/);
     assert.match(js, /merged\.status = 'awaiting_resume';/);
     // 续筛/开筛写入 running 前都会先置 isScreening=true，不受此守卫影响
-    assert.match(js, /isScreening = true;[\s\S]{0,300}status: 'running',/);
+    // （续筛链路在两者之间还插了 epoch 声明、并发控制器复位、用量恢复等步骤，窗口留宽些）
+    assert.match(js, /isScreening = true;[\s\S]{0,900}status: 'running',/);
+    // 续筛同样持有 epoch，新一轮开筛能叫停旧 worker
+    assert.match(js, /isScreening = true;[\s\S]{0,200}const epoch = \+\+screeningEpoch;/);
   });
 });
 

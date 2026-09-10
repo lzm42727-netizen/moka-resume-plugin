@@ -86,7 +86,11 @@ function normalizeScoreConcurrency(value) {
 
 const MAX_RETRIES = 3;
 const BASE_BACKOFF_MS = 1000;
-const LLM_TIMEOUT_MS = 90000;
+// 思考型模型（M2 等）单次评分可能 60–150s：超时给足，但超时最多只重试 1 次，
+// 免得网关过载时「3 次 HTTP 重试 × 内容侧 3 轮重试」把失败放大成风暴
+const LLM_TIMEOUT_MS = 150000;
+const TIMEOUT_RETRY_MAX = 1;
+const TIMEOUT_RETRY_DELAY_MS = 5000;
 const RESUME_TIMEOUT_MS = 20000;
 const CACHE_LIMIT = 500;
 
@@ -582,63 +586,74 @@ async function handleScoreCandidate({ profile, config }) {
   }
 
   const task = (async () => {
-    const systemPrompt =
-      '你是资深招聘专家，擅长客观评估候选人与岗位的匹配度。'
-      + '严格只输出一个 JSON 对象，禁止输出任何思考过程、前言、分析说明或 markdown。'
-      + '门槛 reason 控制在 40 字以内，highlights/concerns 每条不超过 30 字。';
-    const userPrompt = buildDimensionPrompt(
-      profile, jobSpec, config.jobType, config.jobJD, hardText, feedbackContext
-    )
-      // 解析失败后的重试：附加纠偏指令，压低再次输出非 JSON 的概率（不参与缓存 key）
-      + (config.retryAfterParseError
-        ? '\n\n重要：上一次输出无法解析为 JSON。这次请严格只输出一个 JSON 对象，从 { 开始、到 } 结束，'
-          + '不要输出任何思考过程、解释文字或 markdown 代码块。'
-        : '');
+    try {
+      const systemPrompt =
+        '你是资深招聘专家，擅长客观评估候选人与岗位的匹配度。'
+        + '严格只输出一个 JSON 对象，禁止输出任何思考过程、前言、分析说明或 markdown。'
+        + '门槛 reason 控制在 40 字以内，highlights/concerns 每条不超过 30 字。';
+      const userPrompt = buildDimensionPrompt(
+        profile, jobSpec, config.jobType, config.jobJD, hardText, feedbackContext
+      )
+        // 解析失败后的重试：附加纠偏指令，压低再次输出非 JSON 的概率（不参与缓存 key）
+        + (config.retryAfterParseError
+          ? '\n\n重要：上一次输出无法解析为 JSON。这次请严格只输出一个 JSON 对象，从 { 开始、到 } 结束，'
+            + '不要输出任何思考过程、解释文字或 markdown 代码块。'
+          : '');
 
-    // 推理型模型（如 MiniMax-M2）的思考 token 计入输出预算，上限给足避免 JSON 被截断
-    let llmRes = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: SCORE_MAX_TOKENS, temperature: 0 });
-    const usedCalls = [llmRes];
-    let parsed = parseDimensionResponse(llmRes.content);
-    // 明确被截断（finish_reason=length）且解析失败 → 上限加倍再试一次；两次用量都计入费用
-    if (parsed.parseError && isTruncatedFinish(llmRes.finishReason)) {
-      addPluginLog({ cat: 'warn', text: '评分输出被截断（finish_reason=length），maxTokens 加倍重试一次' });
-      llmRes = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: SCORE_MAX_TOKENS * 2, temperature: 0 });
-      usedCalls.push(llmRes);
-      parsed = parseDimensionResponse(llmRes.content);
-    }
-    const expectedGates = []
-      .concat(jobSpec.languages || [])
-      .concat(jobSpec.customGates || []);
-    const raw = parsed.parseError
-      ? parsed
-      : MokaScore.ensureBonusKeywordResults(
-          MokaScore.ensureHandwrittenGateResults(parsed, expectedGates),
-          jobSpec.bonusKeywords || jobSpec.niceToHaves || []
-        );
+      // 推理型模型（如 MiniMax-M2）的思考 token 计入输出预算，上限给足避免 JSON 被截断
+      let llmRes = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: SCORE_MAX_TOKENS, temperature: 0 });
+      const usedCalls = [llmRes];
+      let parsed = parseDimensionResponse(llmRes.content);
+      // 明确被截断（finish_reason=length）且解析失败 → 上限加倍再试一次；两次用量都计入费用
+      if (parsed.parseError && isTruncatedFinish(llmRes.finishReason)) {
+        addPluginLog({ cat: 'warn', text: '评分输出被截断（finish_reason=length），maxTokens 加倍重试一次' });
+        llmRes = await callLLM(settings, systemPrompt, userPrompt, { maxTokens: SCORE_MAX_TOKENS * 2, temperature: 0 });
+        usedCalls.push(llmRes);
+        parsed = parseDimensionResponse(llmRes.content);
+      }
+      const expectedGates = []
+        .concat(jobSpec.languages || [])
+        .concat(jobSpec.customGates || []);
+      const raw = parsed.parseError
+        ? parsed
+        : MokaScore.ensureBonusKeywordResults(
+            MokaScore.ensureHandwrittenGateResults(parsed, expectedGates),
+            jobSpec.bonusKeywords || jobSpec.niceToHaves || []
+          );
 
-    // 解析失败不写缓存，避免把错误结果固化，下一轮可重试
-    if (!raw.parseError) rememberScore(cacheKey, raw);
-    const llmUsage = usedCalls.reduce((acc, r) => {
-      const u = (r && r.usage) || {};
-      return {
-        inTok: acc.inTok + (Number(u.inTok) > 0 ? Number(u.inTok) : 0),
-        outTok: acc.outTok + (Number(u.outTok) > 0 ? Number(u.outTok) : 0)
+      // 解析失败不写缓存，避免把错误结果固化，下一轮可重试
+      if (!raw.parseError) rememberScore(cacheKey, raw);
+      const llmUsage = usedCalls.reduce((acc, r) => {
+        const u = (r && r.usage) || {};
+        return {
+          inTok: acc.inTok + (Number(u.inTok) > 0 ? Number(u.inTok) : 0),
+          outTok: acc.outTok + (Number(u.outTok) > 0 ? Number(u.outTok) : 0)
+        };
+      }, { inTok: 0, outTok: 0 });
+      const finalContent = llmRes.content || '';
+      const meta = {
+        cacheHit: false,
+        model: settings.modelName,
+        calls: usedCalls.length,
+        inTok: llmUsage.inTok,
+        outTok: llmUsage.outTok,
+        // 诊断字段：网关/模型不给时为空串，不影响主流程
+        finishReason: llmRes.finishReason || '',
+        outLen: finalContent.length,
+        hasThink: /<think/i.test(finalContent),
+        parseFailureKind: raw.parseFailureKind || ''
       };
-    }, { inTok: 0, outTok: 0 });
-    const finalContent = llmRes.content || '';
-    const meta = {
-      cacheHit: false,
-      model: settings.modelName,
-      calls: usedCalls.length,
-      inTok: llmUsage.inTok,
-      outTok: llmUsage.outTok,
-      // 诊断字段：网关/模型不给时为空串，不影响主流程
-      finishReason: llmRes.finishReason || '',
-      outLen: finalContent.length,
-      hasThink: /<think/i.test(finalContent),
-      parseFailureKind: raw.parseFailureKind || ''
-    };
-    return { score: raw, meta };
+      return { score: raw, meta };
+    } catch (error) {
+      // 调用层失败（超时/过载/网络/配置）归成一类，附 failureKind 让内容侧判断是否值得在卡内重试
+      const kind = classifyLlmError(error);
+      const msg = (error && error.message) || '评分失败';
+      addPluginLog({ cat: 'err', text: `评分调用失败（${kind}）：${msg}` });
+      return {
+        score: MokaScore.scoreErrorResult(msg, kind),
+        meta: { cacheHit: false, model: settings.modelName, errorKind: kind, calls: 0 }
+      };
+    }
   })();
   scoreInflight.set(cacheKey, task);
   try {
@@ -688,6 +703,7 @@ async function callLLM(settings, systemPrompt, userPrompt, opts = {}) {
   let req = buildRequest(provider, settings, systemPrompt, userPrompt, opts);
   const jsonModeActive = !!(req.body && req.body.response_format);
   let jsonModeDegraded = false;
+  let timeoutRetries = 0;
 
   let lastError;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -736,6 +752,23 @@ async function callLLM(settings, systemPrompt, userPrompt, opts = {}) {
       throw new Error(`API 错误 ${response.status}: ${errText || response.statusText}`);
     } catch (error) {
       lastError = error;
+      // 超时单独处理：最多补一次，退避后重试；再超时直接放弃（末尾统一补评）
+      if (isTimeoutError(error)) {
+        if (timeoutRetries < TIMEOUT_RETRY_MAX) {
+          timeoutRetries += 1;
+          addPluginLog({
+            cat: 'warn',
+            text: `请求超时（${Math.round(LLM_TIMEOUT_MS / 1000)}s），${TIMEOUT_RETRY_DELAY_MS / 1000}s 后重试最后一次`
+          });
+          await sleep(TIMEOUT_RETRY_DELAY_MS);
+          continue;
+        }
+        addPluginLog({
+          cat: 'err',
+          text: `LLM 请求失败：请求超时（${Math.round(LLM_TIMEOUT_MS / 1000)}s，已重试 ${TIMEOUT_RETRY_MAX} 次）`
+        });
+        throw error;
+      }
       // 网络类错误也重试
       if (attempt < MAX_RETRIES && isRetriableNetworkError(error)) {
         await sleep(BASE_BACKOFF_MS * Math.pow(2, attempt) + Math.random() * 300);
@@ -1279,9 +1312,31 @@ function isRetriableNetworkError(error) {
   if (!error) return false;
   if (error instanceof TypeError) return true; // fetch 网络失败通常是 TypeError
   const msg = String(error.message || '');
-  // 超时后允许有限次重试（瞬时卡顿）
-  if (error.name === 'AbortError' || /请求超时/.test(msg)) return true;
+  // 超时由 callLLM 单独限量处理，不走这里
+  if (error.name === 'AbortError' || /请求超时/.test(msg)) return false;
   return false;
+}
+
+/** 请求超时（AbortController 超时 / 自造「请求超时」错误） */
+function isTimeoutError(error) {
+  if (!error) return false;
+  if (error.name === 'AbortError') return true;
+  return /请求超时|timeout/i.test(String(error.message || ''));
+}
+
+const OVERLOAD_STATUS_RE = /API (?:错误|HTTP) (429|50\d)/;
+
+/**
+ * 给评分失败归类，供内容侧决定「要不要在卡内重试」与「要不要降并发」：
+ * timeout 超时 / overload 网关过载 / network 网络 / config 配置 / other 其他
+ */
+function classifyLlmError(error) {
+  const msg = String((error && error.message) || '');
+  if (/未配置\s*API\s*Key/i.test(msg)) return 'config';
+  if (isTimeoutError(error)) return 'timeout';
+  if (OVERLOAD_STATUS_RE.test(msg)) return 'overload';
+  if (error instanceof TypeError || /Failed to fetch|network/i.test(msg)) return 'network';
+  return 'other';
 }
 
 function sleep(ms) {
