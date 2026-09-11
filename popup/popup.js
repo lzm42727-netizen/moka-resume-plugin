@@ -1238,16 +1238,40 @@ safeEl('toggle-api-key')?.addEventListener('click', function () {
 });
 
 /* 本地私有配置（config.local.js，已 gitignore）：
- * - 接口协议 / API 提供商 / Endpoint 三项：锁为本地私网值（置灰不可改，后台也强制覆盖），避免误改；
- * - 其余（模型名、单价等）只作默认值兜底：本地没写才用，写过的以设置页为准，随时可改。
+ * - 接口协议 / API 提供商 / Endpoint / 模型名四项：锁为本地部署值（置灰不可改，后台也强制覆盖），避免误改；
+ * - 其余（单价、并发等）只作默认值兜底：本地没写才用，写过的以设置页为准，随时可改。
  * 排序与后台一致：DEFAULT_SETTINGS < 本地配置 < 存储里的设置。 */
 const LOCAL_DEFAULTS = (typeof window !== 'undefined' && window.MOKA_LOCAL_SETTINGS) ? window.MOKA_LOCAL_SETTINGS : {};
 
-/** 锁定本地私有配置里的连接三项（模型名与 API Key 仍可自由修改） */
+const LOCAL_LOCK_MAP = { apiProtocol: 'api-protocol', apiProvider: 'api-provider', apiEndpoint: 'api-endpoint', modelName: 'model-name' };
+const PROTOCOL_LABELS = { openai: 'OpenAI 兼容（/chat/completions）', claude: 'Anthropic Claude（/v1/messages）' };
+
+/** 四项部署信息是否齐全：齐全才算「部署模式」，面板收成「摘要条 + API Key」 */
+function localSettingsComplete() {
+  return Object.keys(LOCAL_LOCK_MAP).every((k) => LOCAL_DEFAULTS[k] != null && String(LOCAL_DEFAULTS[k]).trim() !== '');
+}
+
+/** 部署模式：隐藏四个输入框，改用只读摘要条展示部署信息（招聘者只需填 API Key，1.10.0） */
+function applyDeploySummaryView() {
+  const strip = document.getElementById('local-deploy-summary');
+  if (!strip || !localSettingsComplete()) return;
+  const manual = document.getElementById('conn-manual-fields');
+  if (manual) manual.hidden = true;
+  const set = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
+  set('deploy-model', LOCAL_DEFAULTS.modelName);
+  set('deploy-provider', providerLabelFromLegacy(LOCAL_DEFAULTS.apiProvider));
+  set('deploy-protocol', PROTOCOL_LABELS[LOCAL_DEFAULTS.apiProtocol] || LOCAL_DEFAULTS.apiProtocol);
+  set('deploy-endpoint', LOCAL_DEFAULTS.apiEndpoint);
+  strip.hidden = false;
+}
+
+/** 锁定本地私有配置里的四项部署信息，并把面板切成极简模式（API Key 仍可自由修改） */
 function lockLocalConnection() {
   if (!LOCAL_DEFAULTS || !Object.keys(LOCAL_DEFAULTS).length) return;
-  const map = { apiProtocol: 'api-protocol', apiProvider: 'api-provider', apiEndpoint: 'api-endpoint' };
-  Object.entries(map).forEach(([k, id]) => {
+  Object.entries(LOCAL_LOCK_MAP).forEach(([k, id]) => {
     if (LOCAL_DEFAULTS[k] == null) return;
     const el = document.getElementById(id);
     if (!el) return;
@@ -1255,6 +1279,12 @@ function lockLocalConnection() {
     el.disabled = true;
     el.title = '已由本地私有配置锁定，如需修改请编辑 config.local.js';
   });
+  applyDeploySummaryView();
+}
+
+/** 锁定项一律取本地部署值；未锁定时用表单值（部署模式下输入框是隐藏的，也能读对） */
+function lockedOr(key, formValue) {
+  return LOCAL_DEFAULTS[key] != null ? LOCAL_DEFAULTS[key] : formValue;
 }
 
 function readSettingsForm() {
@@ -1263,11 +1293,11 @@ function readSettingsForm() {
     ? Math.min(8, Math.max(1, Math.round(rawConcurrency)))
     : 6;
   return {
-    apiProtocol: document.getElementById('api-protocol')?.value === 'claude' ? 'claude' : 'openai',
-    apiProvider: document.getElementById('api-provider').value.trim(),
-    apiEndpoint: document.getElementById('api-endpoint').value.trim(),
+    apiProtocol: lockedOr('apiProtocol', document.getElementById('api-protocol')?.value === 'claude' ? 'claude' : 'openai'),
+    apiProvider: lockedOr('apiProvider', document.getElementById('api-provider').value.trim()),
+    apiEndpoint: lockedOr('apiEndpoint', document.getElementById('api-endpoint').value.trim()),
     apiKey: document.getElementById('api-key').value,
-    modelName: document.getElementById('model-name').value.trim(),
+    modelName: lockedOr('modelName', document.getElementById('model-name').value.trim()),
     modelInputPrice: String(document.getElementById('model-input-price')?.value || '').trim(),
     modelOutputPrice: String(document.getElementById('model-output-price')?.value || '').trim(),
     // 默认开：网关不支持时后台自动降级，用户无感
@@ -1660,10 +1690,21 @@ async function loadSettings() {
     }
     const jsonModeEl = document.getElementById('force-json-mode');
     if (jsonModeEl) jsonModeEl.checked = s.forceJsonMode !== false;
+    // 自己存过非默认的高级参数（并发≠6 / 关掉 JSON / 填过单价）时自动展开，避免已改过的设置被折叠藏住。
+    // 依据「存储里的设置」而不是合并后的值：否则 config.local.js 预置的默认单价会让高级区永远展开。
+    const stored = result.mokaSettings || {};
+    const storedConc = Number(stored.scoreConcurrency);
+    const advGroup = document.getElementById('conn-adv-group');
+    if (advGroup) {
+      advGroup.open = (Number.isFinite(storedConc) && storedConc > 0 && storedConc !== 6)
+        || stored.forceJsonMode === false
+        || String(stored.modelInputPrice || '').trim() !== ''
+        || String(stored.modelOutputPrice || '').trim() !== '';
+    }
   } catch (error) {
     console.error('加载设置失败:', error);
   }
-  lockLocalConnection(); // 协议/提供商/Endpoint 由本地私有配置锁定（模型名与 Key 可改）
+  lockLocalConnection(); // 协议/提供商/Endpoint/模型名 由本地私有配置锁定（API Key 可改）
   fillProviderPresets(); // 提供商输入框的常用服务候选（可自由填写，不限于候选）
   syncEndpointPlaceholder(); // 按协议更新 Endpoint 占位；地址为空时才补默认值
 }

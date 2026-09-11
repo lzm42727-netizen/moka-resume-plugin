@@ -264,27 +264,45 @@
             <section class="panel">
                 <h3 class="panel-title"><span class="panel-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.8 9.2l2.4-2.4"/><path d="M7.3 5.6l1.1-1.1a2.4 2.4 0 0 1 3.4 3.4l-1.1 1.1"/><path d="M8.7 10.4l-1.1 1.1a2.4 2.4 0 0 1-3.4-3.4l1.1-1.1"/></svg></span>连接与模型</h3>
 
-                <div class="form-group">
-                    <label for="api-protocol">接口协议</label>
-                    <select id="api-protocol">
-                        <option value="openai">OpenAI 兼容（/chat/completions）</option>
-                        <option value="claude">Anthropic Claude（/v1/messages）</option>
-                    </select>
-                    <small>决定请求格式与鉴权头；自建网关、中转、本地模型多选 OpenAI 兼容</small>
+                <!-- 部署模式（存在 config.local.js）：连接信息已预置，此处只读展示，招聘者只需填下面的 API Key（1.10.0） -->
+                <div id="local-deploy-summary" class="deploy-strip" hidden>
+                    <div class="deploy-strip-title">连接信息已预置</div>
+                    <div class="deploy-strip-body">
+                        模型 <code id="deploy-model"></code> · 提供商 <code id="deploy-provider"></code> · 协议 <code id="deploy-protocol"></code><br>
+                        <span id="deploy-endpoint"></span>
+                    </div>
+                    <div class="deploy-strip-hint">你只需填写下方 API Key；如需更换连接信息，请编辑 config.local.js 后重新加载扩展</div>
                 </div>
 
-                <div class="form-group">
-                    <label for="api-provider">API 提供商</label>
-                    <input type="text" id="api-provider" list="api-provider-presets" placeholder="可自由填写，如 OpenAI / DeepSeek / 企业网关" class="input-field">
-                    <datalist id="api-provider-presets"></datalist>
-                    <small>选一个常用服务会自动填好 Endpoint 与模型名，之后仍可任意手改</small>
-                </div>
+                <!-- 没有本地私有配置时展开完整表单（开源 / 本地自用） -->
+                <div id="conn-manual-fields">
+                    <div class="form-group">
+                        <label for="api-protocol">接口协议</label>
+                        <select id="api-protocol">
+                            <option value="openai">OpenAI 兼容（/chat/completions）</option>
+                            <option value="claude">Anthropic Claude（/v1/messages）</option>
+                        </select>
+                        <small>决定请求格式与鉴权头；自建网关、中转、本地模型多选 OpenAI 兼容</small>
+                    </div>
 
-                <!-- Endpoint 常显可编辑：OpenAI 官方地址、中转、自建、本地服务都能填 -->
-                <div class="form-group" id="endpoint-group">
-                    <label for="api-endpoint">API Endpoint</label>
-                    <input type="text" id="api-endpoint" placeholder="https://api.openai.com/v1/chat/completions" class="input-field">
-                    <small>填完整地址；只填到 /v1 会自动补 /chat/completions。保存时会申请访问该域名</small>
+                    <div class="form-group">
+                        <label for="api-provider">API 提供商</label>
+                        <input type="text" id="api-provider" list="api-provider-presets" placeholder="可自由填写，如 OpenAI / DeepSeek / 企业网关" class="input-field">
+                        <datalist id="api-provider-presets"></datalist>
+                        <small>选一个常用服务会自动填好 Endpoint 与模型名，之后仍可任意手改</small>
+                    </div>
+
+                    <!-- Endpoint 常显可编辑：OpenAI 官方地址、中转、自建、本地服务都能填 -->
+                    <div class="form-group" id="endpoint-group">
+                        <label for="api-endpoint">API Endpoint</label>
+                        <input type="text" id="api-endpoint" placeholder="https://api.openai.com/v1/chat/completions" class="input-field">
+                        <small>填完整地址；只填到 /v1 会自动补 /chat/completions。保存时会申请访问该域名</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="model-name">模型名称</label>
+                        <input type="text" id="model-name" placeholder="如 gpt-4o / claude-sonnet / minimax-m2.7" class="input-field">
+                    </div>
                 </div>
 
                 <div class="form-group">
@@ -299,31 +317,29 @@
                     <small>只保存在本地浏览器，不会上传到任何服务器</small>
                 </div>
 
-                <div class="form-group">
-                    <label for="model-name">模型名称</label>
-                    <input type="text" id="model-name" placeholder="如 gpt-4o / claude-sonnet / minimax-m2.7" class="input-field">
-                </div>
-
-                <div class="form-group">
-                    <label for="score-concurrency">评分并发数</label>
-                    <input type="number" id="score-concurrency" min="1" max="8" step="1" inputmode="numeric" placeholder="默认 6（可选 1–8）" class="input-field">
-                    <small>同时评分的候选人数（1–8，默认 6）。企业网关或本地模型可调大提速；被限流时调小</small>
-                </div>
-
-                <div class="form-group form-group-tight">
-                    <label class="choice-pill"><input type="checkbox" id="force-json-mode"> 强制 JSON 输出（推荐）</label>
-                    <small>对自定义/中转端点请求结构化 JSON 输出；网关不支持时会自动去掉该参数降级重试，无需手动关闭</small>
-                </div>
-
-                <!-- 高级 · 费用估算：默认收起，需要自定义单价再展开 -->
-                <details class="adv-group">
-                    <summary>高级 · 费用估算单价（可选）</summary>
+                <!-- 高级 · 测评参数与费用单价：均有可用默认值（并发 6 / JSON 开 / 单价留空用内置），默认收起 -->
+                <details class="adv-group" id="conn-adv-group">
+                    <summary>高级 · 测评参数与费用单价（可选）</summary>
                     <div class="adv-group-body">
-                        <div class="price-row">
-                            <input type="text" id="model-input-price" inputmode="decimal" placeholder="输入价 元/百万（留空用内置）" class="input-field">
-                            <input type="text" id="model-output-price" inputmode="decimal" placeholder="输出价 元/百万（留空用内置）" class="input-field">
+                        <div class="form-group">
+                            <label for="score-concurrency">评分并发数</label>
+                            <input type="number" id="score-concurrency" min="1" max="8" step="1" inputmode="numeric" placeholder="默认 6（可选 1–8）" class="input-field">
+                            <small>同时评分的候选人数（1–8，默认 6）。企业网关或本地模型可调大提速；被限流时调小</small>
                         </div>
-                        <small>用于筛选费用估算；厂商调价或中转价不同时，填这里覆盖内置价目表（如 MiniMax-M2.7 输入 2.1 / 输出 8.4 元每百万）</small>
+
+                        <div class="form-group form-group-tight">
+                            <label class="choice-pill"><input type="checkbox" id="force-json-mode"> 强制 JSON 输出（推荐）</label>
+                            <small>对自定义/中转端点请求结构化 JSON 输出；网关不支持时会自动去掉该参数降级重试，无需手动关闭</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label>费用估算单价（可选）</label>
+                            <div class="price-row">
+                                <input type="text" id="model-input-price" inputmode="decimal" placeholder="输入价 元/百万（留空用内置）" class="input-field">
+                                <input type="text" id="model-output-price" inputmode="decimal" placeholder="输出价 元/百万（留空用内置）" class="input-field">
+                            </div>
+                            <small>用于筛选费用估算；厂商调价或中转价不同时，填这里覆盖内置价目表（如 MiniMax-M2.7 输入 2.1 / 输出 8.4 元每百万）</small>
+                        </div>
                     </div>
                 </details>
 

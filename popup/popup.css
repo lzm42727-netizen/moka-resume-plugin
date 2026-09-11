@@ -2045,6 +2045,48 @@ select:focus {
   margin-top: 8px;
 }
 
+/* ===== 部署模式摘要条（1.10.0）：存在 config.local.js 时，替代四个被锁定的连接字段 ===== */
+.deploy-strip {
+  margin: 0 0 14px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  border-radius: var(--radius);
+  background: var(--bg-muted);
+}
+
+.deploy-strip[hidden],
+#conn-manual-fields[hidden] {
+  display: none;
+}
+
+.deploy-strip-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.deploy-strip-body {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.deploy-strip-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--text);
+}
+
+.deploy-strip-hint {
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
 /* 设置页节奏统一：组间距、说明文字、隐藏组的兜底（不改其他标签页） */
 #settings-tab .panel {
   padding: 14px 0 12px;

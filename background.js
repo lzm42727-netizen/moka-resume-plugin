@@ -32,8 +32,8 @@ safeImportScripts('lib/feedback.js');
 safeImportScripts('lib/screening-job.js');
 safeImportScripts('lib/usage.js');
 safeImportScripts('lib/plugin-log.js');
-/** 本地私有配置（config.local.js）：三项连接信息强制覆盖，其余只作默认值兜底 */
-const LOCAL_LOCKED_KEYS = ['apiProtocol', 'apiProvider', 'apiEndpoint'];
+/** 本地私有配置（config.local.js）：四项部署信息强制覆盖，其余只作默认值兜底（1.10.0 起模型名也锁定） */
+const LOCAL_LOCKED_KEYS = ['apiProtocol', 'apiProvider', 'apiEndpoint', 'modelName'];
 
 function localPrivateSettings() {
   return (typeof self !== 'undefined' && self.MOKA_LOCAL_SETTINGS) ? self.MOKA_LOCAL_SETTINGS : {};
@@ -41,8 +41,9 @@ function localPrivateSettings() {
 
 /**
  * 合并本地私有配置：
- * - 先把它当默认值（用户/存储里有值就覆盖它）——模型名、单价等因此始终可改；
- * - 再把协议/提供商/Endpoint 按本地值锁回去（私网地址不允许被界面误改）。
+ * - 先把它当默认值（用户/存储里有值就覆盖它）——单价、并发等因此始终可改；
+ * - 再把协议/提供商/Endpoint/模型名按本地值锁回去（部署信息不允许被界面误改），
+ *   招聘者真正需要填的只有 API Key。
  */
 function withLocalSettings(input) {
   const local = localPrivateSettings();

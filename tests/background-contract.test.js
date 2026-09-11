@@ -239,14 +239,14 @@ describe('v1.8.9 接口协议与自由提供商', () => {
   });
 });
 
-describe('v1.9.1 本地私有配置：连接三项锁定、模型名可改', () => {
-  it('协议/提供商/Endpoint 由本地配置强制覆盖（私网地址不被误改）', () => {
-    assert.match(bg, /const LOCAL_LOCKED_KEYS = \['apiProtocol', 'apiProvider', 'apiEndpoint'\]/);
+describe('v1.10.0 本地私有配置：连接四项锁定（含模型名），招聘者只需填 API Key', () => {
+  it('协议/提供商/Endpoint/模型名 由本地配置强制覆盖（部署信息不被误改）', () => {
+    assert.match(bg, /const LOCAL_LOCKED_KEYS = \['apiProtocol', 'apiProvider', 'apiEndpoint', 'modelName'\]/);
     assert.match(bg, /LOCAL_LOCKED_KEYS\.forEach\(\(k\) => \{[\s\S]{0,80}out\[k\] = local\[k\];/);
     assert.doesNotMatch(bg, /localForcedSettings/);
   });
 
-  it('模型名等其余字段只作兜底：调用方给了就优先（默认值合并）', () => {
+  it('其余字段只作兜底：调用方给了就优先（默认值合并；单价/并发等仍可改）', () => {
     assert.match(bg, /const out = \{ \.\.\.DEFAULT_SETTINGS, \.\.\.local, \.\.\.\(input \|\| \{\}\) \}/);
     assert.match(bg, /resolve\(withLocalSettings\(result\.mokaSettings\)\)/);
     assert.match(bg, /const settings = withLocalSettings\(inputSettings\);/);

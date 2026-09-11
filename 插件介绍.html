@@ -482,7 +482,7 @@
   <div class="topbar-in">
     <b>Moka 智能简历筛选助手</b>
     <span class="sep">/</span><span>CHROME 侧栏插件</span>
-    <span class="sep">/</span><span>V1.9.9</span>
+    <span class="sep">/</span><span>V1.10.0</span>
     <span class="sep">/</span><span>招聘团队内部工具</span>
   </div>
 </div>
@@ -642,12 +642,12 @@
       </li>
       <li>
         <h4>在「设置」里配好 AI 接口</h4>
-        <p>接口协议 / 提供商 / Endpoint 已由公司内网的 model router 统一配置并锁定，<strong>你只需要填两样</strong>：<strong>API Key</strong> 和<strong>模型名称</strong>（同网关的不同模型可随时切换，改完即生效）。点一下 <span class="ui">💾 保存并测试</span> 一步完成保存 + 连接校验（成功 / 失败都会在按钮旁提示）。内网模型需在办公网或 VPN 下测试；Key 只存在你自己浏览器里。</p>
+        <p>接口协议 / 提供商 / Endpoint / 模型名称都已由公司内网的 model router 统一配置并锁定，设置页只把它们显示成一条只读的「连接信息已预置」摘要，<strong>你只需要填一样</strong>：<strong>API Key</strong>。点一下 <span class="ui">💾 保存并测试</span> 一步完成保存 + 连接校验（成功 / 失败都会在按钮旁提示）。内网模型需在办公网或 VPN 下测试；Key 只存在你自己浏览器里。</p>
       </li>
     </ol>
     <div class="tip calm">
-      <b>设置页还有两个进阶项，默认够用</b>
-      「评分并发数」默认 6，自建网关或本地模型可调到 8 提速、被限流时调小；「强制 JSON 输出」默认开启，网关不支持时会自动去掉该参数降级重试，不用手动关。
+      <b>设置页还有一组进阶项，默认够用</b>
+      「评分并发数」默认 6，自建网关或本地模型可调到 8 提速、被限流时调小；「强制 JSON 输出」默认开启，网关不支持时会自动去掉该参数降级重试，不用手动关；「费用估算单价」已按内网模型预置（结果页的「预估花费」靠它算，别清空）。三项都收在「高级 · 测评参数与费用单价」折叠区里，平时不用展开。
     </div>
     <div class="tip calm">
       <b>以后代码更新了怎么升级？不会自动更新</b>
@@ -917,7 +917,7 @@
   </section>
 
   <footer>
-    <span>Moka 智能简历筛选助手 · v1.9.9 · 招聘团队内部工具</span>
+    <span>Moka 智能简历筛选助手 · v1.10.0 · 招聘团队内部工具</span>
     <span>安装、配置与完整排查见《使用说明.html》</span>
   </footer>
 

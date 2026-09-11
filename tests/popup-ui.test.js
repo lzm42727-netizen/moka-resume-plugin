@@ -494,17 +494,36 @@ describe('settings UI de-clutter (endpoint visibility / advanced fold / save-and
     assert.match(js, /fillProviderPresets\(\);[\s\S]{0,120}syncEndpointPlaceholder\(\);/);
   });
 
-  it('1.9.1 本地私有配置：连接三项锁定，模型名仍可改', () => {
-    // 本地配置先当默认值参与合并（所以模型名可被设置页覆盖）
+  it('1.10.0 本地私有配置：四项部署信息锁定，面板收成「摘要 + API Key」', () => {
+    // 本地配置先当默认值参与合并；锁定的四项随后被覆盖
     assert.match(js, /const LOCAL_DEFAULTS = \(typeof window !== 'undefined' && window\.MOKA_LOCAL_SETTINGS\)/);
     assert.match(js, /const s = \{ \.\.\.LOCAL_DEFAULTS, \.\.\.\(result\.mokaSettings \|\| \{\}\) \}/);
-    // 连接三项锁回去（置灰 + 提示改文件）
+    // 四项锁回去（置灰 + 提示改文件），模型名也在名单里
     assert.match(js, /function lockLocalConnection\(\)/);
-    assert.match(js, /const map = \{ apiProtocol: 'api-protocol', apiProvider: 'api-provider', apiEndpoint: 'api-endpoint' \}/);
+    assert.match(js, /const LOCAL_LOCK_MAP = \{ apiProtocol: 'api-protocol', apiProvider: 'api-provider', apiEndpoint: 'api-endpoint', modelName: 'model-name' \}/);
     assert.match(js, /已由本地私有配置锁定，如需修改请编辑 config\.local\.js/);
-    // 模型名不在锁定名单里
-    assert.doesNotMatch(js, /modelName: 'model-name'/);
+    // 部署模式：隐藏四个输入框，改用只读摘要条展示部署信息
+    assert.match(html, /id="local-deploy-summary" class="deploy-strip" hidden/);
+    assert.match(html, /id="conn-manual-fields"/);
+    assert.match(js, /function applyDeploySummaryView\(\)/);
+    assert.match(js, /if \(manual\) manual\.hidden = true;/);
+    assert.match(js, /strip\.hidden = false;/);
+    // 四项齐全才算部署模式；缺项时退回完整表单，不做半截隐藏
+    assert.match(js, /function localSettingsComplete\(\)/);
+    // 锁定项一律取本地部署值（部署模式下输入框是隐藏的，也能读对）
+    assert.match(js, /function lockedOr\(key, formValue\)/);
+    assert.match(js, /modelName: lockedOr\('modelName', document\.getElementById\('model-name'\)\.value\.trim\(\)\)/);
     assert.match(js, /lockLocalConnection\(\);[\s\S]{0,120}fillProviderPresets\(\);/);
+  });
+
+  it('1.10.0 部署模式：四项不齐时不隐藏任何字段（回退完整表单，不做半截隐藏）', () => {
+    // 判定依据是「四项齐全」，而不是「有没有配置文件」
+    assert.match(js, /return Object\.keys\(LOCAL_LOCK_MAP\)\.every\(\(k\) => LOCAL_DEFAULTS\[k\] != null && String\(LOCAL_DEFAULTS\[k\]\)\.trim\(\) !== ''\)/);
+    assert.match(js, /if \(!strip \|\| !localSettingsComplete\(\)\) return;/);
+    // 摘要条自带 hidden，只有确认进入部署模式后才移除
+    assert.match(html, /id="local-deploy-summary" class="deploy-strip" hidden/);
+    // 样式兜底：两个容器被 hidden 属性藏起来时确实不占位
+    assert.match(css, /\.deploy-strip\[hidden\],\s*#conn-manual-fields\[hidden\] \{\s*display: none;/);
   });
 
   it('老配置自动迁移：只有 apiProvider 时也能还原出协议与提供商名', () => {
@@ -512,14 +531,22 @@ describe('settings UI de-clutter (endpoint visibility / advanced fold / save-and
     assert.match(js, /openai: 'OpenAI', claude: 'Anthropic Claude', custom: '自建 \/ 中转网关'/);
     assert.match(js, /const legacyClaude = !s\.apiProtocol && s\.apiProvider === 'claude'/);
     assert.match(js, /protocolEl\.value = \(s\.apiProtocol === 'claude' \|\| legacyClaude\) \? 'claude' : 'openai'/);
-    assert.match(js, /apiProtocol: document\.getElementById\('api-protocol'\)\?\.value === 'claude' \? 'claude' : 'openai'/);
+    assert.match(js, /apiProtocol: lockedOr\('apiProtocol', document\.getElementById\('api-protocol'\)\?\.value === 'claude' \? 'claude' : 'openai'\)/);
   });
 
-  it('folds the optional custom price into an 高级 · 费用估算 details', () => {
-    assert.match(html, /<details class="adv-group">[\s\S]{0,120}<summary>高级 · 费用估算单价（可选）<\/summary>/);
+  it('folds 并发 / 强制 JSON / 单价 into one 高级 details (collapsed by default)', () => {
+    assert.match(html, /<details class="adv-group" id="conn-adv-group">[\s\S]{0,140}<summary>高级 · 测评参数与费用单价（可选）<\/summary>/);
     assert.match(html, /id="model-input-price"/);
     assert.match(html, /id="model-output-price"/);
     assert.match(html, /留空用内置|内置价目表/);
+    // 三项都在同一个折叠区里，且默认收起
+    assert.match(html, /id="score-concurrency"[\s\S]{0,900}id="force-json-mode"[\s\S]{0,900}id="model-input-price"/);
+    assert.doesNotMatch(html, /<details class="adv-group" id="conn-adv-group" open/);
+    // 自己存过非默认的高级参数（并发≠6 / 关掉 JSON / 填过单价）时自动展开，避免设置被藏住；
+    // 依据「存储里的设置」而非合并值，否则 config.local.js 预置的默认单价会让它永远展开
+    assert.match(js, /advGroup\.open = /);
+    assert.match(js, /stored\.forceJsonMode === false/);
+    assert.doesNotMatch(js, /advGroup\.open = \(Number\(s\.scoreConcurrency\)/);
   });
 
   it('merges 保存 and 测试 into one save-and-test action', () => {
@@ -624,8 +651,8 @@ describe('v1.8.5 设置页新增并发数 / JSON 模式', () => {
   it('连接与模型卡片提供「评分并发数」与「强制 JSON 输出」', () => {
     assert.match(html, /<input type="number" id="score-concurrency" min="1" max="8" step="1"/);
     assert.match(html, /<input type="checkbox" id="force-json-mode"> 强制 JSON 输出（推荐）/);
-    // 控件位置：紧跟模型名称之后，属于「连接与模型」卡片
-    assert.match(html, /id="model-name"[\s\S]{0,600}id="score-concurrency"[\s\S]{0,600}id="force-json-mode"/);
+    // 控件位置：仍在「连接与模型」卡片内；并发 / JSON 自 1.10.0 起收进「高级」折叠区
+    assert.match(html, /id="model-name"[\s\S]{0,2200}id="score-concurrency"[\s\S]{0,600}id="force-json-mode"/);
   });
 
   it('readSettingsForm 落库 forceJsonMode / scoreConcurrency 并做边界夹取', () => {
