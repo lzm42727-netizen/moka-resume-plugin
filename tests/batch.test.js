@@ -15,6 +15,8 @@ function source(rel) {
   return fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
 }
 
+const css = source('popup/popup.css');
+
 const TEMPLATE = JSON.stringify({
   applicationIds: [839908318, 839909893],
   assigneeIds: [6397518, 8981545],
@@ -182,12 +184,28 @@ describe('batch wiring', () => {
   it('lets the assignee be confirmed up front in the config tab', () => {
     const html = source('popup/popup.html');
     const js = source('popup/popup.js');
+    const content = source('content.js');
     // 配置页分配对象区块：状态行 + 重新读取 + 确认按钮
     assert.match(html, /id="assignee-status"/);
     assert.match(html, /id="refresh-assignee"/);
     assert.match(html, /id="confirm-assignee"/);
-    assert.match(js, /async function renderAssigneeStatus\(\)/);
+    assert.match(js, /async function renderAssigneeStatus\(viaButton\)/);
     assert.match(js, /function confirmAssigneeForCurrentJob/);
+    // 点「重新读取」必须有视觉反馈（读取很快、文案没变化时会像没反应），且与自动刷新区分开
+    assert.match(css, /#assignee-status\.flash/);
+    assert.match(js, /refresh-assignee'\)\?\.addEventListener\('click', \(\) => renderAssigneeStatus\(true\)\)/);
+    assert.match(js, /if \(viaButton && el\)/);
+    // 未记录时的指引必须点出 Moka 的实际入口「推荐给用人部门」+ 两步顺序（弹窗没开就读不到人名）
+    assert.match(js, /点「推荐给用人部门」打开弹窗——选好人就行，不用真发出去/);
+    assert.match(js, /② 回这里点「重新读取」/);
+    // 主动点「重新读取」却没比对到页面（弹窗没开）时必须点破，否则像按钮坏了
+    assert.match(js, /renderAssigneeStatusInner\(viaButton\)/);
+    assert.match(js, /本次未检测到打开的「推荐给用人部门」弹窗/);
+    assert.match(js, /const compareMissedHint = viaButton && noLiveRead/);
+    // 只读比对也走「anchored 优先、pageWide 兜底 + 数量门」：只回 anchored 会把标签识别失败
+    // 误判成「弹窗没开」，已记录的旧人选就永远没人质疑
+    assert.match(js, /readOnly: true, count: ctx\.assigneeCount/);
+    assert.match(content, /pickValidAssigneeNames\(scraped\.anchored, scraped\.pageWide, count\)/);
     // 确认流程：采纳弹窗人选（adoptScrapedAssignees）→ stampAssigneeConfirmed 落确认章
     assert.match(js, /confirmAssigneeForCurrentJob[\s\S]{0,1000}adoptScrapedAssignees/);
     assert.match(js, /function stampAssigneeConfirmed[\s\S]{0,800}putJobPreset/);

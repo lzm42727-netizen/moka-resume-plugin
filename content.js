@@ -1480,12 +1480,17 @@ function init() {
       return true;
     } else if (request.action === 'scrapeAssigneeNames') {
       // 配置页「重新读取」：弹窗开着时直接从页面 DOM 实时刮「推荐到」姓名；
-      // readOnly=true 时只读不落库（供「已记录 vs 弹窗当前」比对，防显示与 id 脱钩）
+      // readOnly=true 时只读不落库（供「已记录 vs 弹窗当前」比对，防显示与 id 脱钩）。
+      // 只读比对同样走「anchored 优先、pageWide 兜底 + 数量门」（count 由调用方传入）：
+      // 只回 anchored 的话，标签邻域识别失败会被误判成「弹窗没开」，旧记录永远没人质疑
       const scraped = scrapeRecommendChipNamesFromDom();
       if (request.readOnly) {
+        const count = Number(request.count) || 0;
         sendResponse({
           ok: true,
-          names: (Array.isArray(scraped.anchored) ? scraped.anchored : []).slice(0, 5),
+          names: count
+            ? pickValidAssigneeNames(scraped.anchored, scraped.pageWide, count)
+            : (Array.isArray(scraped.anchored) ? scraped.anchored : []).slice(0, 5),
           debug: { labels: scraped.labels, anchored: scraped.anchored, pageWide: scraped.pageWide }
         });
         return false;
@@ -3374,7 +3379,13 @@ async function runMokaActionOnPage(action) {
   else if (action === 'eliminate') trace = await MokaActions.automateEliminate(document);
   else throw new Error('未知操作类型');
   logMokaActionTrace(action, trace);
-  await MokaActions.sleep(700);
+  await MokaActions.sleep(300);
+}
+
+/** 失败也要在运行日志留痕：之前失败路径只弹横幅不写日志，排查时一片空白（1.10.2） */
+function logMokaActionFailure(action, msg) {
+  const label = action === 'recommend' ? '推荐给用人部门' : action === 'eliminate' ? '淘汰' : 'Moka 操作';
+  pushPluginLog({ cat: 'err', text: label + '：失败：' + (msg || '未知错误') });
 }
 
 function mokaActionStatusText(action) {
@@ -3403,6 +3414,7 @@ async function resumePendingMokaAction() {
   if (!pending) return { ok: false, skipped: true, reason: 'no-pending' };
 
   if (MokaActions.pendingActionState(pending, Date.now()) === 'stale') {
+    logMokaActionFailure(pending.action, '操作超时，待办已过期清除');
     await clearPendingMokaActionLocal();
     await restoreResultsSilently(pending.pipelineId);
     publishResults('❌ Moka 操作超时，请手动操作或重试', undefined, { flush: true });
@@ -3484,6 +3496,7 @@ async function resumePendingMokaAction() {
   } catch (err) {
     const msg = (err && err.message) || 'Moka 操作失败';
     const failed = Object.assign({}, pending);
+    logMokaActionFailure(failed.action, msg);
     await clearPendingMokaActionLocal();
     if (failed.listUrl && !isOnListPage()) {
       scheduleMokaNavigation(() => { location.href = failed.listUrl; });
@@ -3565,7 +3578,7 @@ async function handleBatchAssign(appIds) {
   if (!template || template.url == null || !lastAssigneeIds.length) {
     return {
       ok: false,
-      error: '本职位尚未记录简历推荐对象：请先在本职位手动批量分配一次（每个职位的简历推荐对象各自记录，不会串用）'
+      error: '本职位尚未记录简历推荐对象：请先在本职位的简历列表页勾选候选人、点「推荐给用人部门」打开弹窗（插件自动记录），再回「配置」页点「重新读取」（每个职位的简历推荐对象各自记录，不会串用）'
     };
   }
   const built = MokaBatch.buildBatchAssignmentBody(
@@ -3590,6 +3603,44 @@ async function handleBatchAssign(appIds) {
   };
 }
 
+/** 单个推荐优先走 API 直连重放（与批量推进同源，1.10.5）。
+ *  背景：DOM 自动化要整页跳详情页再跳回，慢（10~30s）且确认按钮一旦找不到就失败；
+ *  重放毫秒级完成、不碰 DOM。返回 null = 本职位无模板/请求体不适配，调用方回退 DOM；
+ *  否则返回最终响应（已负责日志、结果横幅与完成通知，调用方直接 return）。
+ *  安全性：重放的是用户在本职位弹窗里亲手点「推荐」捕获的同一请求，仅替换单个
+ *  applicationId；模板按职位隔离，不会串岗。 */
+async function tryRecommendByReplay(appId, pipelineId) {
+  if (!pipelineId) return null;
+  const template = await loadAssignmentForCurrentPipeline();
+  if (!template || template.url == null || !lastAssigneeIds.length) return null;
+  const built = MokaBatch.buildBatchAssignmentBody(template.body, [appId], lastAssigneeIds);
+  if (!built.ok) return null;
+  const assigneeLabel = (lastAssigneeNames || []).slice(0, 5).join('/');
+  pushPluginLog({
+    cat: 'info',
+    text: '推荐给用人部门（直连重放）：1 位' + (assigneeLabel ? ' → ' + assigneeLabel : '')
+  });
+  const finish = (resp) => { mokaActionBusy = false; return resp; };
+  const sent = await requestMainWorldAssignment({
+    url: template.url,
+    headers: MokaBatch.sanitizeCapturedHeaders(template.headers),
+    body: JSON.stringify(built.body)
+  });
+  if (sent.error) {
+    const msg = sent.error || '推荐请求失败，请检查 Moka 页面是否可访问';
+    pushPluginLog({ cat: 'err', text: '推荐给用人部门（直连重放）失败：' + msg });
+    return finish({ ok: false, error: msg });
+  }
+  const evaluated = MokaBatch.evaluateAssignmentResponse(sent.status, sent.text);
+  if (!evaluated.ok) {
+    pushPluginLog({ cat: 'err', text: '推荐给用人部门（直连重放）失败：' + (evaluated.error || '响应异常') });
+    return finish(evaluated);
+  }
+  await publishWithResults('✅ 已推荐给用人部门（直连重放），Moka 页面即将刷新', undefined, pipelineId);
+  notifyMokaActionComplete({ ok: true, appId, type: 'recommend', replayed: true });
+  return finish({ ok: true, replayed: true, type: 'recommend', appId });
+}
+
 async function handleMokaAction(appId, type) {
   if (mokaActionBusy) return { ok: false, error: '上一位候选人操作尚未完成，请稍候' };
   if (isScreening) return { ok: false, error: '筛选进行中，请稍后再操作' };
@@ -3611,6 +3662,13 @@ async function handleMokaAction(appId, type) {
     persistLastScreeningNow();
     const ctx = parsePageContext();
     const pipelineId = (ctx && ctx.pipelineId) || pipelineIdFromUrl(location.href);
+
+    // 推荐：本职位已记录分配模板时优先 API 直连重放（毫秒级、不碰 DOM、不跳页面）
+    if (action === 'recommend') {
+      const replay = await tryRecommendByReplay(id, pipelineId);
+      if (replay) return replay;
+    }
+
     const listUrl = await resolveListUrl(pipelineId);
     if (!listUrl) {
       return { ok: false, error: '无法定位列表页，请回到 Moka 候选人列表后重试' };

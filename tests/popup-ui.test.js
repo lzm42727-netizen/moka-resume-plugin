@@ -456,7 +456,15 @@ describe('settings 运行日志 panel', () => {
     assert.match(js, /async function copyCurrentLog[\s\S]{0,200}navigator\.clipboard\.writeText/);
     assert.match(js, /function exportCurrentLog[\s\S]{0,900}\.txt/);
     // 后台广播实时追加 + 进设置页补拉一次
-    assert.match(js, /request\.action === 'pluginLogEntry'[\s\S]{0,120}appendPluginLogEntry/);
+    assert.match(js, /request\.action === 'pluginLogEntry'[\s\S]{0,120}appendPluginLogEntry\(request\.entry, request\.replaceTail === true\)/);
+    // 直连重放后延迟刷新 Moka 标签页（1.10.6）：与批量推进共用 reloadMokaTabSoon
+    assert.match(js, /function reloadMokaTabSoon\(\)[\s\S]{0,300}chrome\.tabs\.reload\(tab\.id\)/);
+    assert.match(js, /if \(resp\.replayed\) reloadMokaTabSoon\(\);/);
+    assert.match(js, /reloadMokaTabSoon\(\);\n {4}closeBatchPanel\(\);/);
+    // 折叠更新（1.10.4）：replaceTail 原地改写末行（×N 递增），不追加新行
+    assert.match(js, /function collapseBaseText\(text\)/);
+    assert.match(js, /if \(replaceTail && tail && tail\.cat === normalized\.cat\n {4}&& collapseBaseText\(tail\.text\) === collapseBaseText\(normalized\.text\)\)/);
+    assert.match(js, /list\.replaceChild\(buildLogRow\(tail\), list\.lastElementChild\)/);
     assert.match(js, /if \(tabName === 'settings'\) reloadPluginLog\(\);/);
     // 清空/查看前先把 content 本地队列冲给 background，防止旧日志清完后复活
     assert.match(js, /function flushContentLogQueues[\s\S]{0,500}action: 'flushPluginLog'/);

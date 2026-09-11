@@ -57,6 +57,35 @@ describe('content.js 运行日志接入点', () => {
   });
 });
 
+describe('content.js Moka 动作失败留痕（1.10.2）', () => {
+  it('推荐/淘汰失败必须写运行日志（cat: err）：之前失败路径只弹横幅，日志一片空白', () => {
+    assert.match(js, /function logMokaActionFailure\(action, msg\)/);
+    assert.match(js, /cat: 'err', text: label \+ '：失败：' \+ \(msg \|\| '未知错误'\)/);
+    // 外层 catch 与超时残留两条失败路径都要落日志
+    assert.match(js, /const failed = Object\.assign\(\{\}, pending\);\n {4}logMokaActionFailure\(failed\.action, msg\);/);
+    assert.match(js, /logMokaActionFailure\(pending\.action, '操作超时，待办已过期清除'\)/);
+  });
+
+  it('成功轨迹仍走 logMokaActionTrace（cat: info），失败不冒充成功', () => {
+    assert.match(js, /function logMokaActionTrace\(action, trace\)[\s\S]{0,300}cat: 'info',/);
+    assert.match(js, /logMokaActionTrace\(action, trace\);\n {2}await MokaActions\.sleep\(300\);/);
+  });
+
+  it('单个推荐优先 API 直连重放（1.10.5）：有模板走批量同源链路，无模板回退 DOM', () => {
+    assert.match(js, /async function tryRecommendByReplay\(appId, pipelineId\)/);
+    // 模板缺失 → 返回 null 交给 DOM 链路；请求体不适配同样回退
+    assert.match(js, /if \(!template \|\| template\.url == null \|\| !lastAssigneeIds\.length\) return null;/);
+    assert.match(js, /if \(!built\.ok\) return null;/);
+    // 成功：info 轨迹 + 完成通知；失败：err 留痕；两条路都要复位 mokaActionBusy
+    assert.match(js, /推荐给用人部门（直连重放）：1 位/);
+    assert.match(js, /推荐给用人部门（直连重放）失败：/);
+    assert.match(js, /notifyMokaActionComplete\(\{ ok: true, appId, type: 'recommend', replayed: true \}\)/);
+    assert.match(js, /const finish = \(resp\) => \{ mokaActionBusy = false; return resp; \};/);
+    // handleMokaAction 只在 recommend 时尝试重放，失败回退原 DOM 链路
+    assert.match(js, /if \(action === 'recommend'\) \{\n {6}const replay = await tryRecommendByReplay\(id, pipelineId\);\n {6}if \(replay\) return replay;\n {4}\}/);
+  });
+});
+
 describe('content.js 任务状态守卫（1.6.18 第一批）', () => {
   it('停止/暂停后，在途 worker 的进度心跳不得把终态写回 running', () => {
     // 防的正是：用户点「停止」瞬间仍有 worker 卡在评分 await（最长 120s），

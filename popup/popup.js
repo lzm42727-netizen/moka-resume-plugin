@@ -1403,7 +1403,7 @@ const LOG_FILTER_CATS = {
   score: ['score'],
   err: ['warn', 'err']
 };
-const PLUGIN_LOG_LOCAL_MAX = 400; // background 环只留 100，本地防御性多留一点
+const PLUGIN_LOG_LOCAL_MAX = 600; // background 环留 500（1.10.3），本地防御性多留一点
 
 const pluginLogState = { entries: [], filter: 'all', paused: false, stick: true };
 let logFlashTimer = null;
@@ -1477,17 +1477,43 @@ function renderPluginLog() {
   if (pluginLogState.stick) list.scrollTop = list.scrollHeight;
 }
 
-function appendPluginLogEntry(entry) {
+/** 去掉折叠计数后缀（「地址 ×N」→「地址」），用于判定折叠更新作用于同一行 */
+function collapseBaseText(text) {
+  return String(text || '').replace(/ ×\d+$/, '');
+}
+
+function appendPluginLogEntry(entry, replaceTail) {
   if (!entry || !entry.cat || entry.text == null) return;
-  pluginLogState.entries.push({
+  const normalized = {
     at: Number(entry.at) || Date.now(),
     cat: String(entry.cat),
     text: String(entry.text).slice(0, 500)
-  });
+  };
+  // 折叠更新：后台把同一地址的重复请求合并进末行（×N 递增），这里原地改写末行，
+  // 不追加新行——否则折叠就失去意义，面板照样被刷屏（1.10.4）
+  const tail = pluginLogState.entries[pluginLogState.entries.length - 1];
+  if (replaceTail && tail && tail.cat === normalized.cat
+    && collapseBaseText(tail.text) === collapseBaseText(normalized.text)) {
+    tail.text = normalized.text;
+    tail.at = normalized.at;
+    if (!pluginLogState.paused) {
+      const cats = LOG_FILTER_CATS[pluginLogState.filter] || null;
+      if (!cats || cats.indexOf(tail.cat) !== -1) {
+        const list = logListEl();
+        if (list && list.lastElementChild) {
+          list.replaceChild(buildLogRow(tail), list.lastElementChild);
+          if (pluginLogState.stick) list.scrollTop = list.scrollHeight;
+        }
+      }
+    }
+    updateLogCount();
+    return;
+  }
+  pluginLogState.entries.push(normalized);
   while (pluginLogState.entries.length > PLUGIN_LOG_LOCAL_MAX) pluginLogState.entries.shift();
   if (pluginLogState.paused) { updateLogCount(); return; }
   const cats = LOG_FILTER_CATS[pluginLogState.filter] || null;
-  if (!cats || cats.indexOf(entry.cat) !== -1) {
+  if (!cats || cats.indexOf(normalized.cat) !== -1) {
     const list = logListEl();
     if (list) {
       const empty = logEmptyEl();
@@ -2239,8 +2265,8 @@ chrome.runtime.onMessage.addListener((request) => {
   } else if (request.action === 'screeningCompleteToast') {
     showScreeningCompleteToast(request);
   } else if (request.action === 'pluginLogEntry') {
-    // 后台新落一条运行日志 → 实时追加到设置页面板
-    appendPluginLogEntry(request.entry);
+    // 后台新落一条运行日志 → 实时追加到设置页面板（replaceTail=true 表示折叠更新末行）
+    appendPluginLogEntry(request.entry, request.replaceTail === true);
   } else if (request.action === 'mokaActionComplete') {
     refreshResultsAndJobContext();
   } else if (request.action === 'mokaContentReady') {
@@ -3093,6 +3119,8 @@ async function requestMokaDecision(appId, verdict, view) {
     await refreshResultsAndJobContext();
     const latest = findResultView(appId) || v;
     saveCandidateFeedback(appId, verdict, latest, { mokaSynced: true, syncFailed: false });
+    // 直连重放没动页面：与批量推进同款延迟刷新，让候选人从「初筛」列表移出（1.10.6）
+    if (resp.replayed) reloadMokaTabSoon();
   } catch (e) {
     markFeedbackSyncState(appId, 'failed');
     markRescoreError(e.message || 'Moka 操作失败');
@@ -3846,7 +3874,7 @@ async function fetchAssigneeContextWithLiveScrape(jobId) {
   if (ctx.ready) {
     const known = Array.isArray(ctx.assigneeNames) ? ctx.assigneeNames.filter(Boolean) : [];
     if (known.length === ctx.assigneeCount) {
-      const cmp = await sendToMoka({ action: 'scrapeAssigneeNames', readOnly: true });
+      const cmp = await sendToMoka({ action: 'scrapeAssigneeNames', readOnly: true, count: ctx.assigneeCount });
       const popupNames = (cmp && cmp.ok && Array.isArray(cmp.names)) ? cmp.names.filter(Boolean) : [];
       return { ctx, liveNames: false, stale: false, popupNames };
     }
@@ -3882,9 +3910,9 @@ function summarizeScrapeDebug(debug) {
  * 配置页「简历推荐对象」区块：展示本岗记录状态并支持前置确认。
  * - 已记录 + 已确认：绿色状态，开筛后批量推进直接使用，不再处理简历推荐对象；
  * - 已记录 + 未确认：展示「确认本岗简历推荐对象」按钮；
- * - 未记录：引导去本职位的 Moka 列表手动批量分配一次（插件自动捕获）。
+ * - 未记录：引导去本职位的 Moka 列表勾选候选人、点「推荐给用人部门」打开弹窗（插件自动捕获）。
  */
-async function renderAssigneeStatusInner() {
+async function renderAssigneeStatusInner(viaButton) {
   const el = document.getElementById('assignee-status');
   const btn = document.getElementById('confirm-assignee');
   if (!el) return;
@@ -3901,6 +3929,12 @@ async function renderAssigneeStatusInner() {
   const { ctx, liveNames, stale, scrapeDebug, popupNames } = await fetchAssigneeContextWithLiveScrape(jobId);
   // 等待期间职位被切走：丢弃本次结果，下一次渲染会按新职位重查
   if ((currentJobId() || effectiveJobId()) !== jobId) return;
+  // 用户主动点「重新读取」却没读到页面当前人选（弹窗没开，或已记录且姓名来自存档）：
+  // 必须点破「这次没有和页面比对」，否则点十次都是同一行 ✓，看起来像按钮坏了
+  const noLiveRead = !liveNames && !(Array.isArray(popupNames) && popupNames.length);
+  const compareMissedHint = viaButton && noLiveRead
+    ? ' ⚠️ 本次未检测到打开的「推荐给用人部门」弹窗，没有与页面实时比对——要核对或更换人选，先在列表页点「推荐给用人部门」打开弹窗，再点「重新读取」'
+    : '';
   const confirmedAt = currentAssigneeConfirmedAt || await readAssigneeConfirmedAt(jobId);
   if (!ctx) {
     el.textContent = '无法连接 Moka 页面：请打开本职位的 Moka 列表页后点「重新读取」';
@@ -3909,8 +3943,8 @@ async function renderAssigneeStatusInner() {
   }
   if (!ctx.ready) {
     el.textContent = ctx.isPageJob
-      ? '本岗尚未记录简历推荐对象：请在本职位的 Moka 列表手动批量分配一次（选好人点确认即可，插件会自动记录），完成后回本页点「重新读取」'
-      : '该职位尚未记录简历推荐对象：请在 Moka 打开该职位的候选人列表，批量分配一次（插件自动记录）后回本页点「重新读取」';
+      ? '本岗尚未记录简历推荐对象。两步即可：① 在本职位的简历列表页勾选候选人，点「推荐给用人部门」打开弹窗——选好人就行，不用真发出去；② 回这里点「重新读取」，识别到姓名后点「确认本岗简历推荐对象」即可永久记住'
+      : '该职位尚未记录简历推荐对象：请在 Moka 打开该职位的候选人列表，勾选候选人并点「推荐给用人部门」打开弹窗（选好人即可，不用真发出去），再回本页点「重新读取」';
     el.style.color = '#fa8c16';
     return;
   }
@@ -3959,28 +3993,38 @@ async function renderAssigneeStatusInner() {
     }
   }
   if (confirmedAt) {
-    // 已确认：一行干净的状态——姓名 + 记录时间，其余说明一律省略
+    // 已确认：一行干净的状态——姓名 + 记录时间；主动点「重新读取」却没比对到页面时，追加提示
     const nm = Array.isArray(ctx.assigneeNames) && ctx.assigneeNames.length
       ? ctx.assigneeNames.join('、') : '';
     el.textContent = '✓ 已确认本岗简历推荐对象：' + (nm ? nm + '（' + ctx.assigneeCount + ' 人）' : ctx.assigneeCount + ' 人')
-      + '，记录于 ' + formatAssigneeTime(confirmedAt) + '，开筛后批量推进按此执行';
+      + '，记录于 ' + formatAssigneeTime(confirmedAt) + '，开筛后批量推进按此执行'
+      + compareMissedHint;
     el.style.color = '#52c41a';
   } else {
     el.textContent = recorded + (liveNames ? '（本次从推荐弹窗实时读取）' : '')
-      + '。确认后开筛即可直接批量推进；不同职位各自记录，不会串用';
+      + '。确认后开筛即可直接批量推进；不同职位各自记录，不会串用'
+      + compareMissedHint;
     el.style.color = '';
     if (btn) btn.classList.remove('hidden');
   }
 }
 
 /** 配置页简历推荐对象状态渲染：先跑状态，再把最近一次「确认」的结果说明置顶显示
- *  （成功确认时 lastAdoptNote 清空，绿色状态行本身就是结果，不叠加冗余说明） */
-async function renderAssigneeStatus() {
-  await renderAssigneeStatusInner();
+ *  （成功确认时 lastAdoptNote 清空，绿色状态行本身就是结果，不叠加冗余说明）。
+ *  viaButton=true（用户点了「重新读取」）时让状态行闪一下——读取太快且文案没变化时，
+ *  不给任何视觉反馈会让人以为按钮没反应 */
+async function renderAssigneeStatus(viaButton) {
+  await renderAssigneeStatusInner(viaButton);
   const el = document.getElementById('assignee-status');
   if (el && lastAdoptNote) {
     el.textContent = lastAdoptNote + '\n' + el.textContent;
     el.style.whiteSpace = 'pre-line';
+  }
+  if (viaButton && el) {
+    el.classList.remove('flash');
+    void el.offsetWidth; // 强制回流，连续点击也能重启动画
+    el.classList.add('flash');
+    setTimeout(() => el.classList.remove('flash'), 1100);
   }
 }
 
@@ -4033,7 +4077,7 @@ async function confirmAssigneeForCurrentJob() {
       showDockToast('已确认本岗简历推荐对象（该职位已记录的简历推荐对象，开筛后批量推进按此执行）', 'ok');
     } else {
       lastAdoptNote = '✗ 该职位尚未记录简历推荐对象：请在 Moka 打开该职位的候选人列表，'
-        + '批量分配一次（插件自动记录）后回本页再点确认';
+        + '勾选候选人并点「推荐给用人部门」打开弹窗（选好人即可），回本页点「重新读取」后再点确认';
       showDockToast('该职位尚未记录简历推荐对象', 'warn');
     }
     renderAssigneeStatus();
@@ -4143,12 +4187,23 @@ async function openBatchPanel() {
         + '（姓名可在「配置」页开着推荐弹窗点「重新读取」带出）；如需更换请回「配置」页重新记录';
     } else {
       assignee.textContent = '已记录本职位的简历推荐对象' + who
-        + '——与你在本职位手动批量分配时选的人一致，不同职位不会串用；建议先到「配置」页确认';
+        + '——与你在此职位点「推荐给用人部门」时选的人一致，不同职位不会串用；建议先到「配置」页确认';
     }
     confirmBtn.disabled = over;
   } else {
-    assignee.textContent = '本职位还没有记录简历推荐对象：请先在本职位的 Moka 列表手动批量分配一次（每个职位的简历推荐对象各自记录），或到「配置」页点「重新读取」。';
+    assignee.textContent = '本职位还没有记录简历推荐对象：请先在本职位的简历列表页勾选候选人、点「推荐给用人部门」打开弹窗（选好人即可，插件自动记录），再回「配置」页点「重新读取」。每个职位的简历推荐对象各自记录。';
   }
+}
+
+/** 延迟整页刷新 Moka 标签页：给接口写库留落定时间，再让候选人从「初筛」列表移出。
+ *  批量推进与单个推荐（API 直连重放，1.10.6）共用；DOM 自动化链路本来就跳页面，用不到 */
+function reloadMokaTabSoon() {
+  setTimeout(async () => {
+    try {
+      const tab = await getMokaTab();
+      if (tab && isMokaTab(tab)) chrome.tabs.reload(tab.id);
+    } catch (e) { /* 刷新失败不影响结果提示 */ }
+  }, 1200);
 }
 
 async function executeBatchAdvance() {
@@ -4188,14 +4243,9 @@ async function executeBatchAdvance() {
     updateBatchButton();
     renderResults();
     // 让接口写库先落定，再刷新 Moka 页面，避免用户看到旧列表
-    setTimeout(async () => {
-      try {
-        const tab = await getMokaTab();
-        if (tab && isMokaTab(tab)) chrome.tabs.reload(tab.id);
-      } catch (e) { /* 刷新失败不影响结果提示 */ }
-      closeBatchPanel();
-      renderResults();
-    }, 1200);
+    reloadMokaTabSoon();
+    closeBatchPanel();
+    renderResults();
   } finally {
     btn.disabled = false;
     btn.textContent = prevText;
@@ -4207,7 +4257,7 @@ document.getElementById('close-batch-panel')?.addEventListener('click', closeBat
 document.getElementById('batch-pick-advance')?.addEventListener('click', pickAdvanceable);
 document.getElementById('batch-clear')?.addEventListener('click', clearBatchSelection);
 document.getElementById('confirm-batch')?.addEventListener('click', executeBatchAdvance);
-document.getElementById('refresh-assignee')?.addEventListener('click', renderAssigneeStatus);
+document.getElementById('refresh-assignee')?.addEventListener('click', () => renderAssigneeStatus(true));
 document.getElementById('confirm-assignee')?.addEventListener('click', confirmAssigneeForCurrentJob);
 
 function setViewRescoring(appId, rescoring) {

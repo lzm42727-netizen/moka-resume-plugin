@@ -144,7 +144,7 @@ const llmCacheReady = new Promise((resolve) => {
   } catch (e) { resolve(); }
 });
 
-/* ---------------- 插件运行日志（会话级，storage.session 最近 100 条） ---------------- */
+/* ---------------- 插件运行日志（会话级，storage.session 最近 500 条） ---------------- */
 
 let pluginLog = [];
 // MV3 SW 可能随时重启：启动时先把会话日志捞回内存，getPluginLog 等待它完成
@@ -167,6 +167,11 @@ function persistPluginLog() {
   } catch (e) { /* storage.session 不可用时仅保留内存 */ }
 }
 
+/** 请求折叠窗口：同一接口地址在该时长内重复出现只合并计数（1.10.4）。
+ *  背景：单点推荐/淘汰要整页跳转到详情页再跳回列表，Moka 每次整页加载自发
+ *  150+ 个初始化请求（baseInfo/权限/配置…），不折叠会把单次动作的轨迹刷出环外。 */
+const REQ_COLLAPSE_MS = 15000;
+
 /** 记一条（或一批）运行日志：规范化后入环、落 storage.session、实时转发给侧栏 */
 function addPluginLog(raw) {
   if (Array.isArray(raw)) {
@@ -175,6 +180,24 @@ function addPluginLog(raw) {
   }
   const entry = MokaPluginLog.normalizeEntry(raw);
   if (!entry) return null;
+  const last = pluginLog[pluginLog.length - 1];
+  // 请求折叠：同一地址在窗口内重复 → 合并为「地址 ×N」，只折叠 req 类，
+  // 筛选/评分/推荐等人类可读日志永不折叠
+  if (entry.cat === 'req' && last && last.cat === 'req'
+    && last.text === entry.text && entry.at - last.at >= 0 && entry.at - last.at < REQ_COLLAPSE_MS) {
+    const m = /^(.*) ×(\d+)$/.exec(last.text);
+    last.text = (m ? m[1] : last.text) + ' ×' + (m ? Number(m[2]) + 1 : 2);
+    last.at = entry.at;
+    persistPluginLog();
+    try {
+      chrome.runtime.sendMessage({
+        action: 'pluginLogEntry',
+        entry: Object.assign({}, last),
+        replaceTail: true
+      }).catch((e) => console.warn('[Moka 筛选] 运行日志实时广播失败', e));
+    } catch (e) { /* 忽略 */ }
+    return last;
+  }
   pluginLog = MokaPluginLog.trimEntries(pluginLog.concat([entry]), MokaPluginLog.LOG_LIMIT);
   persistPluginLog();
   try {

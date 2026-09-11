@@ -37,5 +37,5 @@ test('trimEntries keeps only the latest N in order', () => {
 });
 
 test('default limit matches LOG_LIMIT', () => {
-  assert.equal(LOG_LIMIT, 100);
+  assert.equal(LOG_LIMIT, 500);
 });

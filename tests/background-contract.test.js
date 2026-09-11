@@ -99,6 +99,14 @@ describe('plugin run log (会话级运行日志) contract', () => {
     assert.match(bg, /\{ action: 'pluginLogEntry', entry \}/);
   });
 
+  it('请求折叠（1.10.4）：同一地址 15s 内重复合并为「地址 ×N」，只折叠 req 类并以 replaceTail 广播', () => {
+    // 背景：单点推荐/淘汰整页跳转两次，Moka 自发 150+ 初始化请求把动作轨迹刷出环外
+    assert.match(bg, /const REQ_COLLAPSE_MS = 15000;/);
+    assert.match(bg, /entry\.cat === 'req' && last && last\.cat === 'req'\n {4}&& last\.text === entry\.text/);
+    assert.match(bg, /last\.text = \(m \? m\[1\] : last\.text\) \+ ' ×' \+ \(m \? Number\(m\[2\]\) \+ 1 : 2\);/);
+    assert.match(bg, /\{\n {8}action: 'pluginLogEntry',\n {8}entry: Object\.assign\(\{\}, last\),\n {8}replaceTail: true\n {6}\}\)/);
+  });
+
   it('exposes pluginLog / getPluginLog / clearPluginLog dispatcher cases', () => {
     assert.match(bg, /case 'pluginLog':[\s\S]{0,120}addPluginLog\(request\.entry\)/);
     assert.match(bg, /case 'getPluginLog':[\s\S]{0,120}entries: pluginLog\.slice\(\)/);

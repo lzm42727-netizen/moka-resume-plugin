@@ -6,6 +6,8 @@ const {
   ownText,
   scoreActionMatch,
   findByTexts,
+  waitForPopupLayer,
+  describeVisibleLayers,
   describeMatch,
   pendingActionState,
   mokaActionDispatchError,
@@ -133,12 +135,92 @@ describe('findByTexts 作用域', () => {
     assert.equal(picked, dropdownItem);
   });
 
+  it('确认表渲染成抽屉（.ant-drawer）时 modalOnly 也能命中（1.10.2 回归）', () => {
+    // 真实事故：部分场景确认层是抽屉，旧选择器不认，三层降级全部超时后报失败
+    const drawerConfirm = mockNode('推荐并进入用人部门筛选', { ancestors: ['.ant-drawer'] });
+    const doc = mockDoc([drawerConfirm]);
+    const picked = findByTexts(TEXT.recommendConfirm, doc, {
+      partial: true,
+      modalOnly: true,
+      actionPanel: false
+    });
+    assert.equal(picked, drawerConfirm);
+    const m = describeMatch(drawerConfirm);
+    assert.equal(m.modal, true);
+  });
+
   it('describeMatch 给出可读轨迹，供运行日志定位误点', () => {
     const m = describeMatch(mockNode('推荐并进入用人部门筛选', { ancestors: ['.ant-modal'] }));
     assert.equal(m.text, '推荐并进入用人部门筛选');
     assert.equal(m.tag, 'button');
     assert.equal(m.modal, true);
     assert.equal(describeMatch(null), null);
+  });
+});
+
+describe('waitForPopupLayer（1.10.2 条件等待）', () => {
+  const visibleNode = () => ({
+    getBoundingClientRect: () => ({ width: 200, height: 120, left: 0, top: 0 }),
+    ownerDocument: {
+      defaultView: { getComputedStyle: () => ({ visibility: 'visible', display: 'block', opacity: '1' }) }
+    }
+  });
+
+  it('确认层一出现立即返回 true，不再死等固定毫秒', async () => {
+    global.document = { querySelectorAll: () => [visibleNode()] };
+    try {
+      const t0 = Date.now();
+      assert.equal(await waitForPopupLayer(4000), true);
+      assert.ok(Date.now() - t0 < 1000, '应在出现瞬间返回，而不是等满超时');
+    } finally {
+      delete global.document;
+    }
+  });
+
+  it('弹层一直不出现时空转到超时返回 false，不抛错（由后续三级降级兜底）', async () => {
+    global.document = { querySelectorAll: () => [] };
+    try {
+      assert.equal(await waitForPopupLayer(0), false);
+    } finally {
+      delete global.document;
+    }
+  });
+});
+
+describe('describeVisibleLayers（1.10.5 失败诊断）', () => {
+  const node = (text, visible) => ({
+    textContent: text,
+    getBoundingClientRect: () => ({ width: visible ? 200 : 0, height: visible ? 80 : 0, left: 0, top: 0 }),
+    ownerDocument: {
+      defaultView: { getComputedStyle: () => ({ visibility: 'visible', display: 'block', opacity: '1' }) }
+    }
+  });
+
+  it('枚举可见弹层的类别、数量与文本开头；不可见的弹层不计入', () => {
+    global.document = {
+      querySelectorAll: (sel) => {
+        if (sel === '.ant-drawer') return [node('推荐并进入用人部门筛选 取消', true)];
+        if (sel === '.ant-modal') return [node('隐藏的 modal', false)];
+        return [];
+      }
+    };
+    try {
+      const out = describeVisibleLayers();
+      assert.ok(out.indexOf('.ant-drawer×1') !== -1, out);
+      assert.ok(out.indexOf('推荐并进入用人部门筛选') !== -1, out);
+      assert.ok(out.indexOf('.ant-modal') === -1, '不可见弹层不应出现：' + out);
+    } finally {
+      delete global.document;
+    }
+  });
+
+  it('页面上没有任何可见弹层时返回空串（错误信息会注明可能在新窗口/iframe）', () => {
+    global.document = { querySelectorAll: () => [] };
+    try {
+      assert.equal(describeVisibleLayers(), '');
+    } finally {
+      delete global.document;
+    }
   });
 });
 
