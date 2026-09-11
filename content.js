@@ -3352,10 +3352,28 @@ function notifyMokaActionComplete(payload) {
   chrome.runtime.sendMessage(Object.assign({ action: 'mokaActionComplete' }, payload)).catch(() => {});
 }
 
+function mokaActionTargetLabel(m) {
+  if (!m) return '未命中';
+  return m.text + '<' + m.tag + (m.modal ? ' · 弹窗内' : m.popup ? ' · 浮层内' : ' · 页面') + '>';
+}
+
+/** 记下这次实际点中了哪个元素：Moka 改版导致误点时，运行日志能直接看出点错了什么 */
+function logMokaActionTrace(action, trace) {
+  if (!trace) return;
+  pushPluginLog({
+    cat: 'info',
+    text: (action === 'recommend' ? '推荐给用人部门' : '淘汰')
+      + '：点击目标 ' + mokaActionTargetLabel(trace.trigger)
+      + ' → ' + mokaActionTargetLabel(trace.confirm)
+  });
+}
+
 async function runMokaActionOnPage(action) {
-  if (action === 'recommend') await MokaActions.automateRecommend(document);
-  else if (action === 'eliminate') await MokaActions.automateEliminate(document);
+  let trace = null;
+  if (action === 'recommend') trace = await MokaActions.automateRecommend(document);
+  else if (action === 'eliminate') trace = await MokaActions.automateEliminate(document);
   else throw new Error('未知操作类型');
+  logMokaActionTrace(action, trace);
   await MokaActions.sleep(700);
 }
 

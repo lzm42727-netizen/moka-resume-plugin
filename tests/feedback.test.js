@@ -158,6 +158,29 @@ describe('buildFeedbackContext', () => {
     assert.equal(buildFeedbackContext({}, 'job-x'), '');
   });
 
+  it('样例行：门槛写法归一后去重，差距文案保留否定义', () => {
+    const record = putFeedback(
+      {},
+      'job-1',
+      'a1',
+      'eliminate',
+      {
+        score: 40,
+        matchScore: 45,
+        hardMissing: ['未满足：日语 N1', '缺 日语N1'],
+        concerns: ['缺少甲方品牌经验']
+      },
+      1
+    );
+    const ctx = buildFeedbackContext(record, 'job-1');
+    // 同一条件的两种写法只留一份，且统一成归一后的文案
+    assert.equal(ctx.match(/未过门槛 日语N1/g).length, 1);
+    assert.doesNotMatch(ctx, /未满足：/);
+    assert.doesNotMatch(ctx, /缺 日语N1/);
+    // 差距文案绝不能被剥成「甲方品牌经验」那样读起来像优点
+    assert.match(ctx, /缺少甲方品牌经验/);
+  });
+
   it('summarizes recommend and eliminate examples with decision and match scores', () => {
     let record = putFeedback(
       {},
@@ -313,7 +336,7 @@ describe('buildFeedbackContext', () => {
     assert.match(ctx, /本岗已决策 9（推荐 4 · 淘汰 5）/);
     assert.match(ctx, /插件推你却淘汰 5/);
     assert.match(ctx, /反复信号：/);
-    assert.match(ctx, /未过门槛「日语 N1」×5/);
+    assert.match(ctx, /未过门槛「日语N1」×5/);
     assert.match(ctx, /淘汰原因「达人合作」×5/);
     const numbered = ctx.split('\n').filter((line) => /^\d+\. /.test(line));
     assert.equal(numbered.length, 6);

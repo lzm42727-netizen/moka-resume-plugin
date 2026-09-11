@@ -5,11 +5,42 @@ const {
   matchesTexts,
   ownText,
   scoreActionMatch,
+  findByTexts,
+  describeMatch,
   pendingActionState,
   mokaActionDispatchError,
   PENDING_STALE_MS,
   TEXT
 } = require('../lib/moka-actions.js');
+
+/** 构造一个可被 findByTexts / scoreActionMatch 处理的假元素 */
+function mockNode(label, opts) {
+  const o = opts || {};
+  return {
+    tagName: o.tagName || 'BUTTON',
+    textContent: label,
+    childNodes: [{ nodeType: 3, textContent: label }],
+    classList: { contains: (c) => c === (o.className || '') },
+    getAttribute: (k) => (k === 'role' ? o.role : null),
+    getBoundingClientRect: () => ({
+      left: o.left == null ? 900 : o.left,
+      top: o.top == null ? 200 : o.top,
+      width: 80,
+      height: 32
+    }),
+    ownerDocument: {
+      defaultView: {
+        innerWidth: 1440,
+        getComputedStyle: () => ({ visibility: 'visible', display: 'block', opacity: '1' })
+      }
+    },
+    closest: (sel) => ((o.ancestors || []).some((a) => String(sel).indexOf(a) !== -1) ? {} : null)
+  };
+}
+
+function mockDoc(nodes) {
+  return { querySelectorAll: () => nodes };
+}
 
 describe('moka-actions text helpers', () => {
   it('normalizes whitespace in labels', () => {
@@ -58,8 +89,56 @@ describe('scoreActionMatch', () => {
   });
 
   it('reads direct text nodes via ownText', () => {
-    const el = mockEl('淘汰', { tagName: 'BUTTON' });
+    const el = mockNode('淘汰', { tagName: 'BUTTON' });
     assert.equal(ownText(el), '淘汰');
+  });
+
+  it('模式顺序即优先级：具体确认文案胜过被精确命中的导航入口', () => {
+    // 回归：这两条文案在 Moka 上都存在，后者是「进入用人部门筛选」页面导航入口（另一个动作）。
+    // 旧打分让后者的精确匹配（1000）压过前者的部分匹配（100），点「推荐」只会跳转、人没被推荐。
+    const navEntry = mockNode('进入用人部门筛选', { left: 300 });
+    const realConfirm = mockNode('推荐并进入用人部门筛选');
+    const navScore = scoreActionMatch(navEntry, TEXT.recommendConfirm, { partial: true, actionPanel: false });
+    const confirmScore = scoreActionMatch(realConfirm, TEXT.recommendConfirm, { partial: true, actionPanel: false });
+    assert.ok(confirmScore > navScore);
+  });
+});
+
+describe('findByTexts 作用域', () => {
+  it('弹窗内的确认按钮胜出，页面级导航入口被 modalOnly 排除', () => {
+    const navEntry = mockNode('进入用人部门筛选', { left: 300 });
+    const modalConfirm = mockNode('推荐并进入用人部门筛选', { ancestors: ['.ant-modal'] });
+    const doc = mockDoc([navEntry, modalConfirm]);
+    const picked = findByTexts(TEXT.recommendConfirm, doc, {
+      partial: true,
+      modalOnly: true,
+      actionPanel: false
+    });
+    assert.equal(picked, modalConfirm);
+  });
+
+  it('无作用域限制时也不退化：具体文案仍然胜出', () => {
+    const navEntry = mockNode('进入用人部门筛选', { left: 300 });
+    const modalConfirm = mockNode('推荐并进入用人部门筛选');
+    const doc = mockDoc([navEntry, modalConfirm]);
+    const picked = findByTexts(TEXT.recommendConfirm, doc, { partial: true, actionPanel: false });
+    assert.equal(picked, modalConfirm);
+  });
+
+  it('popupOnly 覆盖下拉菜单与浮层，不误伤页面按钮', () => {
+    const pageBtn = mockNode('确认推荐', { left: 300 });
+    const dropdownItem = mockNode('确认推荐', { ancestors: ['.ant-dropdown'] });
+    const doc = mockDoc([pageBtn, dropdownItem]);
+    const picked = findByTexts(['确认推荐'], doc, { partial: true, popupOnly: true, actionPanel: false });
+    assert.equal(picked, dropdownItem);
+  });
+
+  it('describeMatch 给出可读轨迹，供运行日志定位误点', () => {
+    const m = describeMatch(mockNode('推荐并进入用人部门筛选', { ancestors: ['.ant-modal'] }));
+    assert.equal(m.text, '推荐并进入用人部门筛选');
+    assert.equal(m.tag, 'button');
+    assert.equal(m.modal, true);
+    assert.equal(describeMatch(null), null);
   });
 });
 

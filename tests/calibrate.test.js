@@ -4,6 +4,7 @@ const { putFeedback } = require('../lib/feedback.js');
 const {
   buildCalibrationReport,
   normalizeMustHaveLabel,
+  normalizeSignalDisplay,
   normalizeCalibrationSignal,
   groupCalibrationSignals
 } = require('../lib/calibrate.js');
@@ -103,8 +104,8 @@ describe('buildCalibrationReport', () => {
     const report = buildCalibrationReport(record, 'job-1');
     const gate = report.suggestions.find((s) => s.type === 'addGate');
     assert.ok(gate);
-    assert.equal(gate.editableValue, '日语 N1');
-    assert.equal(gate.apply.customGate, '日语 N1');
+    assert.equal(gate.editableValue, '日语N1');
+    assert.equal(gate.apply.customGate, '日语N1');
     assert.match(gate.title, /门槛/);
     // 文案强化：只提示风险，不阻止采纳
     assert.match(gate.detail, /一票否决/);
@@ -248,6 +249,31 @@ describe('normalizeMustHaveLabel', () => {
     assert.equal(normalizeMustHaveLabel('缺「缺「跨文化」」'), '跨文化');
     assert.equal(normalizeMustHaveLabel('Google UAC'), 'Google UAC');
   });
+
+  it('折叠书写形态：中英文之间的空格、全角字符', () => {
+    assert.equal(normalizeMustHaveLabel('日语 N1'), '日语N1');
+    assert.equal(normalizeMustHaveLabel('缺 日语N1'), '日语N1');
+    assert.equal(normalizeMustHaveLabel('未满足：日语 N1'), '日语N1');
+    assert.equal(normalizeMustHaveLabel('日语\u3000N1'), '日语N1');
+    assert.equal(normalizeMustHaveLabel('ＣＥＴ6'), 'CET6');
+    // 纯英文词组保留原有空格，不压成一个词
+    assert.equal(normalizeMustHaveLabel('Google Ads'), 'Google Ads');
+  });
+
+  it('「缺乏」不被当成「缺」前缀剥掉', () => {
+    assert.equal(normalizeMustHaveLabel('缺乏沟通能力'), '缺乏沟通能力');
+    assert.equal(normalizeMustHaveLabel('缺少沟通能力'), '沟通能力');
+  });
+});
+
+describe('normalizeSignalDisplay', () => {
+  it('只折叠形态，绝不剥语义前缀', () => {
+    assert.equal(normalizeSignalDisplay('有 3 年达人合作经验'), '有3年达人合作经验');
+    assert.equal(normalizeSignalDisplay('缺少甲方品牌经验'), '缺少甲方品牌经验');
+    // 中文与纯英文词之间的空格保留，压成「有Meta投放经验」反而难读
+    assert.equal(normalizeSignalDisplay('有 Meta 投放经验'), '有 Meta 投放经验');
+    assert.equal(normalizeSignalDisplay(''), '');
+  });
 });
 
 describe('normalizeCalibrationSignal / groupCalibrationSignals', () => {
@@ -268,6 +294,20 @@ describe('normalizeCalibrationSignal / groupCalibrationSignals', () => {
     const grouped = groupCalibrationSignals(['达人合作', '达人合作', '达人合作']);
     assert.equal(grouped.length, 1);
     assert.equal(grouped[0].count, 3);
+  });
+
+  it('书写形态差异不再拆散同一信号（空格 / 全角）', () => {
+    const neutral = groupCalibrationSignals(['日语 N1', '日语N1', '日语\u3000Ｎ1']);
+    assert.equal(neutral.length, 1);
+    assert.equal(neutral[0].text, '日语N1');
+    assert.equal(neutral[0].count, 3);
+    assert.equal(neutral[0].polarity, 'neutral');
+
+    const lack = groupCalibrationSignals(['缺 日语N1', '缺少 日语 N1', '未满足：日语Ｎ1']);
+    assert.equal(lack.length, 1);
+    assert.equal(lack[0].text, '日语N1');
+    assert.equal(lack[0].count, 3);
+    assert.equal(lack[0].polarity, 'lack');
   });
 
   it('方向保护：肯定式与否定式不归并', () => {

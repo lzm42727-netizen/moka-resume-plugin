@@ -2674,6 +2674,34 @@ const resultState = { items: [], status: '', banner: null, screening: false, usa
 // 已播过「评分落卡」动效的候选人 id：每轮筛选开始时清空，保证一张卡只播一次
 const arrivedScoreRows = new Set();
 
+// 结果卡折叠区（经历证据 / 评分明细）的展开状态。
+// 结果列表是整表重建（renderResults 里 list.innerHTML = ''），DOM 上的 hidden/open 每次都会被冲掉，
+// 所以状态必须外置保存、建卡时回填。只记本次会话，切职位时清空。
+const resultExpandState = new Map();
+let resultExpandJobId = '';
+
+function resultSectionKey(appId, section) {
+  return String(appId == null ? '' : appId) + '|' + section;
+}
+
+function isResultSectionOpen(appId, section) {
+  return resultExpandState.get(resultSectionKey(appId, section)) === true;
+}
+
+function setResultSectionOpen(appId, section, open) {
+  const key = resultSectionKey(appId, section);
+  if (open) resultExpandState.set(key, true);
+  else resultExpandState.delete(key);
+}
+
+/** 折叠状态只在同一职位内有效：换职位后旧 appId 的状态必须丢掉 */
+function syncResultExpandScope(jobId) {
+  const id = String(jobId || '');
+  if (id === resultExpandJobId) return;
+  resultExpandJobId = id;
+  resultExpandState.clear();
+}
+
 function setResultUsageLine(text) {
   const el = document.getElementById('usage-line');
   if (!el) return;
@@ -3139,6 +3167,7 @@ function renderResults() {
 
   const sum = MokaMatch.summarizeResultViews(resultState.items);
   const jobId = effectiveJobId();
+  syncResultExpandScope(jobId);
   const fb = jobId ? MokaFeedback.summarizeFeedback(feedbackRecord, jobId) : { total: 0, recommend: 0, eliminate: 0 };
   const fbText = fb.total ? ` · 已决策 ${fb.total}（已推荐 ${fb.recommend} · 已淘汰 ${fb.eliminate}）` : '';
   if (sum.total) {
@@ -3296,7 +3325,8 @@ function buildEvidenceSplit(appId, cols, fitDetail) {
     toggle.appendChild(document.createTextNode('经历证据（' + evidenceList.length + '）'));
     toggle.appendChild(arrow);
     const body = document.createElement('div');
-    body.className = 'mp-evidence-body hidden';
+    const evidenceOpen = isResultSectionOpen(appId, 'evidence');
+    body.className = 'mp-evidence-body' + (evidenceOpen ? '' : ' hidden');
     evidenceList.forEach((text) => {
       const line = document.createElement('div');
       line.className = 'mp-hit mp-evidence-item';
@@ -3313,7 +3343,10 @@ function buildEvidenceSplit(appId, cols, fitDetail) {
       const nowHidden = body.classList.toggle('hidden');
       box.classList.toggle('open', !nowHidden);
       arrow.textContent = nowHidden ? '▸' : '▾';
+      setResultSectionOpen(appId, 'evidence', !nowHidden);
     });
+    box.classList.toggle('open', evidenceOpen);
+    arrow.textContent = evidenceOpen ? '▾' : '▸';
     box.appendChild(toggle);
     box.appendChild(body);
     split.appendChild(box);
@@ -3332,7 +3365,8 @@ function buildEvidenceSplit(appId, cols, fitDetail) {
     detailToggle.appendChild(document.createTextNode('评分明细'));
     detailToggle.appendChild(detailArrow);
     const detailBody = document.createElement('div');
-    detailBody.className = 'mp-evidence-body hidden';
+    const detailOpen = isResultSectionOpen(appId, 'detail');
+    detailBody.className = 'mp-evidence-body' + (detailOpen ? '' : ' hidden');
     const appendDetailLine = (text, strong) => {
       const line = document.createElement('div');
       line.className = 'mp-detail-line' + (strong ? ' strong' : '');
@@ -3390,7 +3424,10 @@ function buildEvidenceSplit(appId, cols, fitDetail) {
       const nowHidden = detailBody.classList.toggle('hidden');
       detailBox.classList.toggle('open', !nowHidden);
       detailArrow.textContent = nowHidden ? '▸' : '▾';
+      setResultSectionOpen(appId, 'detail', !nowHidden);
     });
+    detailBox.classList.toggle('open', detailOpen);
+    detailArrow.textContent = detailOpen ? '▾' : '▸';
     detailBox.appendChild(detailToggle);
     detailBox.appendChild(detailBody);
     split.appendChild(detailBox);

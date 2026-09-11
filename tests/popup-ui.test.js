@@ -304,12 +304,32 @@ describe('screening configuration UI', () => {
     assert.doesNotMatch(js, /title\.textContent = '具备'/);
     // 经历证据从「亮点」列拆出为独立折叠区（默认收起，带条数）
     assert.match(js, /经历证据（' \+ evidenceList\.length \+ '）/);
-    assert.match(js, /mp-evidence-body hidden/);
+    assert.match(js, /'mp-evidence-body' \+ \(evidenceOpen \? '' : ' hidden'\)/);
     assert.match(js, /evidenceList\.forEach/);
     // 折叠按钮必须阻断冒泡：否则点击会触发结果行 openCandidate 跳详情页
     assert.match(js, /toggle\.addEventListener\('click', \(e\) => \{[\s\S]{0,160}stopPropagation/);
     // 「亮点」列内容只来自 highlights：不给证据混入左列留任何入口
     assert.doesNotMatch(js, /cols\.left[\s\S]{0,60}experienceEvidence/);
+  });
+
+  it('keeps result-card collapsibles open across re-renders', () => {
+    // 回归：renderResults 整表重建（list.innerHTML = ''），展开状态只存 DOM 会被频繁冲掉，
+    // 筛选中每推一次快照 / 每次重评都会重建，导致刚点开的「经历证据」「评分明细」自动缩回。
+    assert.match(js, /const resultExpandState = new Map\(\)/);
+    assert.match(js, /function isResultSectionOpen\(appId, section\)/);
+    assert.match(js, /function setResultSectionOpen\(appId, section, open\)/);
+    // 建卡时按外置状态回填（默认收起）
+    assert.match(js, /isResultSectionOpen\(appId, 'evidence'\)/);
+    assert.match(js, /isResultSectionOpen\(appId, 'detail'\)/);
+    // 点击时写回外置状态，而不是只改 DOM
+    assert.match(js, /setResultSectionOpen\(appId, 'evidence', !nowHidden\)/);
+    assert.match(js, /setResultSectionOpen\(appId, 'detail', !nowHidden\)/);
+    // 换职位后旧 appId 的状态必须失效，避免串岗沿用展开态
+    assert.match(js, /function syncResultExpandScope\(jobId\)/);
+    assert.match(js, /resultExpandState\.clear\(\)/);
+    assert.match(js, /syncResultExpandScope\(jobId\)/);
+    // 只记本次会话：不落任何 storage
+    assert.doesNotMatch(js, /resultExpandState[\s\S]{0,80}chrome\.storage/);
   });
 
   it('plays a one-shot arrive animation only when a candidate first gets scored', () => {
