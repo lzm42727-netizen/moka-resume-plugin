@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.2 - 2026-09-16
+
+- **修复：飞书卡片「一键批量推进」点击后 Moka 页面无任何动作**。根因是竞态失效：动作参数原放在 URL hash（`#moka_action=batch_recommend`），而 Moka 是 SPA，路由器启动时会接管/改写 hash——content 脚本 600ms 兜底检查与 hashchange 监听触发时参数已被冲掉，链路静默失效（其余失败路径都有侧栏横幅，唯独这条什么都不留）。修复：
+  - 卡片按钮 URL 动作参数改放 **query 段**（SPA 路由不会动 query），原地址的 hash 路由原样保留、参数插在真正 query 段，页面打开视图不漂移（`lib/feishu.js` 新增 `buildBatchActionUrl`）；
+  - content 脚本在 **document_start 顶层快照** `location.search + location.hash`（先于 SPA 路由器启动），`checkUrlBatchActions` 优先消费快照、消费后置空防重复触发，同时保留 hash 通道兼容手拼链接；从 `moka_action=` 起截取解析，兼容 hash 路由内携带 query 的形态；
+  - 清残留时只删动作参数、不动路由 hash，防止把 SPA 当前路由清掉
+- 新增回归断言：按钮 URL 必须在 query 段且不含 `#moka_action`；带 hash 路由的原地址参数插入位置校验；content 快照/双通道/置空契约
+
 ## 2.0.1 - 2026-09-16
 
 - **修复：飞书指令回执卡片分数恒为「成功 0 位」且显示红色失败样式**。`handleFeishuRecommend` 返回 `{ count, names }`，而 `buildRecommendationResultCard` 只认 `successCount/failCount`，字段错位导致每次成功推进回执都是红色「成功 0 / 失败 0」。现兼容两种口径；`ok:true` 但无匹配人选时附「没有符合条件的候选人」说明，不再误读为失败

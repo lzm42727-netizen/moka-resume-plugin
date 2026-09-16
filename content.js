@@ -9,6 +9,14 @@
  */
 
 const SEARCH_API_FALLBACK = '/api/outer/ats-candidate-search-left/candidate/search-candidate/v2';
+
+// 飞书卡片「一键批量推进」触发参数快照：本脚本 document_start 注入，先于 Moka SPA 路由器；
+// 路由器启动后可能改写/清空 hash，导致 600ms 兜底检查与 hashchange 扑空（v2.0.2）。
+// query 与 hash 双通道都记录，checkUrlBatchActions 优先消费快照（消费后置空防重复触发）
+let urlActionSnapshot = {
+  search: String(window.location.search || ''),
+  hash: String(window.location.hash || '')
+};
 /**
  * 评分并发数：默认 6，可由「连接与模型 → 评分并发数」设置（1–8）覆盖；
  * 开筛时经 modelPriceInfo 拉到生效值写入 scoreConcurrency。
@@ -3749,19 +3757,29 @@ let isExecutingUrlBatchAction = false;
 async function checkUrlBatchActions() {
   if (isExecutingUrlBatchAction) return;
   try {
-    const hash = window.location.hash || '';
-    if (!hash.includes('moka_action=batch_recommend')) return;
+    // 优先消费 document_start 快照（防 SPA 路由器抢先改写），无快照时退回当前 URL
+    const snap = urlActionSnapshot;
+    urlActionSnapshot = null;
+    const search = snap ? snap.search : String(window.location.search || '');
+    const hash = snap ? snap.hash : String(window.location.hash || '');
+    const triggerSource = search.includes('moka_action=batch_recommend') ? search
+      : (hash.includes('moka_action=batch_recommend') ? hash : '');
+    if (!triggerSource) return;
 
-    // 解析参数
-    const rawParams = hash.replace(/^#/, '');
-    const searchParams = new URLSearchParams(rawParams);
+    // 解析参数：从 moka_action= 起截取，兼容 hash 路由中携带 query 的形态（#/route?moka_action=...）
+    const actionIdx = triggerSource.indexOf('moka_action=');
+    const searchParams = new URLSearchParams(triggerSource.slice(actionIdx).replace(/^[?&]/, ''));
     const minScore = Number(searchParams.get('min_score')) || 50;
 
     isExecutingUrlBatchAction = true;
 
-    // 清除 hash，防止重复刷新触发
+    // 清除触发残留：query 里删动作参数；hash 若仍是动作参数则清空，已是路由 hash 则保留
     try {
-      history.replaceState(null, '', window.location.pathname + window.location.search);
+      const u = new URL(window.location.href);
+      u.searchParams.delete('moka_action');
+      u.searchParams.delete('min_score');
+      if (String(window.location.hash || '').includes('moka_action=')) u.hash = '';
+      history.replaceState(null, '', u.pathname + u.search + u.hash);
     } catch (e) { /* ignore */ }
 
     pushPluginLog({

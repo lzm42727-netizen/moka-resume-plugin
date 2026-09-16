@@ -332,8 +332,26 @@ describe('Feishu 推送目标解析器 (resolveFeishuTarget)', () => {
     assert.ok(actionBlock.actions.length >= 2, '有达标人选时至少包含 2 个操作按钮');
     const batchBtn = actionBlock.actions[0];
     assert.match(batchBtn.text.content, /一键批量推进 50分\+/);
-    assert.match(batchBtn.url, /#moka_action=batch_recommend&min_score=50/);
+    assert.match(batchBtn.url, /[?&]moka_action=batch_recommend&min_score=50/, '动作参数应在 query 段');
+    assert.doesNotMatch(batchBtn.url, /#moka_action/, '不得再放 hash（SPA 路由会冲掉，v2.0.2）');
     assert.deepEqual(batchBtn.value, { action: 'feishuRecommendByScore', minScore: 50 });
+  });
+
+  it('一键批量推进 URL：原地址带 hash 路由时参数插入 query 段且路由 hash 原样保留', () => {
+    const cardRes = Feishu.buildScreeningSummaryCard({
+      jobTitle: '海外增长运营',
+      total: 10,
+      prioritized: 1,
+      recommended: 1,
+      mokaUrl: 'https://app.mokahr.com/recruit/candidate-list#/position/99/list',
+      topCandidates: [{ name: '张三', score: 90, tag: '优先推进' }]
+    });
+    const batchBtn = cardRes.card.elements.find((el) => el.tag === 'action').actions[0];
+    assert.equal(
+      batchBtn.url,
+      'https://app.mokahr.com/recruit/candidate-list?moka_action=batch_recommend&min_score=50#/position/99/list',
+      '参数插在真正 query 段，路由 hash 原样保留，打开页面视图不漂移'
+    );
   });
 
   it('Bridge 服务器脚本注册了 card.action.trigger 卡片交互按钮监听', () => {

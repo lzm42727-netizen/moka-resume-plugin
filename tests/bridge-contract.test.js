@@ -121,4 +121,15 @@ describe('飞书 Bridge 加固契约（2.0.1）', () => {
       '直推接收人不得回退到最近私聊发送者'
     );
   });
+
+  it('一键批量推进双通道触发：document_start 快照 + query/hash 双解析（v2.0.2 SPA hash 竞态回归）', () => {
+    const content = source('content.js');
+    assert.match(content, /let urlActionSnapshot = \{/, 'document_start 顶层应快照触发参数');
+    assert.match(content, /search\.includes\('moka_action=batch_recommend'\)/, 'query 通道必须存在');
+    assert.match(content, /hash\.includes\('moka_action=batch_recommend'\)/, 'hash 通道保留兼容');
+    assert.match(content, /urlActionSnapshot = null;/, '快照消费后置空防重复触发');
+    const feishuLib = source('lib/feishu.js');
+    assert.doesNotMatch(feishuLib, /#moka_action=/, '卡片按钮 URL 不得把动作参数放 hash');
+    assert.match(feishuLib, /moka_action=batch_recommend&min_score=50/, '动作参数放 query 段');
+  });
 });
