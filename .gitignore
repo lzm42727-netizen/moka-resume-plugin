@@ -11,5 +11,9 @@ dist/
 # 本地私有配置（内网 endpoint/模型，不入库）
 config.local.js
 
+# 飞书 Bridge 本地凭据与运行状态（config.json 含明文 appSecret，严禁入库）
+feishu-bridge/config.json
+feishu-bridge/server.pid
+
 # 本地 agent 工作区
 .workbuddy/

@@ -2097,33 +2097,467 @@ select:focus {
   100% { background: transparent; }
 }
 
-/* 设置页节奏统一：组间距、说明文字、隐藏组的兜底（不改其他标签页） */
-#settings-tab .panel {
-  padding: 14px 0 12px;
+/* ========================================================
+   设置页（Bento 卡片式现代美观与实用排版）
+   ======================================================== */
+#settings-tab {
+  padding: 12px 14px 20px;
+  background: #f8fafc;
 }
 
-#settings-tab .panel:first-child {
-  padding-top: 16px;
+.settings-card {
+  background: #ffffff;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.03);
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  transition: all 0.2s ease;
+}
+
+.settings-card:hover {
+  box-shadow: 0 3px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.04);
+}
+
+.settings-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.settings-card-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-card-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.settings-card-icon.icon-ai {
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.settings-card-icon.icon-feishu {
+  background: #f0fdf4;
+  color: #00b2a9;
+}
+
+.settings-card-icon.icon-log {
+  background: #f8fafc;
+  color: #475569;
+}
+
+.settings-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+  line-height: 1.3;
+}
+
+.settings-card-sub {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+/* 双列网格与紧凑布局 */
+.form-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.form-grid-3-2 {
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 10px;
 }
 
 #settings-tab .form-group {
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 #settings-tab .form-group[hidden] {
   display: none;
 }
 
-#settings-tab .form-group small,
-#settings-tab .adv-group-body small {
-  margin-top: 3px;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--text-muted);
+#settings-tab .form-group:last-child {
+  margin-bottom: 0;
 }
 
-#settings-tab .panel-title {
+#settings-tab .form-group > label {
+  font-size: 11px;
+  font-weight: 500;
+  color: #475569;
+  margin-bottom: 4px;
+  display: block;
+}
+
+#settings-tab .input-field,
+#settings-tab select {
+  font-size: 12px;
+  border-radius: 6px;
+  border-color: #cbd5e1;
+  background: #fafafa;
+  transition: all 0.15s ease-in-out;
+}
+
+#settings-tab .input-field:focus,
+#settings-tab select:focus {
+  background: #ffffff;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.12);
+}
+
+.field-micro-hint {
+  font-size: 10.5px;
+  color: #94a3b8;
+  margin-top: 4px;
+}
+
+.font-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* 飞书聚合控制盒 */
+.settings-box {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.settings-box-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 8px;
+  margin-top: 8px;
+  border-top: 1px solid #edf2f7;
+}
+
+.settings-box-label {
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.input-field-sm {
+  padding: 3px 8px;
+  font-size: 11px !important;
+  height: auto;
+}
+
+.badge-recommend {
+  font-size: 10px;
+  background: #ecfdf5;
+  color: #059669;
+  border: 1px solid #a7f3d0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+/* 机器人桥接服务卡片与指引 */
+.bridge-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 12px;
   margin-bottom: 12px;
+}
+
+.bridge-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.bridge-card-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.bridge-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.badge-tag {
+  font-size: 9.5px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #e2e8f0;
+  color: #475569;
+  font-weight: normal;
+}
+
+.bridge-card-desc {
+  font-size: 10.5px;
+  color: #64748b;
+  margin-top: 2px;
+  line-height: 1.3;
+}
+
+.bridge-card-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.status-value {
+  font-size: 11px;
+  font-weight: 500;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+.btn-text-action {
+  font-size: 10.5px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  padding: 2px 7px;
+  color: #2563eb;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-text-action:hover {
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+
+.btn-text-action:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-action-disconnect {
+  color: #dc2626 !important;
+  border-color: #fca5a5 !important;
+  background: #fef2f2 !important;
+}
+
+.btn-action-disconnect:hover {
+  background: #fee2e2 !important;
+  border-color: #f87171 !important;
+}
+
+/* 顶部紧凑服务状态条 */
+.bridge-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  margin-bottom: 10px;
+}
+
+.bridge-status-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bridge-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.bridge-status-bar.is-connected .bridge-status-dot {
+  background: #16a34a;
+  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.2);
+}
+
+/* 飞书自建应用凭据输入框组 */
+.bridge-credentials-box {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+
+.bridge-cred-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.bridge-cred-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.bridge-cred-desc {
+  font-size: 10.5px;
+  color: #64748b;
+  line-height: 1.45;
+  margin-bottom: 8px;
+}
+
+.bridge-cred-desc a.link-text {
+  color: #2563eb;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* 启动指引折叠 */
+.bridge-guide {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #e2e8f0;
+}
+
+.bridge-guide summary {
+  font-size: 11px;
+  color: #64748b;
+  cursor: pointer;
+  font-weight: 500;
+  user-select: none;
+}
+
+.bridge-guide summary:hover {
+  color: #2563eb;
+}
+
+.bridge-guide-body {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: #ffffff;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+  font-size: 11px;
+  color: #334155;
+  line-height: 1.5;
+}
+
+.guide-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.guide-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  background: #e2e8f0;
+  color: #475569;
+  border-radius: 50%;
+  font-size: 9.5px;
+  font-weight: 600;
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.code-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #0f172a;
+  color: #38bdf8;
+  padding: 4px 8px;
+  border-radius: 4px;
+  margin: 4px 0 6px 20px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+}
+
+.btn-copy-sm {
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-copy-sm:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.guide-tip {
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: #059669;
+  background: #f0fdf4;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid #bbf7d0;
+}
+
+.settings-action-row {
+  margin-top: 12px;
+}
+
+.btn-block {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+#settings-tab .adv-group {
+  margin-top: 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+#settings-tab .adv-group summary {
+  padding: 6px 10px;
+  font-size: 11.5px;
+  color: #64748b;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+}
+
+#settings-tab .adv-group summary:hover {
+  color: #2563eb;
+}
+
+#settings-tab .adv-group-body {
+  padding: 10px;
+  border-top: 1px solid #e2e8f0;
+  background: #ffffff;
+  border-radius: 0 0 6px 6px;
 }
 
 /* ===== 配置页扁平分区（1.8.2：去卡片壳）+ 硬性门槛两列 ===== */
@@ -2352,3 +2786,196 @@ select:focus {
 .tab-content::-webkit-scrollbar-thumb:hover {
   background: #bfbfbf;
 }
+
+/* ========================================================
+   飞书协同 2.0：常用推送目标库与职位精准记忆样式
+   ======================================================== */
+.feishu-targets-section {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 6px;
+  margin-bottom: 6px;
+}
+
+.feishu-targets-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 3px;
+}
+
+.feishu-targets-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #1e293b;
+  margin: 0;
+}
+
+.feishu-targets-sub {
+  font-size: 10.5px;
+  color: #64748b;
+  margin-bottom: 8px;
+  line-height: 1.35;
+}
+
+.feishu-targets-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.feishu-target-item {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 7px 9px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: border-color 0.15s ease;
+}
+
+.feishu-target-item:focus-within {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 1.5px rgba(37, 99, 235, 0.12);
+}
+
+.feishu-target-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.feishu-target-name-input {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 600;
+  color: #0f172a;
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.feishu-target-name-input:hover {
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+}
+
+.feishu-target-name-input:focus {
+  background: #ffffff;
+  border-color: #94a3b8;
+  outline: none;
+}
+
+.feishu-target-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.btn-target-test {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #2563eb;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-target-test:hover {
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+
+.btn-target-del {
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-target-del:hover {
+  background: #fee2e2;
+  color: #dc2626;
+  border-color: #fca5a5;
+}
+
+.feishu-target-webhook-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 10.5px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: #334155;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+
+.feishu-target-webhook-input:focus {
+  background: #ffffff;
+  border-color: #2563eb;
+  outline: none;
+}
+
+.btn-add-target {
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: #2563eb;
+  background: #ffffff;
+  border: 1px dashed #93c5fd;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-add-target:hover {
+  background: #eff6ff;
+  border-color: #2563eb;
+}
+
+/* 筛选配置页下拉框美化 */
+#feishu-job-target-select {
+  width: 100%;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: #0f172a;
+  background-color: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 5px 8px;
+  transition: border-color 0.15s ease;
+}
+
+#feishu-job-target-select:focus {
+  background-color: #ffffff;
+  border-color: #2563eb;
+  outline: none;
+}
+
+#feishu-job-target-hint {
+  font-size: 10.5px;
+  color: #059669;
+  margin-top: 3px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+

@@ -179,6 +179,7 @@ let screeningEndedAt = 0; // 完成/停止时冻结，结果页「用时」不�
 let screeningEpoch = 0;
 let screeningHeartbeat = 0; // 最近一次筛选活动时间；用于识别「卡死的旧任务」
 let runUsage = MokaUsage.emptyUsage(); // 本轮筛选的 LLM 用量/费用（续筛时从任务快照恢复）
+let currentScreeningFeishuTargetId = '';
 
 function resetRunUsage() {
   runUsage = MokaUsage.emptyUsage();
@@ -1302,6 +1303,12 @@ function init() {
   startBridgeHandshake();
   const leftover = document.getElementById('moka-panel');
   if (leftover) leftover.remove();
+
+  // 监听飞书卡片操作携带的 URL 批量推荐指令
+  window.addEventListener('hashchange', () => {
+    checkUrlBatchActions();
+  });
+  setTimeout(checkUrlBatchActions, 600);
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'ping') {
       sendResponse({ ok: true });
@@ -1352,6 +1359,7 @@ function init() {
         }
         const epoch = ++screeningEpoch;
         isScreening = true;
+        currentScreeningFeishuTargetId = request.feishuTargetId || '';
         touchScreeningHeartbeat();
         performScreening(request, epoch).catch((err) => {
           console.error('[Moka 筛选] performScreening 异常:', err);
@@ -1523,6 +1531,11 @@ function init() {
       handleBatchAssign(request.appIds)
         .then((result) => sendResponse(result))
         .catch((err) => sendResponse({ ok: false, error: (err && err.message) || '批量推进失败' }));
+      return true;
+    } else if (request.action === 'feishuRecommendByScore') {
+      handleFeishuRecommend(request.minScore, request.name)
+        .then((result) => sendResponse(result))
+        .catch((err) => sendResponse({ ok: false, error: (err && err.message) || '飞书指令推进失败' }));
       return true;
     }
     sendResponse(MokaContracts.unknownActionResponse(request && request.action));
@@ -2336,10 +2349,77 @@ function startScreeningKeepalive() {
 }
 
 function notifyScreeningComplete(total, message) {
+  // 复用 MokaMatch.toResultView 与 MokaMatch.sortResultViews，与页面最终呈现 100% 同源同序
+  const views = (Array.isArray(results) ? results : []).map((item) => MokaMatch.toResultView(item));
+  const sortedViews = MokaMatch.sortResultViews(views);
+
+  // 漏斗梯队统计：优先推进(≥80)、建议推进(50~79)、建议淘汰(<50)
+  const prioritized = sortedViews.filter((v) => {
+    const s = v && v.score && typeof v.score.score === 'number' ? v.score.score : 0;
+    return s >= 80 || (v && v.score && v.score.level === '优先推进');
+  }).length;
+
+  const recommended = sortedViews.filter((v) => {
+    const s = v && v.score && typeof v.score.score === 'number' ? v.score.score : 0;
+    const isPrio = s >= 80 || (v && v.score && v.score.level === '优先推进');
+    return !isPrio && (s >= 50 || (v && v.score && (v.score.level === '可推进' || v.score.level === '建议推进')));
+  }).length;
+
+  // 筛选出所有 50 分以上的合格推进人选（已按分数由高到低排好序）
+  const qualifiedCandidates = sortedViews
+    .filter((v) => {
+      const s = v && v.score && typeof v.score.score === 'number' ? v.score.score : 0;
+      return s >= 50;
+    })
+    .map((v) => {
+      const sc = v.score || {};
+      const score = typeof sc.score === 'number' ? sc.score : 0;
+      const tag = (score >= 80 || sc.level === '优先推进') ? '优先推进' : '建议推进';
+
+      const rawItem = (Array.isArray(results) ? results : []).find((it) => it && it.app && it.app.id === v.id);
+      const rawApp = (rawItem && rawItem.app) || {};
+      const profileParts = [v.meta];
+      if (rawApp.experienceYears != null) profileParts.push(`${rawApp.experienceYears}年经验`);
+      if (rawApp.title || rawApp.currentCompany) profileParts.push(`${rawApp.currentCompany || ''} ${rawApp.title || ''}`.trim());
+      const profile = profileParts.filter(Boolean).join(' · ');
+
+      // 提取核心亮点：优先取 highlights，再取加分项提示，其次取经历证据
+      const highlightParts = [];
+      if (Array.isArray(sc.highlights) && sc.highlights.length > 0) {
+        highlightParts.push(...sc.highlights.slice(0, 2));
+      } else if (Array.isArray(sc.experienceEvidence) && sc.experienceEvidence.length > 0) {
+        highlightParts.push(...sc.experienceEvidence.slice(0, 2));
+      } else if (sc.scoreBreakdown && sc.scoreBreakdown.coreDuty && sc.scoreBreakdown.coreDuty.reason) {
+        highlightParts.push(sc.scoreBreakdown.coreDuty.reason);
+      }
+      let highlightText = highlightParts.filter(Boolean).join('；');
+      if (sc.bonusApplied > 0) {
+        highlightText = `(加分+${sc.bonusApplied}) ` + highlightText;
+      }
+      if (highlightText.length > 110) {
+        highlightText = highlightText.slice(0, 108) + '…';
+      }
+
+      return {
+        name: v.name || '候选人',
+        score,
+        tag,
+        profile,
+        highlight: highlightText
+      };
+    });
+
   chrome.runtime.sendMessage({
     action: 'notifyScreeningDone',
     total,
-    message
+    message,
+    jobTitle: lastKnownJobName || '当前职位',
+    feishuTargetId: currentScreeningFeishuTargetId || 'default',
+    prioritized,
+    recommended,
+    durationText: screeningStartedAt ? Math.round((Date.now() - screeningStartedAt) / 1000) + ' 秒' : '刚刚',
+    mokaUrl: location.href,
+    topCandidates: qualifiedCandidates
   }).catch(() => {});
 }
 
@@ -3601,6 +3681,123 @@ async function handleBatchAssign(appIds) {
     count: built.body.applicationIds.length,
     assigneeCount: built.body.assigneeIds.length
   };
+}
+
+async function handleFeishuRecommend(minScore, namePattern) {
+  if (isScreening) {
+    return { ok: false, error: '当前筛选进行中，请先停止筛选再推进' };
+  }
+  if (!results.length) {
+    await restoreResultsSilently();
+  }
+  if (!results.length) {
+    return { ok: false, error: '当前页面暂无候选人筛选结果，请先进行筛选' };
+  }
+
+  const targets = [];
+  const min = (typeof minScore === 'number' && Number.isFinite(minScore)) ? minScore : null;
+  const nameQuery = namePattern ? String(namePattern).trim() : null;
+
+  for (const item of results) {
+    if (!item || !item.app) continue;
+    const appId = item.app.id || item.app.applicationId;
+    if (!appId) continue;
+    const name = item.app.name || '未知候选人';
+    const scoreVal = (item.score && (typeof item.score.score === 'number' ? item.score.score : (item.score.finalScore != null ? item.score.finalScore : item.score.matchScore))) || 0;
+
+    if (min != null && scoreVal < min) continue;
+    if (nameQuery && !name.includes(nameQuery)) continue;
+
+    targets.push({ appId, name, score: scoreVal });
+  }
+
+  if (!targets.length) {
+    return {
+      ok: true,
+      count: 0,
+      names: [],
+      jobTitle: lastKnownJobName || '当前岗位',
+      message: '没有符合条件的候选人'
+    };
+  }
+
+  // 取前 30 人（Moka 单次批量分配上限）
+  const batchTargets = targets.slice(0, 30);
+  const appIds = batchTargets.map((t) => t.appId);
+  const names = batchTargets.map((t) => t.name);
+
+  const res = await handleBatchAssign(appIds);
+  if (!res.ok) {
+    return {
+      ok: false,
+      error: res.error || '批量推进失败',
+      jobTitle: lastKnownJobName || '当前岗位'
+    };
+  }
+
+  publishResults('🤖 飞书指令：已成功推荐 ' + names.length + ' 位候选人', undefined, { flush: true });
+
+  return {
+    ok: true,
+    count: names.length,
+    names,
+    jobTitle: lastKnownJobName || '当前岗位'
+  };
+}
+
+let isExecutingUrlBatchAction = false;
+async function checkUrlBatchActions() {
+  if (isExecutingUrlBatchAction) return;
+  try {
+    const hash = window.location.hash || '';
+    if (!hash.includes('moka_action=batch_recommend')) return;
+
+    // 解析参数
+    const rawParams = hash.replace(/^#/, '');
+    const searchParams = new URLSearchParams(rawParams);
+    const minScore = Number(searchParams.get('min_score')) || 50;
+
+    isExecutingUrlBatchAction = true;
+
+    // 清除 hash，防止重复刷新触发
+    try {
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+    } catch (e) { /* ignore */ }
+
+    pushPluginLog({
+      cat: 'info',
+      text: `[飞书卡片协同] 检测到一键批量推进指令 (最低分: ${minScore})`
+    });
+
+    publishResults(`🤖 收到飞书卡片指令：正在准备批量推进 ${minScore} 分以上候选人...`, undefined, { flush: true });
+
+    // 若结果尚未加载，尝试静默恢复
+    let retries = 0;
+    while (!results.length && retries < 10) {
+      await restoreResultsSilently();
+      if (results.length) break;
+      await sleep(500);
+      retries++;
+    }
+
+    if (!results.length) {
+      publishResults('💡 收到飞书批量推进指令，但当前页面暂无筛选结果，请先在面板进行筛选', undefined, { flush: true });
+      return;
+    }
+
+    const res = await handleFeishuRecommend(minScore);
+    if (res.ok) {
+      const namesStr = (res.names || []).slice(0, 5).join('、');
+      const suffix = (res.names || []).length > 5 ? ' 等' : '';
+      publishResults(`✨ 飞书一键推进成功！已推进 ${res.count || 0} 位候选人（${namesStr}${suffix}）至用人部门`, undefined, { flush: true });
+    } else {
+      publishResults(`❌ 飞书批量推进未完成：${res.error || '未知异常'}`, undefined, { flush: true });
+    }
+  } catch (err) {
+    console.warn('[Moka 协同] 执行 URL 批量操作异常:', err);
+  } finally {
+    isExecutingUrlBatchAction = false;
+  }
 }
 
 /** 单个推荐优先走 API 直连重放（与批量推进同源，1.10.5）。

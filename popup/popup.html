@@ -50,6 +50,14 @@
                         <option value="0">全部</option>
                     </select>
                 </div>
+
+                <div class="form-group" id="feishu-target-form-group">
+                    <label>飞书结果推送目标</label>
+                    <select id="feishu-job-target-select">
+                        <option value="default">默认群 / 个人专属</option>
+                    </select>
+                    <div id="feishu-job-target-hint" class="cond-hint cond-hint-flush">✨ 已按本职位精确记忆推送目标</div>
+                </div>
             </section>
 
             <!-- 简历推荐对象：批量推进用，开筛前在本页确认 -->
@@ -261,135 +269,238 @@
 
         <!-- 设置标签页 -->
         <div class="tab-content" id="settings-tab">
-            <section class="panel">
-                <h3 class="panel-title"><span class="panel-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.8 9.2l2.4-2.4"/><path d="M7.3 5.6l1.1-1.1a2.4 2.4 0 0 1 3.4 3.4l-1.1 1.1"/><path d="M8.7 10.4l-1.1 1.1a2.4 2.4 0 0 1-3.4-3.4l1.1-1.1"/></svg></span>连接与模型</h3>
+            <!-- 卡片 1：AI 模型与连接 -->
+            <section class="settings-card">
+                <div class="settings-card-head">
+                    <h3 class="panel-title settings-card-title">
+                        <span class="panel-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.8 9.2l2.4-2.4"/><path d="M7.3 5.6l1.1-1.1a2.4 2.4 0 0 1 3.4 3.4l-1.1 1.1"/><path d="M8.7 10.4l-1.1 1.1a2.4 2.4 0 0 1-3.4-3.4l1.1-1.1"/></svg></span>连接与模型
+                    </h3>
+                    <div class="settings-card-sub">配置模型供应商、API 端点与密钥</div>
+                </div>
 
-                <!-- 部署模式（存在 config.local.js）：连接信息已预置，此处只读展示，招聘者只需填下面的 API Key（1.10.0） -->
+                <!-- 部署模式预置提示条（存在 config.local.js 时显示） -->
                 <div id="local-deploy-summary" class="deploy-strip" hidden>
                     <div class="deploy-strip-title">连接信息已预置</div>
                     <div class="deploy-strip-body">
                         模型 <code id="deploy-model"></code> · 提供商 <code id="deploy-provider"></code> · 协议 <code id="deploy-protocol"></code><br>
                         <span id="deploy-endpoint"></span>
                     </div>
-                    <div class="deploy-strip-hint">你只需填写下方 API Key；如需更换连接信息，请编辑 config.local.js 后重新加载扩展</div>
+                    <div class="deploy-strip-hint">只需填写下方 API Key；更换连接信息请编辑 config.local.js</div>
                 </div>
 
-                <!-- 没有本地私有配置时展开完整表单（开源 / 本地自用） -->
-                <div id="conn-manual-fields">
-                    <div class="form-group">
-                        <label for="api-protocol">接口协议</label>
-                        <select id="api-protocol">
-                            <option value="openai">OpenAI 兼容（/chat/completions）</option>
-                            <option value="claude">Anthropic Claude（/v1/messages）</option>
-                        </select>
-                        <small>决定请求格式与鉴权头；自建网关、中转、本地模型多选 OpenAI 兼容</small>
+                <!-- 手动连接字段 -->
+                <div id="conn-manual-fields" class="settings-form-body">
+                    <div class="form-grid-2">
+                        <div class="form-group">
+                            <label for="api-protocol">接口协议</label>
+                            <select id="api-protocol">
+                                <option value="openai">OpenAI 兼容</option>
+                                <option value="claude">Anthropic Claude</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="api-provider">API 提供商</label>
+                            <input type="text" id="api-provider" list="api-provider-presets" placeholder="如 OpenAI / DeepSeek / 企业网关" class="input-field">
+                            <datalist id="api-provider-presets"></datalist>
+                        </div>
                     </div>
 
-                    <div class="form-group">
-                        <label for="api-provider">API 提供商</label>
-                        <input type="text" id="api-provider" list="api-provider-presets" placeholder="可自由填写，如 OpenAI / DeepSeek / 企业网关" class="input-field">
-                        <datalist id="api-provider-presets"></datalist>
-                        <small>选一个常用服务会自动填好 Endpoint 与模型名，之后仍可任意手改</small>
-                    </div>
-
-                    <!-- Endpoint 常显可编辑：OpenAI 官方地址、中转、自建、本地服务都能填 -->
                     <div class="form-group" id="endpoint-group">
                         <label for="api-endpoint">API Endpoint</label>
-                        <input type="text" id="api-endpoint" placeholder="https://api.openai.com/v1/chat/completions" class="input-field">
-                        <small>填完整地址；只填到 /v1 会自动补 /chat/completions。保存时会申请访问该域名</small>
+                        <input type="text" id="api-endpoint" placeholder="https://api.openai.com/v1/chat/completions" class="input-field font-mono">
                     </div>
 
                     <div class="form-group">
                         <label for="model-name">模型名称</label>
-                        <input type="text" id="model-name" placeholder="如 gpt-4o / claude-sonnet / minimax-m2.7" class="input-field">
+                        <input type="text" id="model-name" placeholder="如 gpt-4o / minimax-m2.7 / deepseek-chat" class="input-field font-mono">
                     </div>
                 </div>
 
                 <div class="form-group">
                     <label for="api-key">API Key</label>
                     <div class="api-key-container">
-                        <input type="password" id="api-key" placeholder="输入你的 API Key" class="input-field">
+                        <input type="password" id="api-key" placeholder="输入 API Key" class="input-field font-mono">
                         <button id="toggle-api-key" class="btn-icon" type="button" title="显示/隐藏">
                             <svg class="icon-eye" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 8s2.3-4 6.2-4 6.2 4 6.2 4-2.3 4-6.2 4S1.8 8 1.8 8z"/><circle cx="8" cy="8" r="2"/></svg>
                             <svg class="icon-eye-off" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 8s2.3-4 6.2-4 6.2 4 6.2 4-2.3 4-6.2 4S1.8 8 1.8 8z"/><circle cx="8" cy="8" r="2"/><path d="M3 13.2L13 2.8"/></svg>
                         </button>
                     </div>
-                    <small>只保存在本地浏览器，不会上传到任何服务器</small>
+                    <div class="field-micro-hint">🔒 本地安全存储，绝不上云</div>
                 </div>
 
-                <!-- 高级 · 测评参数与费用单价：均有可用默认值（并发 6 / JSON 开 / 单价留空用内置），默认收起 -->
+                <!-- 高级选项折叠 -->
                 <details class="adv-group" id="conn-adv-group">
                     <summary>高级 · 测评参数与费用单价（可选）</summary>
                     <div class="adv-group-body">
                         <div class="form-group">
                             <label for="score-concurrency">评分并发数</label>
                             <input type="number" id="score-concurrency" min="1" max="8" step="1" inputmode="numeric" placeholder="默认 6（可选 1–8）" class="input-field">
-                            <small>同时评分的候选人数（1–8，默认 6）。企业网关或本地模型可调大提速；被限流时调小</small>
                         </div>
 
                         <div class="form-group form-group-tight">
                             <label class="choice-pill"><input type="checkbox" id="force-json-mode"> 强制 JSON 输出（推荐）</label>
-                            <small>对自定义/中转端点请求结构化 JSON 输出；网关不支持时会自动去掉该参数降级重试，无需手动关闭</small>
                         </div>
 
                         <div class="form-group">
-                            <label>费用估算单价（可选）</label>
-                            <div class="price-row">
+                            <label>费用估算单价（可选，留空用内置）</label>
+                            <div class="form-grid-2">
                                 <input type="text" id="model-input-price" inputmode="decimal" placeholder="输入价 元/百万（留空用内置）" class="input-field">
                                 <input type="text" id="model-output-price" inputmode="decimal" placeholder="输出价 元/百万（留空用内置）" class="input-field">
                             </div>
-                            <small>用于筛选费用估算；厂商调价或中转价不同时，填这里覆盖内置价目表（如 MiniMax-M2.7 输入 2.1 / 输出 8.4 元每百万）</small>
                         </div>
                     </div>
                 </details>
 
-                <div class="button-group button-group-tight">
-                    <button id="save-settings" class="btn btn-primary" title="保存设置并立即测试一次 API 连接">💾 保存并测试</button>
+                <div class="settings-action-row">
+                    <button id="save-settings" class="btn btn-primary btn-block" title="保存设置并立即测试 API 连通性">💾 保存并测试连接</button>
                 </div>
-
                 <div id="test-result" class="test-result hidden"></div>
             </section>
 
-            <!-- 运行日志：插件完整使用日志（会话级，最近 500 条；清空/复制/导出/筛选/暂停） -->
-            <section class="panel panel-log panel-last">
-                <h3 class="panel-title">
-                    <span class="panel-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></svg></span>运行日志
-                    <span class="panel-title-paren">最近 500 条 · 本次浏览器会话有效</span>
-                </h3>
-                <div class="form-group form-group-tight">
-                    <small>插件在 Moka 页面上的完整使用轨迹：接口请求、推荐对象采纳、筛选生命周期、逐人评分与错误。只在本地留存，关闭浏览器即清空。</small>
+            <!-- 卡片 2：飞书协同与机器人助手 -->
+            <section class="settings-card">
+                <div class="settings-card-head">
+                    <h3 class="panel-title settings-card-title">
+                        <span class="panel-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3.5h12v9H2z"/><path d="M2 3.5l6 5 6-5"/></svg></span>飞书智能助手
+                        <span class="badge-tag">自建应用 · 推荐</span>
+                    </h3>
+                    <div class="settings-card-sub">初筛结果私聊直达 · 支持单聊直接对话批量推进</div>
+                </div>
+
+                <div class="settings-form-body">
+                    <!-- 本地守护服务状态条 -->
+                    <div class="bridge-status-bar">
+                        <div class="bridge-status-left">
+                            <span class="bridge-status-dot"></span>
+                            <span id="feishu-bridge-status" class="status-value">⚪ 本地服务未运行</span>
+                        </div>
+                        <div class="bridge-status-right">
+                            <button id="reconnect-feishu-bridge" class="btn-text-action" type="button" title="点击立即尝试连接本地 18888 端口">🔄 立即连接</button>
+                        </div>
+                    </div>
+
+                    <!-- 3 个核心凭据与接收配置 -->
+                    <div class="form-group form-group-tight">
+                        <label for="feishu-app-id">飞书 App ID</label>
+                        <input type="text" id="feishu-app-id" placeholder="例如 cli_a7d3b9e123456789" class="input-field font-mono">
+                    </div>
+
+                    <div class="form-group form-group-tight">
+                        <label for="feishu-app-secret">飞书 App Secret</label>
+                        <div class="api-key-container">
+                            <input type="password" id="feishu-app-secret" placeholder="填入开放平台生成的 App Secret" class="input-field font-mono">
+                            <button id="toggle-feishu-app-secret" class="btn-icon" type="button" title="显示/隐藏明文">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                    <circle cx="12" cy="12" r="3"></circle>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="form-group form-group-tight">
+                        <label for="feishu-receiver">个人飞书账号（邮箱或 Open ID）</label>
+                        <input type="text" id="feishu-receiver" placeholder="输入企业邮箱如 xxx@meitu.com 或 Open ID (初筛将私聊推送至此)" class="input-field font-mono">
+                    </div>
+
+                    <!-- 推送策略控制 -->
+                    <div class="settings-box" style="margin-top: 10px;">
+                        <div class="form-group form-group-tight" style="display: flex; align-items: center; justify-content: space-between;">
+                            <label class="choice-pill"><input type="checkbox" id="feishu-summary-notify" checked> 整轮筛选完成自动私聊推送卡片</label>
+                            <span class="badge-recommend">推荐·零打扰</span>
+                        </div>
+
+                        <div class="settings-box-row">
+                            <label for="feishu-min-score" class="settings-box-label">单人实时推送</label>
+                            <select id="feishu-min-score" class="input-field input-field-sm">
+                                <option value="off" selected>🚫 关闭（仅整轮汇总）</option>
+                                <option value="80">≥ 80 分实时推送</option>
+                                <option value="70">≥ 70 分实时推送</option>
+                                <option value="50">≥ 50 分实时推送</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div id="feishu-app-sync-status" class="cond-hint cond-hint-flush">💡 填入凭据自动保存同步；在飞书单聊直接回复「推荐 70 分」即可推进</div>
+
+                    <div class="settings-action-row" style="margin-top: 10px;">
+                        <button id="test-feishu" class="btn btn-secondary btn-block" type="button">📨 发送测试卡片 (直推单聊)</button>
+                    </div>
+                    <div id="feishu-test-result" class="test-result hidden"></div>
+
+                    <!-- 备用选项（默认折叠）：Webhook 与多群目标库 -->
+                    <details class="bridge-guide" id="bridge-advanced-details" style="margin-top: 14px;">
+                        <summary>⚙️ 高级选项 / 备用 Webhook 渠道（多群/个人群）</summary>
+                        <div class="bridge-guide-body">
+                            <div class="form-group form-group-tight">
+                                <label for="feishu-webhook">备用 Webhook（未配置自建应用时兜底）</label>
+                                <input type="text" id="feishu-webhook" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." class="input-field font-mono">
+                            </div>
+
+                            <!-- 常用飞书推送目标库 -->
+                            <div class="feishu-targets-section" style="margin-top: 8px;">
+                                <div class="feishu-targets-head">
+                                    <label class="feishu-targets-title">🎯 常用多群目标库</label>
+                                    <span class="badge-tag">按职位分流群</span>
+                                </div>
+                                <div class="feishu-targets-sub">为各业务板块配置独立群 Webhook，主界面可按职位记忆分流推送</div>
+                                
+                                <div id="feishu-targets-list" class="feishu-targets-list">
+                                    <!-- 动态注入 target 项 -->
+                                </div>
+
+                                <button type="button" id="add-feishu-target-btn" class="btn-add-target">
+                                    <span>➕ 添加群聊 Webhook 目标</span>
+                                </button>
+                            </div>
+
+                            <div class="guide-item" style="margin-top: 10px; padding-top: 8px; border-top: 1px dashed #e2e8f0;">
+                                <span class="guide-num">💡</span>
+                                <span><strong>Mac 免终端后台常驻</strong>：双击 <code>启动飞书机器人.command</code> 后<strong>可直接关闭终端窗口</strong>；需停止时双击 <code>停止飞书机器人.command</code>。</span>
+                            </div>
+                        </div>
+                    </details>
+                </div>
+            </section>
+
+            <!-- 卡片 3：运行日志与诊断 -->
+            <section class="settings-card">
+                <div class="settings-card-head">
+                    <h3 class="panel-title settings-card-title">
+                        <span class="panel-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></svg></span>运行日志
+                    </h3>
+                    <div class="log-actions">
+                        <button type="button" id="log-pause" class="log-icon-btn" title="暂停跟读" aria-label="暂停跟读" aria-pressed="false"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5.5 3.5v9M10.5 3.5v9"/></svg></button>
+                        <button type="button" id="log-clear" class="log-icon-btn" title="清空日志" aria-label="清空日志"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5h10"/><path d="M6 4.5V3.2c0-.4.3-.7.7-.7h2.6c.4 0 .7.3.7.7v1.3"/><path d="M4.8 4.5l.6 8a1.2 1.2 0 0 0 1.2 1.1h2.8a1.2 1.2 0 0 0 1.2-1.1l.6-8"/><path d="M6.7 7v4M9.3 7v4"/></svg></button>
+                        <button type="button" id="log-copy" class="log-icon-btn" title="复制日志" aria-label="复制日志"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V4A1.5 1.5 0 0 0 9 2.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 4 10.5h1.5"/></svg></button>
+                        <button type="button" id="log-export" class="log-icon-btn" title="导出日志" aria-label="导出日志"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5V10M5 7.2l3 3 3-3"/><path d="M3 13h10"/></svg></button>
+                    </div>
                 </div>
 
                 <div class="log-toolbar">
                     <div class="log-filters" id="log-filters" role="group" aria-label="按分类筛选日志">
                         <button type="button" class="log-filter on" data-cat="all">全部</button>
                         <button type="button" class="log-filter" data-cat="req">请求</button>
-                        <button type="button" class="log-filter" data-cat="adopt" title="简历推荐对象的读取/确认/采纳">推荐</button>
+                        <button type="button" class="log-filter" data-cat="adopt" title="简历推荐对象">推荐</button>
                         <button type="button" class="log-filter" data-cat="screen">筛选</button>
                         <button type="button" class="log-filter" data-cat="score">评分</button>
-                        <button type="button" class="log-filter" data-cat="err" title="错误 + 可恢复的重试警告">错误</button>
-                    </div>
-                    <div class="log-actions">
-                        <button type="button" id="log-pause" class="log-icon-btn" title="暂停跟读：新日志只入队、不自动滚动" aria-label="暂停跟读" aria-pressed="false"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5.5 3.5v9M10.5 3.5v9"/></svg></button>
-                        <button type="button" id="log-clear" class="log-icon-btn" title="清空本会话运行日志" aria-label="清空日志"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5h10"/><path d="M6 4.5V3.2c0-.4.3-.7.7-.7h2.6c.4 0 .7.3.7.7v1.3"/><path d="M4.8 4.5l.6 8a1.2 1.2 0 0 0 1.2 1.1h2.8a1.2 1.2 0 0 0 1.2-1.1l.6-8"/><path d="M6.7 7v4M9.3 7v4"/></svg></button>
-                        <button type="button" id="log-copy" class="log-icon-btn" title="复制当前筛选下的日志为文本" aria-label="复制日志"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V4A1.5 1.5 0 0 0 9 2.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 4 10.5h1.5"/></svg></button>
-                        <button type="button" id="log-export" class="log-icon-btn" title="导出当前筛选下的日志为 .txt" aria-label="导出日志"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5V10M5 7.2l3 3 3-3"/><path d="M3 13h10"/></svg></button>
+                        <button type="button" class="log-filter" data-cat="err" title="错误">错误</button>
                     </div>
                 </div>
 
                 <div id="log-list" class="log-list" tabindex="0" aria-live="polite"></div>
-                <div id="log-empty" class="log-empty">暂无日志：去 Moka 页面做一次筛选或手动操作后回来看（本会话有效）。</div>
+                <div id="log-empty" class="log-empty">暂无日志：去 Moka 页面筛选后即可在此查看</div>
                 <div id="log-count" class="log-count"></div>
 
-                <!-- 排查工具折叠：一键复制完整排查快照（已含接口流水，不再单独设按钮） -->
                 <details class="log-diag">
                     <summary>排查工具（一键复制排查快照）</summary>
                     <div class="log-diag-body">
                         <div class="form-group form-group-tight">
-                            <small>排查快照 = 页面上下文 + 职位名映射 + 各职位已记录的简历推荐对象摘要 + 最近 80 条 POST 请求流水（含完整请求体，刷新 Moka 页面会清空）+ 职位存档锚点清单与最近一次回填诊断。排查简历推荐对象、接口或「保存了却不自动回填」问题时复制一份发给开发者即可定位；运行日志面板看的是行为轨迹，这里导出的是机器可读的完整数据。</small>
+                            <small>排查快照包含页面上下文、已记录的简历推荐对象摘要与请求流水，发给开发者可快速定位问题。</small>
                         </div>
                         <div class="button-group button-group-tight">
-                            <button id="copy-assignee-snapshot" class="btn btn-secondary" type="button" title="复制页面上下文 + 简历推荐对象记录 + 完整请求流水">🧾 复制排查快照</button>
+                            <button id="copy-assignee-snapshot" class="btn btn-secondary btn-block" type="button">🧾 复制排查快照</button>
                         </div>
                         <div id="request-log-result" class="test-result hidden"></div>
                     </div>
@@ -464,6 +575,7 @@
     <script src="../lib/calibrate.js"></script>
     <script src="../lib/moka-actions.js"></script>
     <script src="../lib/batch.js"></script>
+    <script src="../lib/feishu.js"></script>
     <script src="../config.local.js"></script>
     <script src="popup.js"></script>
 </body>

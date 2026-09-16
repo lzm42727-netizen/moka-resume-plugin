@@ -19,7 +19,8 @@ const sharedGlobals = {
   MokaMokaSource: 'readonly',
   MokaCandidateProfile: 'readonly',
   MokaResultSession: 'readonly',
-  MokaScreeningRunner: 'readonly'
+  MokaScreeningRunner: 'readonly',
+  MokaFeishu: 'readonly'
 };
 
 // lib/*.js 在 content 的 ISOLATED world / SW 里按加载顺序互相暴露的命名空间。
@@ -41,7 +42,8 @@ const mokaNamespaceGlobals = {
   MokaResultSession: 'readonly',
   MokaScreeningRunner: 'readonly',
   MokaBatch: 'readonly',
-  MokaPluginLog: 'readonly'
+  MokaPluginLog: 'readonly',
+  MokaFeishu: 'readonly'
 };
 
 // 入口脚本规则：no-undef 锁死「引用未声明标识符」（1.6.17 死调用即此类漏网）；

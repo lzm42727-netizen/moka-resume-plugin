@@ -1,0 +1,8 @@
+{
+  "appId": "cli_xxxxxxxxxxxxxxxx",
+  "appSecret": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "receiver": "xxx@meitu.com",
+  "wsPort": 18888,
+  "defaultMinScore": 50,
+  "defaultBatchLimit": 30
+}

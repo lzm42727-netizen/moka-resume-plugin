@@ -381,6 +381,7 @@ function switchJobPreset(prevJobId, prevLabel, targetJobId, label) {
     // （清单纠错请点「按 JD 刷新」，会整表重写）
     await ensureJobUnderstandingOnEnter(restored);
     renderAssigneeStatus();
+    updateJobFeishuTargetSelect(label || activePresetJobLabel);
     if (prevJobId && targetJobId && String(prevJobId) !== String(targetJobId)) {
       await pullResults();
     }
@@ -1302,7 +1303,14 @@ function readSettingsForm() {
     modelOutputPrice: String(document.getElementById('model-output-price')?.value || '').trim(),
     // 默认开：网关不支持时后台自动降级，用户无感
     forceJsonMode: document.getElementById('force-json-mode')?.checked !== false,
-    scoreConcurrency: concurrency
+    scoreConcurrency: concurrency,
+    feishuWebhook: String(document.getElementById('feishu-webhook')?.value || '').trim(),
+    feishuTargets: collectFeishuTargetsFromUI(),
+    feishuAppId: String(document.getElementById('feishu-app-id')?.value || '').trim(),
+    feishuAppSecret: String(document.getElementById('feishu-app-secret')?.value || '').trim(),
+    feishuReceiver: String(document.getElementById('feishu-receiver')?.value || '').trim(),
+    feishuMinScore: String(document.getElementById('feishu-min-score')?.value || 'off'),
+    feishuSummaryNotify: document.getElementById('feishu-summary-notify')?.checked !== false
   };
 }
 
@@ -1727,6 +1735,30 @@ async function loadSettings() {
         || String(stored.modelInputPrice || '').trim() !== ''
         || String(stored.modelOutputPrice || '').trim() !== '';
     }
+    const webhookEl = document.getElementById('feishu-webhook');
+    if (webhookEl) webhookEl.value = s.feishuWebhook || '';
+    feishuTargetsList = Array.isArray(s.feishuTargets) ? s.feishuTargets : [];
+    if (!feishuTargetsList.length && s.feishuWebhook) {
+      feishuTargetsList.push({
+        id: 'default',
+        name: '默认业务群 / 个人专属',
+        webhook: s.feishuWebhook
+      });
+    }
+    renderFeishuTargetsList();
+    updateJobFeishuTargetSelect(currentJobLabel());
+    const minScoreEl = document.getElementById('feishu-min-score');
+    if (minScoreEl) minScoreEl.value = s.feishuMinScore != null ? String(s.feishuMinScore) : 'off';
+    const appIdEl = document.getElementById('feishu-app-id');
+    if (appIdEl) appIdEl.value = s.feishuAppId || '';
+    const appSecretEl = document.getElementById('feishu-app-secret');
+    if (appSecretEl) appSecretEl.value = s.feishuAppSecret || '';
+    const receiverEl = document.getElementById('feishu-receiver');
+    if (receiverEl) receiverEl.value = s.feishuReceiver || '';
+    const summaryNotifyEl = document.getElementById('feishu-summary-notify');
+    if (summaryNotifyEl) summaryNotifyEl.checked = s.feishuSummaryNotify !== false;
+    updateFeishuBridgeStatus();
+    startFeishuBridgePolling();
   } catch (error) {
     console.error('加载设置失败:', error);
   }
@@ -1734,6 +1766,534 @@ async function loadSettings() {
   fillProviderPresets(); // 提供商输入框的常用服务候选（可自由填写，不限于候选）
   syncEndpointPlaceholder(); // 按协议更新 Endpoint 占位；地址为空时才补默认值
 }
+
+let feishuBridgePollingTimer = null;
+let isOperatingFeishuBridge = false;
+let isBridgeCurrentlyConnected = false;
+
+function updateFeishuBridgeStatus(callback) {
+  const statusEl = document.getElementById('feishu-bridge-status');
+  const actionBtn = document.getElementById('reconnect-feishu-bridge');
+  const barEl = statusEl?.closest('.bridge-status-bar');
+  if (!statusEl) return;
+  chrome.runtime.sendMessage({ action: 'getFeishuBridgeStatus' }, (res) => {
+    isBridgeCurrentlyConnected = !!(res && res.connected);
+    if (isBridgeCurrentlyConnected) {
+      statusEl.textContent = '🟢 飞书长连接已就绪 (私聊直推与交互就绪)';
+      statusEl.style.color = '#16a34a';
+      barEl?.classList.add('is-connected');
+      if (actionBtn && !isOperatingFeishuBridge) {
+        actionBtn.textContent = '🔌 断开连接';
+        actionBtn.title = '点击主动断开与本地服务的连接';
+        actionBtn.classList.add('btn-action-disconnect');
+        actionBtn.disabled = false;
+      }
+    } else {
+      if (!isOperatingFeishuBridge) {
+        statusEl.textContent = '⚪ 本地服务未运行';
+        statusEl.style.color = '#64748b';
+        barEl?.classList.remove('is-connected');
+        if (actionBtn) {
+          actionBtn.textContent = '🔄 立即连接';
+          actionBtn.title = '点击尝试连接本地 18888 端口';
+          actionBtn.classList.remove('btn-action-disconnect');
+          actionBtn.disabled = false;
+        }
+      }
+    }
+    if (typeof callback === 'function') callback(isBridgeCurrentlyConnected);
+  });
+}
+
+function startFeishuBridgePolling() {
+  if (feishuBridgePollingTimer) return;
+  feishuBridgePollingTimer = setInterval(() => {
+    if (!isOperatingFeishuBridge) {
+      updateFeishuBridgeStatus();
+    }
+  }, 2500);
+}
+
+safeEl('reconnect-feishu-bridge')?.addEventListener('click', () => {
+  const btn = document.getElementById('reconnect-feishu-bridge');
+  const statusEl = document.getElementById('feishu-bridge-status');
+  const detailsEl = document.getElementById('bridge-guide-details');
+
+  if (isOperatingFeishuBridge) return;
+  isOperatingFeishuBridge = true;
+
+  // 1. 若当前已连接，点击触发断开连接
+  if (isBridgeCurrentlyConnected) {
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = '断开中...';
+    }
+    chrome.runtime.sendMessage({ action: 'disconnectFeishuBridge' }, () => {
+      setTimeout(() => {
+        isOperatingFeishuBridge = false;
+        updateFeishuBridgeStatus();
+      }, 200);
+    });
+    return;
+  }
+
+  // 2. 若当前未连接，点击触发连接探测
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '探测中...';
+  }
+  if (statusEl) {
+    statusEl.textContent = '🟡 探测中...';
+    statusEl.style.color = '#f59e0b';
+  }
+
+  // 1.2 秒硬性超时兜底
+  const timeoutGuard = setTimeout(() => {
+    if (isOperatingFeishuBridge) {
+      isOperatingFeishuBridge = false;
+      updateFeishuBridgeStatus((connected) => {
+        if (!connected) {
+          if (detailsEl) detailsEl.open = true;
+          if (btn) {
+            btn.textContent = '未启动 (再试)';
+            setTimeout(() => {
+              if (btn && btn.textContent === '未启动 (再试)') {
+                btn.textContent = '🔄 立即连接';
+              }
+            }, 2000);
+          }
+        }
+      });
+    }
+  }, 1200);
+
+  chrome.runtime.sendMessage({ action: 'reconnectFeishuBridge' }, () => {
+    clearTimeout(timeoutGuard);
+    setTimeout(() => {
+      isOperatingFeishuBridge = false;
+      updateFeishuBridgeStatus((connected) => {
+        if (!connected) {
+          if (detailsEl) detailsEl.open = true;
+          if (btn) {
+            btn.textContent = '未启动 (再试)';
+            setTimeout(() => {
+              if (btn && btn.textContent === '未启动 (再试)') {
+                btn.textContent = '🔄 立即连接';
+              }
+            }, 2000);
+          }
+        }
+      });
+    }, 400);
+  });
+});
+
+safeEl('copy-bridge-cmd')?.addEventListener('click', async () => {
+  const btn = document.getElementById('copy-bridge-cmd');
+  try {
+    await navigator.clipboard.writeText('cd ~/Downloads/"Vibe Coding"/moka-resume-plugin && npm run bridge');
+    if (btn) {
+      const oldText = btn.textContent;
+      btn.textContent = '✅ 已复制完整命令';
+      setTimeout(() => { btn.textContent = oldText; }, 1800);
+    }
+  } catch (e) {
+    console.warn('复制命令失败:', e);
+  }
+});
+
+safeEl('test-feishu')?.addEventListener('click', async () => {
+  const appId = String(document.getElementById('feishu-app-id')?.value || '').trim();
+  const appSecret = String(document.getElementById('feishu-app-secret')?.value || '').trim();
+  const receiver = String(document.getElementById('feishu-receiver')?.value || '').trim();
+  const webhook = String(document.getElementById('feishu-webhook')?.value || '').trim();
+  const resultDiv = document.getElementById('feishu-test-result');
+
+  const hasAppCreds = !!(appId && appSecret);
+  if (!hasAppCreds && !webhook) {
+    if (resultDiv) {
+      resultDiv.textContent = '❌ 请先填写飞书 App ID & Secret（直推个人单聊）或 备用 Webhook 地址';
+      resultDiv.className = 'test-result error';
+      resultDiv.classList.remove('hidden');
+    }
+    return;
+  }
+
+  if (hasAppCreds && !receiver) {
+    if (resultDiv) {
+      resultDiv.textContent = '💡 提示：请填入个人接收账号（如企业邮箱 xxx@meitu.com 或 Open ID）以便机器人私聊给您';
+      resultDiv.className = 'test-result warning';
+      resultDiv.classList.remove('hidden');
+    }
+  }
+
+  // 自动持久化当前设置
+  try {
+    const res = await chrome.storage.local.get('mokaSettings');
+    const current = res.mokaSettings || {};
+    await chrome.storage.local.set({
+      mokaSettings: {
+        ...current,
+        feishuAppId: appId,
+        feishuAppSecret: appSecret,
+        feishuReceiver: receiver,
+        feishuWebhook: webhook,
+        feishuMinScore: String(document.getElementById('feishu-min-score')?.value || 'off'),
+        feishuSummaryNotify: document.getElementById('feishu-summary-notify')?.checked !== false
+      }
+    });
+  } catch (e) { /* ignore storage error */ }
+
+  const testCard = MokaFeishu.buildCandidateCard(
+    { name: '测试候选人', applicationId: 'test_demo', jobTitle: '测试岗位' },
+    {
+      finalScore: 88,
+      decisionTag: '优先推进',
+      scoreBreakdown: {
+        coreDuty: { score: 90, reason: '核心职责高度对口' },
+        business: { score: 85, reason: '业务场景经验丰富' },
+        skill: { score: 85, reason: '技能栈匹配' },
+        scope: { score: 85, reason: '项目量级匹配' }
+      },
+      experienceEvidence: '这是一张来自 Moka 助手的飞书协同测试卡片。\n已连通自建应用机器人通道，您可直接在此对话推进简历！',
+      concerns: ['无']
+    },
+    { jobTitle: '测试岗位' }
+  );
+
+  if (resultDiv) {
+    resultDiv.textContent = hasAppCreds ? '正在通过自建应用直推飞书单聊…' : '正在发送测试卡片…';
+    resultDiv.className = 'test-result info';
+    resultDiv.classList.remove('hidden');
+  }
+
+  chrome.runtime.sendMessage({
+    action: 'sendFeishuCard',
+    card: testCard,
+    webhook: hasAppCreds ? '' : webhook,
+    receiver
+  }, (res) => {
+    if (chrome.runtime.lastError) {
+      if (resultDiv) {
+        resultDiv.textContent = '❌ 发送失败: ' + chrome.runtime.lastError.message;
+        resultDiv.className = 'test-result error';
+      }
+      return;
+    }
+    if (res && res.ok) {
+      if (resultDiv) {
+        resultDiv.textContent = hasAppCreds
+          ? '✅ 测试卡片已直推至您的飞书单聊！请查收并在单聊直接回复指令测试推进'
+          : '✅ 测试卡片已发送成功，请前往飞书查收！';
+        resultDiv.className = 'test-result success';
+        setTimeout(() => resultDiv.classList.add('hidden'), 5000);
+      }
+    } else {
+      if (resultDiv) {
+        resultDiv.textContent = '❌ 发送失败: ' + (res?.error || '网络异常');
+        resultDiv.className = 'test-result error';
+      }
+    }
+  });
+});
+
+// ========================================================
+// 飞书协同 2.0：常用推送目标库与职位精准记忆
+// ========================================================
+const JOB_FEISHU_TARGET_MAP_KEY = 'mokaJobFeishuTargetMapV1';
+let feishuTargetsList = [];
+
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+let saveFeishuSettingsTimer = null;
+function debouncedSaveFeishuSettings() {
+  if (saveFeishuSettingsTimer) clearTimeout(saveFeishuSettingsTimer);
+  saveFeishuSettingsTimer = setTimeout(async () => {
+    try {
+      const res = await chrome.storage.local.get('mokaSettings');
+      const current = res.mokaSettings || {};
+      const targets = collectFeishuTargetsFromUI();
+      const appId = String(document.getElementById('feishu-app-id')?.value || '').trim();
+      const appSecret = String(document.getElementById('feishu-app-secret')?.value || '').trim();
+      const receiver = String(document.getElementById('feishu-receiver')?.value || '').trim();
+      await chrome.storage.local.set({
+        mokaSettings: {
+          ...current,
+          feishuTargets: targets,
+          feishuAppId: appId,
+          feishuAppSecret: appSecret,
+          feishuReceiver: receiver
+        }
+      });
+
+      // 实时向本地 Bridge 同步凭据并热启动长连接
+      try {
+        const syncResp = await chrome.runtime.sendMessage({
+          action: 'syncFeishuCredentials',
+          appId,
+          appSecret,
+          receiver
+        });
+        const hintEl = document.getElementById('feishu-app-sync-status');
+        if (hintEl) {
+          if (syncResp && syncResp.connected) {
+            hintEl.textContent = '✨ 凭据与接收账号已同步至本地 Bridge 服务 (常驻运行中)';
+            hintEl.style.color = '#16a34a';
+          } else {
+            hintEl.textContent = '💾 配置已保存至插件设置（启动本地 Bridge 后自动建立私聊长连接）';
+            hintEl.style.color = '#475569';
+          }
+        }
+      } catch (err) {
+        // ignore
+      }
+    } catch (e) {
+      // ignore
+    }
+  }, 300);
+}
+
+function collectFeishuTargetsFromUI() {
+  const container = document.getElementById('feishu-targets-list');
+  if (!container) return feishuTargetsList;
+  const items = container.querySelectorAll('.feishu-target-item');
+  const result = [];
+  items.forEach((el) => {
+    const id = el.dataset.id || ('target_' + Date.now());
+    const nameInput = el.querySelector('.feishu-target-name-input');
+    const hookInput = el.querySelector('.feishu-target-webhook-input');
+    const name = nameInput ? nameInput.value.trim() : '';
+    const webhook = hookInput ? hookInput.value.trim() : '';
+    if (name || webhook) {
+      result.push({ id, name: name || '未命名目标', webhook });
+    }
+  });
+  feishuTargetsList = result;
+  return result;
+}
+
+function renderFeishuTargetsList() {
+  const container = document.getElementById('feishu-targets-list');
+  if (!container) return;
+  container.innerHTML = '';
+
+  feishuTargetsList.forEach((target, index) => {
+    const itemEl = document.createElement('div');
+    itemEl.className = 'feishu-target-item';
+    itemEl.dataset.id = target.id;
+
+    const safeName = escapeHtml(target.name || '');
+    const safeHook = escapeHtml(target.webhook || '');
+
+    itemEl.innerHTML = `
+      <div class="feishu-target-item-header">
+        <input type="text" class="feishu-target-name-input" value="${safeName}" placeholder="目标别名（如：📱 商业化业务群 / 👤 个人单人群）" title="点击编辑目标名称">
+        <div class="feishu-target-actions">
+          <button type="button" class="btn-target-test" title="发送一张测试卡片到该 Webhook">📨 测试</button>
+          <button type="button" class="btn-target-del" title="删除此目标">✕</button>
+        </div>
+      </div>
+      <input type="text" class="feishu-target-webhook-input font-mono" value="${safeHook}" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/...">
+    `;
+
+    const nameInput = itemEl.querySelector('.feishu-target-name-input');
+    const hookInput = itemEl.querySelector('.feishu-target-webhook-input');
+    const testBtn = itemEl.querySelector('.btn-target-test');
+    const delBtn = itemEl.querySelector('.btn-target-del');
+
+    nameInput?.addEventListener('input', () => {
+      target.name = nameInput.value.trim();
+      updateJobFeishuTargetSelect(currentJobLabel());
+      debouncedSaveFeishuSettings();
+    });
+
+    hookInput?.addEventListener('input', () => {
+      target.webhook = hookInput.value.trim();
+      debouncedSaveFeishuSettings();
+    });
+
+    testBtn?.addEventListener('click', async () => {
+      const hook = hookInput ? hookInput.value.trim() : '';
+      if (!hook) {
+        alert('请先填写该目标的 Webhook 地址');
+        return;
+      }
+      testBtn.disabled = true;
+      testBtn.textContent = '发送中…';
+      await ensureHostPermission(hook);
+      const testCard = MokaFeishu.buildCandidateCard(
+        { name: '测试候选人', applicationId: 'test_demo', jobTitle: '测试岗位' },
+        {
+          finalScore: 88,
+          decisionTag: '优先推进',
+          scoreBreakdown: {
+            coreDuty: { score: 90, reason: '核心职责高度对口' },
+            business: { score: 85, reason: '业务场景经验丰富' },
+            skill: { score: 85, reason: '技能栈匹配' },
+            scope: { score: 85, reason: '项目量级匹配' }
+          },
+          experienceEvidence: `这是一张来自 Moka 智能筛选助手的测试卡片。\n目标：【${target.name || '指定目标'}】测试连通成功！`,
+          concerns: ['无']
+        },
+        { jobTitle: '测试岗位' }
+      );
+      chrome.runtime.sendMessage({ action: 'sendFeishuCard', webhook: hook, card: testCard }, (res) => {
+        testBtn.disabled = false;
+        testBtn.textContent = '📨 测试';
+        if (res && res.ok) {
+          testBtn.textContent = '✅ 已发送';
+          setTimeout(() => { testBtn.textContent = '📨 测试'; }, 2000);
+        } else {
+          alert('发送失败: ' + ((res && res.error) || '网络异常'));
+        }
+      });
+    });
+
+    delBtn?.addEventListener('click', () => {
+      feishuTargetsList.splice(index, 1);
+      renderFeishuTargetsList();
+      updateJobFeishuTargetSelect(currentJobLabel());
+      debouncedSaveFeishuSettings();
+    });
+
+    container.appendChild(itemEl);
+  });
+}
+
+function updateJobFeishuTargetSelect(jobName) {
+  const select = document.getElementById('feishu-job-target-select');
+  const hint = document.getElementById('feishu-job-target-hint');
+  if (!select) return;
+
+  select.innerHTML = '';
+
+  // 1. 首选推荐：自建应用 (私聊直推本人)
+  const p2pOpt = document.createElement('option');
+  p2pOpt.value = 'p2p_app';
+  p2pOpt.textContent = '🤖 飞书自建应用 (私聊直推本人 · 推荐)';
+  select.appendChild(p2pOpt);
+
+  // 2. 常用多群目标库 (Webhook)
+  const targets = Array.isArray(feishuTargetsList) ? feishuTargetsList : [];
+  if (targets.length) {
+    const groupEl = document.createElement('optgroup');
+    groupEl.label = '群聊 Webhook 目标库';
+    targets.forEach((t) => {
+      const opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = t.name || '未命名目标';
+      groupEl.appendChild(opt);
+    });
+    select.appendChild(groupEl);
+  } else {
+    const defaultWebhook = String(document.getElementById('feishu-webhook')?.value || '').trim();
+    if (defaultWebhook) {
+      const opt = document.createElement('option');
+      opt.value = 'default_webhook';
+      opt.textContent = '默认群聊 Webhook';
+      select.appendChild(opt);
+    }
+  }
+
+  // 3. 兜底「本次不推送」
+  const noneOpt = document.createElement('option');
+  noneOpt.value = '__none__';
+  noneOpt.textContent = '🚫 本次不推送飞书';
+  select.appendChild(noneOpt);
+
+  const cleanJobName = String(jobName || '').trim();
+  if (!cleanJobName) {
+    if (hint) hint.textContent = '💡 筛选完成将推送至所选目标';
+    return;
+  }
+
+  chrome.storage.local.get(JOB_FEISHU_TARGET_MAP_KEY, (res) => {
+    const map = (res && res[JOB_FEISHU_TARGET_MAP_KEY]) || {};
+    const rememberedId = map[cleanJobName];
+    if (rememberedId && Array.from(select.options).some((o) => o.value === rememberedId)) {
+      select.value = rememberedId;
+      const matchedOpt = select.options[select.selectedIndex];
+      if (hint) hint.textContent = `✨ 已按本职位精确记忆：${matchedOpt ? matchedOpt.textContent : ''}`;
+    } else {
+      // 默认选中推荐的自建应用私聊直推
+      select.value = 'p2p_app';
+      if (hint) hint.textContent = '💡 当前职位默认：私聊直推本人';
+    }
+  });
+}
+
+function bindJobFeishuTargetEvents() {
+  const select = document.getElementById('feishu-job-target-select');
+  const hint = document.getElementById('feishu-job-target-hint');
+  select?.addEventListener('change', () => {
+    const targetId = select.value;
+    const jobName = currentJobLabel();
+    const cleanJobName = String(jobName || '').trim();
+    if (!cleanJobName) return;
+
+    chrome.storage.local.get(JOB_FEISHU_TARGET_MAP_KEY, (res) => {
+      const map = (res && res[JOB_FEISHU_TARGET_MAP_KEY]) || {};
+      map[cleanJobName] = targetId;
+      chrome.storage.local.set({ [JOB_FEISHU_TARGET_MAP_KEY]: map }, () => {
+        const matchedOpt = select.options[select.selectedIndex];
+        if (hint) {
+          hint.textContent = `✨ 已为本职位记住推送目标：${matchedOpt ? matchedOpt.textContent : ''}`;
+        }
+      });
+    });
+  });
+
+  const addBtn = document.getElementById('add-feishu-target-btn');
+  addBtn?.addEventListener('click', () => {
+    collectFeishuTargetsFromUI();
+    const newTarget = {
+      id: 'target_' + Date.now(),
+      name: '新业务群 / 个人专属',
+      webhook: ''
+    };
+    feishuTargetsList.push(newTarget);
+    renderFeishuTargetsList();
+    updateJobFeishuTargetSelect(currentJobLabel());
+    debouncedSaveFeishuSettings();
+
+    // 自动聚焦新项
+    setTimeout(() => {
+      const container = document.getElementById('feishu-targets-list');
+      const lastInput = container?.querySelector('.feishu-target-item:last-child .feishu-target-name-input');
+      lastInput?.focus();
+      lastInput?.select();
+    }, 50);
+  });
+
+  // 自建应用 App ID / App Secret / 接收账号 输入事件
+  ['feishu-app-id', 'feishu-app-secret', 'feishu-receiver', 'feishu-webhook'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('input', () => {
+        debouncedSaveFeishuSettings();
+      });
+    }
+  });
+
+  // App Secret 明文显示切换
+  const toggleSecretBtn = document.getElementById('toggle-feishu-app-secret');
+  toggleSecretBtn?.addEventListener('click', () => {
+    const secretInput = document.getElementById('feishu-app-secret');
+    if (!secretInput) return;
+    const isPassword = secretInput.type === 'password';
+    secretInput.type = isPassword ? 'text' : 'password';
+    toggleSecretBtn.title = isPassword ? '隐藏明文' : '显示明文';
+  });
+}
+bindJobFeishuTargetEvents();
+
 
 // 获取当前窗口活动标签；侧栏点操作时活动标签通常仍是 Moka
 async function getActiveTab() {
@@ -2169,6 +2729,7 @@ safeEl('start-screening')?.addEventListener('click', async () => {
         maxCount,
         jobSpec,
         keywords: [],
+        feishuTargetId: document.getElementById('feishu-job-target-select')?.value || 'default',
         force: true
       },
       (resp) => {

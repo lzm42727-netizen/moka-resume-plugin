@@ -32,6 +32,7 @@ safeImportScripts('lib/feedback.js');
 safeImportScripts('lib/screening-job.js');
 safeImportScripts('lib/usage.js');
 safeImportScripts('lib/plugin-log.js');
+safeImportScripts('lib/feishu.js');
 /** 本地私有配置（config.local.js）：四项部署信息强制覆盖，其余只作默认值兜底（1.10.0 起模型名也锁定） */
 const LOCAL_LOCKED_KEYS = ['apiProtocol', 'apiProvider', 'apiEndpoint', 'modelName'];
 
@@ -61,7 +62,7 @@ function storeSet(items, context) {
     try {
       chrome.storage.local.set(items, () => {
         if (chrome.runtime.lastError) {
-          console.error('[Moka 筛选] 存储写入失败(' + (context || 'unknown') + '):', chrome.runtime.lastError.message);
+          console.error('[Moka 筛选] 存储写入失败(' + (context || 'unknown') + '):', chrome.runtime.lastError);
           resolve(false);
         } else {
           resolve(true);
@@ -88,7 +89,12 @@ const DEFAULT_SETTINGS = {
   // 自定义/中继端点默认请求 JSON 输出（网关拒绝时自动降级重试一次）
   forceJsonMode: true,
   // 评分并发数（1–8）：同时评分的候选人数
-  scoreConcurrency: 6
+  scoreConcurrency: 6,
+  // 飞书机器人协同设置（默认关闭单人打扰，仅推整轮汇总）
+  feishuWebhook: '',
+  feishuMinScore: 'off',
+  feishuSummaryNotify: true,
+  feishuBridgeEnabled: true
 };
 
 /** 评分并发数边界（content 侧也用它做夹取） */
@@ -471,14 +477,264 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ received: true });
       return false;
 
+    case 'sendFeishuCard':
+      handleSendFeishuCard(request.card, request.webhook, request.receiver)
+        .then(sendResponse)
+        .catch((err) => sendResponse({ ok: false, error: err.message }));
+      return true;
+
+    case 'getFeishuBridgeStatus':
+      sendResponse({
+        ok: true,
+        connected: isFeishuBridgeConnected(),
+        manualDisconnected: feishuBridgeManualDisconnected
+      });
+      return false;
+
+    case 'reconnectFeishuBridge':
+      feishuBridgeManualDisconnected = false;
+      initFeishuBridge();
+      setTimeout(() => {
+        sendResponse({ ok: true, connected: isFeishuBridgeConnected() });
+      }, 300);
+      return true;
+
+    case 'syncFeishuCredentials':
+      if (feishuBridgeWs && feishuBridgeWs.readyState === WebSocket.OPEN) {
+        feishuBridgeWs.send(JSON.stringify({
+          action: 'updateFeishuAppCredentials',
+          appId: request.appId || '',
+          appSecret: request.appSecret || '',
+          receiver: request.receiver || ''
+        }));
+        sendResponse({ ok: true, connected: true });
+      } else {
+        sendResponse({ ok: true, connected: false, message: 'Bridge 暂未连接，已保存至本地设置' });
+      }
+      return false;
+
+    case 'disconnectFeishuBridge':
+      disconnectFeishuBridge();
+      sendResponse({ ok: true, connected: false });
+      return false;
+
     default:
       sendResponse(MokaContracts.unknownActionResponse(request && request.action));
       return false;
   }
 });
 
-// 筛选完成：只在插件内提示（结果页横幅/Toast）。桌面系统通知已整体移除，
-// 避免重复打扰且不再占用 notifications 权限。
+// 飞书长连接与推送管理
+let feishuBridgeWs = null;
+let feishuBridgeConnected = false;
+let feishuReconnectTimer = null;
+let feishuBridgeManualDisconnected = false;
+const bridgePendingCallbacks = new Map();
+let bridgeSeqCounter = 1;
+
+function isFeishuBridgeConnected() {
+  return feishuBridgeConnected;
+}
+
+function sendToFeishuBridge(action, payload = {}, timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    if (!feishuBridgeWs || feishuBridgeWs.readyState !== WebSocket.OPEN) {
+      return reject(new Error('本地 Bridge 未连接'));
+    }
+    const seq = 'bg_' + (bridgeSeqCounter++);
+    const timer = setTimeout(() => {
+      bridgePendingCallbacks.delete(seq);
+      reject(new Error('Bridge 请求超时'));
+    }, timeoutMs);
+
+    bridgePendingCallbacks.set(seq, (res) => {
+      clearTimeout(timer);
+      resolve(res);
+    });
+
+    try {
+      feishuBridgeWs.send(JSON.stringify({
+        seq,
+        action,
+        ...payload
+      }));
+    } catch (e) {
+      clearTimeout(timer);
+      bridgePendingCallbacks.delete(seq);
+      reject(e);
+    }
+  });
+}
+
+function disconnectFeishuBridge() {
+  feishuBridgeManualDisconnected = true;
+  if (feishuReconnectTimer) {
+    clearTimeout(feishuReconnectTimer);
+    feishuReconnectTimer = null;
+  }
+  bridgePendingCallbacks.forEach((cb) => cb({ ok: false, error: '连接已断开' }));
+  bridgePendingCallbacks.clear();
+  if (feishuBridgeWs) {
+    try {
+      feishuBridgeWs.onclose = null;
+      feishuBridgeWs.onerror = null;
+      feishuBridgeWs.close();
+    } catch (e) {}
+    feishuBridgeWs = null;
+  }
+  feishuBridgeConnected = false;
+  console.log('[Moka 筛选] 用户主动断开了本地飞书 Bridge 连接');
+}
+
+function initFeishuBridge() {
+  if (feishuBridgeManualDisconnected) return;
+  try {
+    if (typeof WebSocket === 'undefined') return;
+    if (feishuBridgeWs) {
+      feishuBridgeWs.close();
+      feishuBridgeWs = null;
+    }
+    feishuBridgeWs = new WebSocket('ws://127.0.0.1:18888');
+
+    feishuBridgeWs.onopen = async () => {
+      console.log('[Moka 筛选] 本地飞书 Bridge 已连接 (127.0.0.1:18888)');
+      feishuBridgeConnected = true;
+      try {
+        const s = await getSettings();
+        if (s && (s.feishuAppId || s.feishuAppSecret)) {
+          if (feishuBridgeWs && feishuBridgeWs.readyState === WebSocket.OPEN) {
+            feishuBridgeWs.send(JSON.stringify({
+              action: 'updateFeishuAppCredentials',
+              appId: s.feishuAppId || '',
+              appSecret: s.feishuAppSecret || '',
+              receiver: s.feishuReceiver || ''
+            }));
+          }
+        }
+      } catch (err) { /* ignore */ }
+    };
+
+    feishuBridgeWs.onmessage = async (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (!msg) return;
+
+        // 处理 RPC 回调响应
+        if (msg.seq && bridgePendingCallbacks.has(msg.seq)) {
+          const cb = bridgePendingCallbacks.get(msg.seq);
+          bridgePendingCallbacks.delete(msg.seq);
+          cb(msg);
+          return;
+        }
+
+        if (msg.action === 'feishuRecommendByScore' || msg.action === 'feishuCommand') {
+          const tabs = await chrome.tabs.query({ url: '*://app.mokahr.com/*' });
+          const mokaTab = (tabs && tabs.find((t) => t.active)) || (tabs && tabs[0]);
+          if (!mokaTab || !mokaTab.id) {
+            if (feishuBridgeWs && feishuBridgeWs.readyState === WebSocket.OPEN) {
+              feishuBridgeWs.send(JSON.stringify({
+                seq: msg.seq,
+                ok: false,
+                error: '未找到打开的 Moka 标签页，请确保浏览器已打开 Moka 候选人列表页'
+              }));
+            }
+            return;
+          }
+
+          chrome.tabs.sendMessage(mokaTab.id, {
+            action: 'feishuRecommendByScore',
+            minScore: msg.minScore,
+            name: msg.name
+          }, (res) => {
+            const err = chrome.runtime.lastError;
+            if (feishuBridgeWs && feishuBridgeWs.readyState === WebSocket.OPEN) {
+              if (err) {
+                feishuBridgeWs.send(JSON.stringify({
+                  seq: msg.seq,
+                  ok: false,
+                  error: '与 Moka 页面通信失败：' + err.message
+                }));
+              } else {
+                feishuBridgeWs.send(JSON.stringify({
+                  seq: msg.seq,
+                  ...res
+                }));
+              }
+            }
+          });
+        }
+      } catch (e) {
+        console.warn('[Moka 筛选] 处理 Bridge 消息失败:', e);
+      }
+    };
+
+    feishuBridgeWs.onclose = () => {
+      feishuBridgeConnected = false;
+      feishuBridgeWs = null;
+      bridgePendingCallbacks.forEach((cb) => cb({ ok: false, error: '连接已关闭' }));
+      bridgePendingCallbacks.clear();
+      scheduleFeishuReconnect();
+    };
+
+    feishuBridgeWs.onerror = () => {
+      feishuBridgeConnected = false;
+    };
+  } catch (e) {
+    feishuBridgeConnected = false;
+    scheduleFeishuReconnect();
+  }
+}
+
+function scheduleFeishuReconnect() {
+  if (feishuBridgeManualDisconnected) return;
+  if (feishuReconnectTimer) return;
+  feishuReconnectTimer = setTimeout(() => {
+    feishuReconnectTimer = null;
+    initFeishuBridge();
+  }, 5000);
+}
+
+// 自动尝试连接本地 Bridge
+initFeishuBridge();
+
+async function handleSendFeishuCard(card, customWebhook, customReceiver) {
+  const settings = await getSettings();
+  const receiver = customReceiver || settings.feishuReceiver;
+  const appId = settings.feishuAppId;
+  const appSecret = settings.feishuAppSecret;
+  const hasAppCreds = !!(appId && appSecret);
+
+  // 1. 若配置了自建应用且无明确指定自定义 Webhook，强制走自建应用直推单聊（绝不静默发到群聊）
+  if (hasAppCreds && !customWebhook) {
+    // 优先通过原生 OpenAPI 直发（无需本地 Node 进程）
+    const nativeRes = await MokaFeishu.sendFeishuAppCard({ appId, appSecret, receiver }, card);
+    if (nativeRes.ok) {
+      return { ok: true, via: 'feishu_app_direct' };
+    }
+
+    // 若插件直发因特殊原因（如网络）报错，且 Bridge 刚巧在线，尝试 Bridge 兜底
+    if (isFeishuBridgeConnected()) {
+      try {
+        const bridgeRes = await sendToFeishuBridge('sendFeishuCardViaBridge', { card, receiver });
+        if (bridgeRes && bridgeRes.ok) {
+          return { ok: true, via: 'bridge_app' };
+        }
+      } catch (e) { /* ignore */ }
+    }
+
+    // 严禁静默 fallback 到群 Webhook！直接反馈真实原因
+    return { ok: false, error: nativeRes.error || '自建应用单聊直推失败' };
+  }
+
+  // 2. 只有未配置自建应用，或明确指定了自定义 Webhook 时才走 Webhook
+  const webhook = customWebhook || settings.feishuWebhook;
+  if (!webhook) {
+    return { ok: false, error: '未配置飞书自建应用凭据或 Webhook 地址' };
+  }
+  return MokaFeishu.sendFeishuWebhook(webhook, card);
+}
+
+// 筛选完成：支持插件内横幅与飞书汇总卡片自动推送
 async function notifyScreeningDone(payload) {
   const message = (payload && payload.message)
     || ('共 ' + ((payload && payload.total) || 0) + ' 位候选人已评分');
@@ -487,6 +743,90 @@ async function notifyScreeningDone(payload) {
     message,
     total: payload && payload.total
   }).catch(() => {});
+
+  // 飞书整轮筛选汇总卡片自动推送
+  try {
+    const settings = await getSettings();
+    if (settings && settings.feishuSummaryNotify !== false) {
+      const targetId = payload && payload.feishuTargetId;
+      const appId = settings.feishuAppId;
+      const appSecret = settings.feishuAppSecret;
+      const hasAppCreds = !!(appId && appSecret);
+
+      // 若用户显式选择了「🚫 不推送飞书」，直接跳过
+      if (targetId === '__none__' || targetId === 'none') {
+        return { ok: true };
+      }
+
+      // 是否是用户在主界面显式指定的外部 Webhook 目标库（非自建应用，非默认）
+      const isSpecificWebhookTarget = targetId && targetId !== 'default' && targetId !== 'p2p_app';
+      const targetRes = isSpecificWebhookTarget
+        ? MokaFeishu.resolveFeishuTarget(targetId, settings.feishuTargets, '')
+        : null;
+
+      // 1. 若配置了自建应用，且未显式指定外部群 Webhook：100% 直推个人单聊！
+      if (hasAppCreds && (!targetRes || !targetRes.webhook)) {
+        const summaryCard = MokaFeishu.buildScreeningSummaryCard({
+          jobTitle: payload && payload.jobTitle,
+          targetName: '个人单聊 (自建应用)',
+          total: payload && payload.total,
+          prioritized: payload && payload.prioritized,
+          recommended: payload && payload.recommended,
+          durationText: payload && payload.durationText,
+          mokaUrl: payload && payload.mokaUrl,
+          topCandidates: payload && payload.topCandidates
+        });
+
+        // 优先原生 OpenAPI 直发
+        const nativeRes = await MokaFeishu.sendFeishuAppCard({
+          appId,
+          appSecret,
+          receiver: settings.feishuReceiver
+        }, summaryCard);
+
+        if (nativeRes.ok) {
+          return { ok: true, via: 'feishu_app_direct' };
+        }
+
+        // Bridge 兜底
+        if (isFeishuBridgeConnected()) {
+          try {
+            const bridgeRes = await sendToFeishuBridge('sendFeishuCardViaBridge', {
+              card: summaryCard,
+              receiver: settings.feishuReceiver
+            });
+            if (bridgeRes && bridgeRes.ok) {
+              return { ok: true, via: 'bridge_app' };
+            }
+          } catch (bridgeErr) {
+            console.warn('[Moka 筛选] Bridge 兜底推送异常:', bridgeErr.message);
+          }
+        }
+
+        console.warn('[Moka 筛选] 飞书自建应用汇总直推失败:', nativeRes.error);
+        return { ok: false, error: nativeRes.error };
+      }
+
+      // 2. 只有明确配置或指定了群 Webhook 时才发群
+      const webhookTarget = targetRes || MokaFeishu.resolveFeishuTarget(targetId, settings.feishuTargets, settings.feishuWebhook);
+      if (webhookTarget && webhookTarget.enabled && webhookTarget.webhook) {
+        const summaryCard = MokaFeishu.buildScreeningSummaryCard({
+          jobTitle: payload && payload.jobTitle,
+          targetName: webhookTarget.name,
+          total: payload && payload.total,
+          prioritized: payload && payload.prioritized,
+          recommended: payload && payload.recommended,
+          durationText: payload && payload.durationText,
+          mokaUrl: payload && payload.mokaUrl,
+          topCandidates: payload && payload.topCandidates
+        });
+        await MokaFeishu.sendFeishuWebhook(webhookTarget.webhook, summaryCard);
+      }
+    }
+  } catch (e) {
+    console.warn('[Moka 筛选] 飞书汇总通知发送异常:', e);
+  }
+
   return { ok: true };
 }
 

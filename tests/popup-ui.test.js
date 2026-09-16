@@ -386,7 +386,7 @@ describe('screening tab flat sections and gate two-column grid', () => {
 
   it('replaces emoji section icons with monoline SVG icons', () => {
     const iconCount = (html.match(/<span class="panel-icon"><svg/g) || []).length;
-    assert.equal(iconCount, 8, '8 个分区标题都应使用单色线性 SVG 图标');
+    assert.equal(iconCount, 9, '9 个分区标题（含飞书协同）都应使用单色线性 SVG 图标');
     assert.doesNotMatch(html, /panel-icon">[^<]/, 'panel-icon 里不应再残留 emoji 文本');
   });
 
@@ -677,3 +677,44 @@ describe('v1.8.5 设置页新增并发数 / JSON 模式', () => {
     assert.doesNotMatch(js, /\} else \{[\s\S]{0,200}jsonModeEl\.checked = true/);
   });
 });
+
+describe('v2.0.0 飞书协同多目标推送库与职位精准记忆 UI', () => {
+  it('主筛选配置页提供飞书结果推送目标下拉选择器与精准记忆提示', () => {
+    assert.match(html, /id="feishu-job-target-select"/);
+    assert.match(html, /id="feishu-job-target-hint"/);
+    assert.match(html, /飞书结果推送目标/);
+  });
+
+  it('设置页包含常用推送目标库管理模块与添加按钮', () => {
+    assert.match(html, /id="feishu-targets-list"/);
+    assert.match(html, /id="add-feishu-target-btn"/);
+    assert.match(html, /🎯 常用多群目标库/);
+    assert.match(html, /id="bridge-advanced-details"/);
+  });
+
+  it('样式文件包含 Bento 质感卡片与微交互', () => {
+    assert.match(css, /\.feishu-targets-section/);
+    assert.match(css, /\.feishu-target-item/);
+    assert.match(css, /#feishu-job-target-select/);
+    assert.match(css, /\.bridge-status-bar/);
+  });
+
+  it('JS 包含职位精确记忆键名与动态回显', () => {
+    assert.match(js, /const JOB_FEISHU_TARGET_MAP_KEY = 'mokaJobFeishuTargetMapV1'/);
+    assert.match(js, /function updateJobFeishuTargetSelect/);
+    assert.match(js, /function renderFeishuTargetsList/);
+  });
+
+  it('设置页提供飞书企业自建应用 App ID、Secret 与 Receiver 个人账号配置及热同步', () => {
+    assert.match(html, /id="feishu-app-id"/);
+    assert.match(html, /id="feishu-app-secret"/);
+    assert.match(html, /id="feishu-receiver"/);
+    assert.match(html, /id="toggle-feishu-app-secret"/);
+    assert.match(html, /id="feishu-app-sync-status"/);
+    assert.match(js, /feishuAppId: String\(document\.getElementById\('feishu-app-id'\)\?\.value \|\| ''\)\.trim\(\)/);
+    assert.match(js, /feishuAppSecret: String\(document\.getElementById\('feishu-app-secret'\)\?\.value \|\| ''\)\.trim\(\)/);
+    assert.match(js, /feishuReceiver: String\(document\.getElementById\('feishu-receiver'\)\?\.value \|\| ''\)\.trim\(\)/);
+    assert.match(js, /action: 'syncFeishuCredentials'/);
+  });
+});
+

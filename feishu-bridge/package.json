@@ -1,0 +1,13 @@
+{
+  "name": "moka-feishu-bridge",
+  "version": "1.0.0",
+  "description": "飞书 WebSocket 长连接与 Moka 筛选插件本地桥接服务",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.45.0",
+    "ws": "^8.18.0"
+  }
+}
