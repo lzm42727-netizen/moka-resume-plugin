@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.1 - 2026-09-16
+
+- **修复：飞书指令回执卡片分数恒为「成功 0 位」且显示红色失败样式**。`handleFeishuRecommend` 返回 `{ count, names }`，而 `buildRecommendationResultCard` 只认 `successCount/failCount`，字段错位导致每次成功推进回执都是红色「成功 0 / 失败 0」。现兼容两种口径；`ok:true` 但无匹配人选时附「没有符合条件的候选人」说明，不再误读为失败
+- **修复：插件与 Bridge 反复断连（MV3 service worker 空闲挂起）**。bridge.log 实锤几小时内「连接→断开」40+ 次：SW 空闲 30 秒被挂起、WS 随之断开，群里发指令偶发「插件响应超时」。新增 20 秒应用层心跳（background `feishuBridgePing` → Bridge 回 `feishuBridgePong`），既保活 SW 又可探活死链
+- **修复：汇总卡片达标人数 >20 时统计说谎**。`buildScreeningSummaryCard` 对名单 `slice(0, 20)` 后用截断长度冒充「共 N 位」，与漏斗概况对不上；现按全量达标人数展示，截断时注明「仅展示前 20」
+- **安全：Bridge WebSocket 增加 Origin 白名单**。WS 不受 CORS 限制，浏览器里任意恶意网页可直连 `ws://127.0.0.1:18888` 触发批量推进；现握手时校验 Origin 只放行 `chrome-extension://`（无 Origin 的本地 CLI 客户端不受影响）
+- **隐私：移除卡片直推的 `lastP2pSenderOpenId` 兜底**。接收人未配置时，含候选人姓名/评分/画像的卡片曾会发给「最近一个私聊机器人的人」；现仅在显式配置了接收人时才发送（卡片按钮点击回执给点击者本人不受影响）
+- **仓库卫生：`.gitignore` 补 `feishu-bridge/config.json`（明文 appSecret 严禁入库）与 `server.pid`**
+
 ## 2.0.0 - 2026-09-16
 
 - **飞书协同 2.0 里程碑：多群/个人推送目标库 + 职位精准记忆绑定**：

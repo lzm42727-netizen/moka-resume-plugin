@@ -531,6 +531,28 @@ let feishuReconnectTimer = null;
 let feishuBridgeManualDisconnected = false;
 const bridgePendingCallbacks = new Map();
 let bridgeSeqCounter = 1;
+let feishuHeartbeatTimer = null;
+const FEISHU_HEARTBEAT_MS = 20000;
+
+// 应用层心跳：MV3 service worker 空闲 30 秒会被挂起、WS 随之断开；
+// 每 20 秒一次 ping 既保活 SW，也让 Bridge 能探活死链
+function stopFeishuHeartbeat() {
+  if (feishuHeartbeatTimer) {
+    clearInterval(feishuHeartbeatTimer);
+    feishuHeartbeatTimer = null;
+  }
+}
+
+function startFeishuHeartbeat() {
+  stopFeishuHeartbeat();
+  feishuHeartbeatTimer = setInterval(() => {
+    if (feishuBridgeWs && feishuBridgeWs.readyState === WebSocket.OPEN) {
+      try {
+        feishuBridgeWs.send(JSON.stringify({ action: 'feishuBridgePing' }));
+      } catch (e) { /* 发送失败由 onerror/onclose 兜底重连 */ }
+    }
+  }, FEISHU_HEARTBEAT_MS);
+}
 
 function isFeishuBridgeConnected() {
   return feishuBridgeConnected;
@@ -568,6 +590,7 @@ function sendToFeishuBridge(action, payload = {}, timeoutMs = 10000) {
 
 function disconnectFeishuBridge() {
   feishuBridgeManualDisconnected = true;
+  stopFeishuHeartbeat();
   if (feishuReconnectTimer) {
     clearTimeout(feishuReconnectTimer);
     feishuReconnectTimer = null;
@@ -591,6 +614,7 @@ function initFeishuBridge() {
   try {
     if (typeof WebSocket === 'undefined') return;
     if (feishuBridgeWs) {
+      stopFeishuHeartbeat();
       feishuBridgeWs.close();
       feishuBridgeWs = null;
     }
@@ -599,6 +623,7 @@ function initFeishuBridge() {
     feishuBridgeWs.onopen = async () => {
       console.log('[Moka 筛选] 本地飞书 Bridge 已连接 (127.0.0.1:18888)');
       feishuBridgeConnected = true;
+      startFeishuHeartbeat();
       try {
         const s = await getSettings();
         if (s && (s.feishuAppId || s.feishuAppSecret)) {
@@ -670,6 +695,7 @@ function initFeishuBridge() {
 
     feishuBridgeWs.onclose = () => {
       feishuBridgeConnected = false;
+      stopFeishuHeartbeat();
       feishuBridgeWs = null;
       bridgePendingCallbacks.forEach((cb) => cb({ ok: false, error: '连接已关闭' }));
       bridgePendingCallbacks.clear();

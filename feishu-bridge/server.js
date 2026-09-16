@@ -84,6 +84,14 @@ function createWsServer(port) {
   });
 
   server.on('upgrade', (req, socket, head) => {
+    // 鉴权：浏览器发起的 WebSocket 必带 Origin 头（WS 不受 CORS 限制），
+    // 恶意网页可直连 127.0.0.1 触发批量推进；只放行本扩展与非浏览器本地客户端（无 Origin）
+    const origin = req.headers.origin || '';
+    if (origin && !origin.startsWith('chrome-extension://')) {
+      console.warn(`[Bridge] ⛔ 已拒绝非插件来源的 WebSocket 连接 (Origin: ${origin})`);
+      socket.destroy();
+      return;
+    }
     const key = req.headers['sec-websocket-key'];
     if (!key) {
       socket.destroy();
@@ -176,6 +184,9 @@ function createWsServer(port) {
             const msg = JSON.parse(text);
             if (msg.action === 'updateFeishuAppCredentials') {
               handleUpdateCredentials(msg, ws);
+            } else if (msg.action === 'feishuBridgePing') {
+              // 插件保活心跳：回 pong 维持双向活性探测
+              ws.send(JSON.stringify({ action: 'feishuBridgePong', seq: msg.seq }));
             } else if (msg.action === 'sendFeishuCardViaBridge') {
               handleSendCardViaBridge(msg, ws);
             } else if (msg.seq && pendingRequests.has(msg.seq)) {
@@ -272,7 +283,8 @@ async function handleSendCardViaBridge(msg, ws) {
       });
     }
 
-    const target = String(msg.receiver || config.receiver || lastP2pSenderOpenId || '').trim();
+    // 只用显式配置的接收人；候选人 PII 绝不兜底发给「最近一个私聊机器人的人」
+    const target = String(msg.receiver || config.receiver || '').trim();
     if (!target) {
       throw new Error('未配置接收账号，请在插件设置页填入个人企业邮箱 (xxx@meitu.com) 或 Open ID');
     }

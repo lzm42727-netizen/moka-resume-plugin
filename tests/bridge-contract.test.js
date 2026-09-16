@@ -88,3 +88,37 @@ describe('契约收口（1.6.20）', () => {
     assert.match(content, /data\.type === 'bridge-ready'[\s\S]{0,160}bridgeNonceConfirmed = true/);
   });
 });
+
+describe('飞书 Bridge 加固契约（2.0.1）', () => {
+  it('background 心跳：onopen 启动、onclose/断开/重建时停止，20 秒发送 feishuBridgePing', () => {
+    const bg = source('background.js');
+    assert.match(bg, /const FEISHU_HEARTBEAT_MS = 20000/);
+    assert.match(bg, /action: 'feishuBridgePing'/);
+    assert.match(bg, /feishuBridgeWs\.onopen[\s\S]{0,200}startFeishuHeartbeat\(\)/, '连接成功应启动心跳保活');
+    assert.match(bg, /feishuBridgeWs\.onclose = \(\) => \{[\s\S]{0,200}stopFeishuHeartbeat\(\)/, '断开应停止心跳');
+    assert.match(bg, /function disconnectFeishuBridge\(\) \{[\s\S]{0,200}stopFeishuHeartbeat\(\)/, '主动断开应停止心跳');
+    assert.match(bg, /if \(feishuBridgeWs\) \{\s*\n\s*stopFeishuHeartbeat\(\);/, '重建连接前应先停旧心跳');
+  });
+
+  it('Bridge 侧应答 feishuBridgePong 心跳', () => {
+    const server = source('feishu-bridge/server.js');
+    assert.match(server, /msg\.action === 'feishuBridgePing'/);
+    assert.match(server, /action: 'feishuBridgePong'/);
+  });
+
+  it('Bridge WebSocket 握手校验 Origin 白名单（仅 chrome-extension:// 或无 Origin 本地客户端）', () => {
+    const server = source('feishu-bridge/server.js');
+    assert.match(server, /req\.headers\.origin/);
+    assert.match(server, /startsWith\('chrome-extension:\/\/'\)/, 'Origin 白名单只放行插件来源');
+    assert.match(server, /socket\.destroy\(\);/, '非白名单来源直接断开');
+  });
+
+  it('卡片直推不再兜底 lastP2pSenderOpenId（候选人 PII 防误发）', () => {
+    const server = source('feishu-bridge/server.js');
+    assert.doesNotMatch(
+      server,
+      /String\(msg\.receiver \|\| config\.receiver \|\| lastP2pSenderOpenId/,
+      '直推接收人不得回退到最近私聊发送者'
+    );
+  });
+});

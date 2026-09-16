@@ -129,6 +129,69 @@ describe('Feishu 卡片组装与协议契约', () => {
     assert.match(jsonStr, /60 分以上/);
     assert.match(jsonStr, /张三、李四/);
   });
+
+  it('兼容 content.js 实际返回口径 { count, names }（v2.0.1 回执分数恒为 0 回归）', () => {
+    const card = Feishu.buildRecommendationResultCard({
+      ok: true,
+      count: 3,
+      names: ['张三', '李四', '王五'],
+      jobTitle: '海外增长经理'
+    });
+    assert.equal(card.card.header.template, 'green', '成功推进应显示绿色模板而非红色');
+    const jsonStr = JSON.stringify(card);
+    assert.match(jsonStr, /成功推荐：\*\*3\*\* 位/);
+    assert.match(jsonStr, /推荐失败：\*\*0\*\* 位/);
+    assert.match(jsonStr, /张三、李四、王五/);
+  });
+
+  it('ok:true 且无匹配人选时展示说明信息而非伪装失败', () => {
+    const card = Feishu.buildRecommendationResultCard({
+      ok: true,
+      count: 0,
+      names: [],
+      message: '没有符合条件的候选人',
+      jobTitle: '海外增长经理'
+    });
+    const jsonStr = JSON.stringify(card);
+    assert.match(jsonStr, /成功推荐：\*\*0\*\* 位/);
+    assert.match(jsonStr, /没有符合条件的候选人/);
+  });
+
+  it('失败回执保持红色模板并带失败提示', () => {
+    const card = Feishu.buildRecommendationResultCard({
+      ok: false,
+      error: '未找到打开的 Moka 标签页',
+      jobTitle: '海外增长经理'
+    });
+    assert.equal(card.card.header.template, 'red');
+    assert.match(JSON.stringify(card), /未找到打开的 Moka 标签页/);
+  });
+
+  it('达标人数超过 20 时统计用全量口径并注明截断（v2.0.1 回归）', () => {
+    const top25 = Array.from({ length: 25 }, (_, i) => ({
+      name: `候选人${i + 1}`,
+      score: 90 - i,
+      tag: i < 5 ? '优先推进' : '建议推进',
+      profile: `画像${i + 1}`,
+      highlight: `亮点${i + 1}`
+    }));
+    const card = Feishu.buildScreeningSummaryCard({
+      jobTitle: '商业化广告产品经理',
+      total: 100,
+      prioritized: 5,
+      recommended: 20,
+      topCandidates: top25
+    });
+    const nameHeader = card.card.elements.find(
+      (el) => el.tag === 'div' && el.text && /推荐候选人名单/.test(el.text.content || '')
+    );
+    assert.match(nameHeader.text.content, /共 25 位/, '名单标题应显示全量达标人数');
+    assert.match(nameHeader.text.content, /仅展示前 20/, '截断时必须注明仅展示前 20');
+    const candidateDivs = card.card.elements.filter(
+      (el) => el.tag === 'div' && el.text && el.text.content && el.text.content.includes('分**【')
+    );
+    assert.equal(candidateDivs.length, 20, '实际渲染仍截断为 20 人');
+  });
 });
 
 describe('Feishu 自然语言命令解析器', () => {
