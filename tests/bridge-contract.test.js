@@ -140,6 +140,13 @@ describe('飞书 Bridge 加固契约（2.0.1）', () => {
     assert.match(popup, /renderResults\(\);/, '标记后重渲染列表');
   });
 
+  it('v3.0.5 卡片回执只发一份：回复原会话成功后不得再私聊重发', () => {
+    const server = source('feishu-bridge/server.js');
+    assert.match(server, /let replied = false;/, '回执发送状态标记');
+    assert.match(server, /if \(!replied && senderOpenId && replyCard\)/, '私聊副本只作回复失败的兜底');
+    assert.doesNotMatch(server, /if \(senderOpenId && replyCard\) \{\s*\n\s*await larkClient\.im\.message\.create/, '不得无条件双发');
+  });
+
   it('v3.0.0 单链路推送：只发绑定的机器人私聊，目标库/Webhook 分流已删且不得回潮', () => {
     const bg = source('background.js');
     assert.match(bg, /async function dispatchFeishuCard\(/, '集中单链路发送');

@@ -445,18 +445,21 @@ async function initFeishuLarkWs() {
               }) : null;
               const senderOpenId = (data && data.operator && data.operator.open_id) || lastP2pSenderOpenId;
               const messageId = (data && data.context && data.context.open_message_id) || '';
-              // 优先回复原卡片所在会话（群里点按钮，结果就落在群里）；失败再退回私聊点击者
+              // 回执只发一份：优先回复原卡片所在会话（群里点按钮，结果就落在群里）；
+              // 仅当回复失败或拿不到原消息 id 时，才退回私聊点击者（v3.0.5：此前两条路都发，用户会收到重复通知）
+              let replied = false;
               if (replyCard && messageId) {
                 try {
                   await larkClient.im.message.reply({
                     path: { message_id: messageId },
                     data: { content: JSON.stringify(replyCard.card || replyCard), msg_type: 'interactive' }
                   });
+                  replied = true;
                 } catch (e) {
                   console.warn('[Bridge] 回执卡回复原会话失败，改发点击者私聊:', e.message);
                 }
               }
-              if (senderOpenId && replyCard) {
+              if (!replied && senderOpenId && replyCard) {
                 await larkClient.im.message.create({
                   params: { receive_id_type: 'open_id' },
                   data: {
