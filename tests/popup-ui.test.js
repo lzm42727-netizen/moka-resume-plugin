@@ -678,44 +678,26 @@ describe('v1.8.5 设置页新增并发数 / JSON 模式', () => {
   });
 });
 
-describe('v2.0.0 飞书协同多目标推送库与职位精准记忆 UI', () => {
-  it('主筛选配置页提供飞书结果推送目标下拉选择器与精准记忆提示', () => {
-    assert.match(html, /id="feishu-job-target-select"/);
-    assert.match(html, /id="feishu-job-target-hint"/);
-    assert.match(html, /飞书结果推送目标/);
+describe('v3.0.0 飞书协同极简化：单链路发绑定的机器人', () => {
+  it('主筛选配置页不再有「飞书结果推送目标」下拉（目标库整体取消）', () => {
+    assert.doesNotMatch(html, /id="feishu-job-target-select"/);
+    assert.doesNotMatch(html, /id="feishu-job-target-hint"/);
+    assert.doesNotMatch(html, /飞书结果推送目标/);
   });
 
-  it('设置页包含推送目标库管理模块与添加按钮', () => {
-    assert.match(html, /id="feishu-targets-list"/);
-    assert.match(html, /id="add-feishu-target-btn"/);
-    assert.match(html, /🎯 推送目标库/);
-    assert.match(html, /id="bridge-advanced-details"/);
+  it('设置页不再有推送目标库 / 添加按钮 / 备用 Webhook', () => {
+    assert.doesNotMatch(html, /id="feishu-targets-list"/);
+    assert.doesNotMatch(html, /id="add-feishu-target-btn"/);
+    assert.doesNotMatch(html, /推送目标库/);
+    assert.doesNotMatch(html, /id="feishu-webhook"/);
+    assert.match(html, /id="bridge-advanced-details"/, '折叠区保留本地服务说明');
   });
 
-  it('v2.1.0 目标库支持「群 Webhook / 个人接收人」两种类型且提到可见区', () => {
-    assert.match(html, /每个目标可选「群 Webhook」或「个人接收人/);
-    assert.match(css, /\.feishu-target-type-select/);
-    assert.match(css, /\.feishu-target-receiver-input/);
-    assert.match(js, /class="feishu-target-type-select"/);
-    assert.match(js, /class="feishu-target-receiver-input/);
-    assert.match(js, /function isFeishuTargetIncomplete/);
-    // 目标库不再被折叠在高级选项内：details 出现在目标库模块之后
-    const targetsIdx = html.indexOf('id="feishu-targets-list"');
-    const detailsIdx = html.indexOf('id="bridge-advanced-details"');
-    assert.ok(targetsIdx > -1 && detailsIdx > -1 && targetsIdx < detailsIdx, '目标库应在折叠区之前（可见）');
-  });
-
-  it('样式文件包含 Bento 质感卡片与微交互', () => {
-    assert.match(css, /\.feishu-targets-section/);
-    assert.match(css, /\.feishu-target-item/);
-    assert.match(css, /#feishu-job-target-select/);
-    assert.match(css, /\.bridge-status-bar/);
-  });
-
-  it('JS 包含职位精确记忆键名与动态回显', () => {
-    assert.match(js, /const JOB_FEISHU_TARGET_MAP_KEY = 'mokaJobFeishuTargetMapV1'/);
-    assert.match(js, /function updateJobFeishuTargetSelect/);
-    assert.match(js, /function renderFeishuTargetsList/);
+  it('JS 不再残留目标库 / 职位记忆逻辑，CSS 同步清理', () => {
+    assert.doesNotMatch(js, /JOB_FEISHU_TARGET_MAP_KEY/);
+    assert.doesNotMatch(js, /updateJobFeishuTargetSelect|renderFeishuTargetsList|collectFeishuTargetsFromUI/);
+    assert.doesNotMatch(js, /feishuTargetId/);
+    assert.doesNotMatch(css, /feishu-targets-section|feishu-target-item|feishu-job-target-select/);
   });
 
   it('设置页提供飞书企业自建应用 App ID、Secret 与 Receiver 个人账号配置及热同步', () => {

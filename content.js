@@ -187,7 +187,6 @@ let screeningEndedAt = 0; // 完成/停止时冻结，结果页「用时」不�
 let screeningEpoch = 0;
 let screeningHeartbeat = 0; // 最近一次筛选活动时间；用于识别「卡死的旧任务」
 let runUsage = MokaUsage.emptyUsage(); // 本轮筛选的 LLM 用量/费用（续筛时从任务快照恢复）
-let currentScreeningFeishuTargetId = '';
 
 function resetRunUsage() {
   runUsage = MokaUsage.emptyUsage();
@@ -1367,7 +1366,6 @@ function init() {
         }
         const epoch = ++screeningEpoch;
         isScreening = true;
-        currentScreeningFeishuTargetId = request.feishuTargetId || '';
         touchScreeningHeartbeat();
         performScreening(request, epoch).catch((err) => {
           console.error('[Moka 筛选] performScreening 异常:', err);
@@ -2422,7 +2420,6 @@ function notifyScreeningComplete(total, message) {
     total,
     message,
     jobTitle: lastKnownJobName || '当前职位',
-    feishuTargetId: currentScreeningFeishuTargetId || 'default',
     prioritized,
     recommended,
     durationText: screeningStartedAt ? Math.round((Date.now() - screeningStartedAt) / 1000) + ' 秒' : '刚刚',

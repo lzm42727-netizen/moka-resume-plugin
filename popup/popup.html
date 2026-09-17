@@ -50,14 +50,6 @@
                         <option value="0">全部</option>
                     </select>
                 </div>
-
-                <div class="form-group" id="feishu-target-form-group">
-                    <label>飞书结果推送目标</label>
-                    <select id="feishu-job-target-select">
-                        <option value="default">默认群 / 个人专属</option>
-                    </select>
-                    <div id="feishu-job-target-hint" class="cond-hint cond-hint-flush">✨ 已按本职位精确记忆推送目标</div>
-                </div>
             </section>
 
             <!-- 简历推荐对象：批量推进用，开筛前在本页确认 -->
@@ -420,35 +412,17 @@
                     </div>
                     <div id="feishu-test-result" class="test-result hidden"></div>
 
-                    <!-- 推送目标库：群 Webhook 或 个人接收人，主界面按职位分流记忆 -->
-                    <div class="feishu-targets-section" style="margin-top: 14px;">
-                        <div class="feishu-targets-head">
-                            <label class="feishu-targets-title">🎯 推送目标库</label>
-                            <span class="badge-tag">按职位分流</span>
-                        </div>
-                        <div class="feishu-targets-sub">每个目标可选「群 Webhook」或「个人接收人（邮箱 / Open ID）」；主界面可按职位记忆发往哪个目标。未填写必填项的目标会明确报错，不会改发到其他渠道</div>
-
-                        <div id="feishu-targets-list" class="feishu-targets-list">
-                            <!-- 动态注入 target 项 -->
-                        </div>
-
-                        <button type="button" id="add-feishu-target-btn" class="btn-add-target">
-                            <span>➕ 添加推送目标</span>
-                        </button>
-                    </div>
-
-                    <!-- 高级选项（默认折叠）：备用 Webhook 与本地服务说明 -->
+                    <!-- 高级选项（默认折叠）：本地服务说明 -->
                     <details class="bridge-guide" id="bridge-advanced-details" style="margin-top: 14px;">
-                        <summary>⚙️ 备用 Webhook 渠道与本地服务说明</summary>
+                        <summary>⚙️ 本地服务与常见说明</summary>
                         <div class="bridge-guide-body">
-                            <div class="form-group form-group-tight">
-                                <label for="feishu-webhook">备用 Webhook（未配置自建应用时兜底）</label>
-                                <input type="text" id="feishu-webhook" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." class="input-field font-mono">
-                            </div>
-
-                            <div class="guide-item" style="margin-top: 10px; padding-top: 8px; border-top: 1px dashed #e2e8f0;">
+                            <div class="guide-item" style="padding-top: 4px;">
                                 <span class="guide-num">💡</span>
                                 <span><strong>Mac 免终端后台常驻</strong>：双击 <code>启动飞书机器人.command</code> 后<strong>可直接关闭终端窗口</strong>；需停止时双击 <code>停止飞书机器人.command</code>。</span>
+                            </div>
+                            <div class="guide-item" style="margin-top: 8px;">
+                                <span class="guide-num">📨</span>
+                                <span>筛选完成后，汇总卡片由绑定的飞书机器人<strong>私聊推送给你本人</strong>；群内/私聊回复「推荐 70 分」即可让机器人在已打开的 Moka 页面一键推进。</span>
                             </div>
                         </div>
                     </details>

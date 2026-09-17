@@ -264,98 +264,15 @@ describe('Feishu 自然语言命令解析器', () => {
   });
 });
 
-describe('Feishu 推送目标解析器 (resolveFeishuTarget)', () => {
-  const sampleTargets = [
-    { id: 'target_growth', name: '📱 商业化广告业务群', webhook: 'https://open.feishu.cn/hook/growth' },
-    { id: 'target_oversea', name: '🌍 海外增长业务群', webhook: 'https://open.feishu.cn/hook/oversea' },
-    { id: 'target_me', name: '👤 泽民个人专属（单人群）', webhook: 'https://open.feishu.cn/hook/me' }
-  ];
-  const defaultHook = 'https://open.feishu.cn/hook/default';
-
-  it('能准确定位指定目标并返回有效 Webhook', () => {
-    const res = Feishu.resolveFeishuTarget('target_growth', sampleTargets, defaultHook);
-    assert.equal(res.enabled, true);
-    assert.equal(res.webhook, 'https://open.feishu.cn/hook/growth');
-    assert.equal(res.name, '📱 商业化广告业务群');
-  });
-
-  it('选「不推送飞书」(__none__) 时正确禁用推送', () => {
-    const res = Feishu.resolveFeishuTarget('__none__', sampleTargets, defaultHook);
-    assert.equal(res.enabled, false);
-    assert.equal(res.webhook, null);
-  });
-
-  it('指定目标未找到时，优雅回退到默认 Webhook', () => {
-    const res = Feishu.resolveFeishuTarget('target_unknown', sampleTargets, defaultHook);
-    assert.equal(res.enabled, true);
-    assert.equal(res.webhook, defaultHook);
-  });
-
-  it('没有任何目标与默认 Webhook 时，安全禁用', () => {
-    const res = Feishu.resolveFeishuTarget(null, [], '');
-    assert.equal(res.enabled, false);
-  });
-
-  it('v2.1.0 目标库支持个人接收人类型：type=user 走个人账号', () => {
-    const targets = [
-      { id: 't_group', name: '📱 商业化业务群', type: 'webhook', webhook: 'https://open.feishu.cn/hook/g', receiver: '' },
-      { id: 't_user', name: '👤 用人部门负责人', type: 'user', webhook: '', receiver: 'lead@meitu.com' }
-    ];
-    const res = Feishu.resolveFeishuTarget('t_user', targets, defaultHook);
-    assert.equal(res.enabled, true);
-    assert.equal(res.type, 'user');
-    assert.equal(res.receiver, 'lead@meitu.com');
-    assert.equal(res.webhook, null);
-    assert.equal(res.reason, 'ok');
-
-    const groupRes = Feishu.resolveFeishuTarget('t_group', targets, defaultHook);
-    assert.equal(groupRes.type, 'webhook');
-    assert.equal(groupRes.webhook, 'https://open.feishu.cn/hook/g');
-  });
-
-  it('v2.1.0 目标必填项为空时明确报 target_incomplete，绝不静默改道默认 Webhook', () => {
-    const incompleteGroup = [{ id: 't_empty_group', name: '待填群', type: 'webhook', webhook: '', receiver: '' }];
-    const g = Feishu.resolveFeishuTarget('t_empty_group', incompleteGroup, defaultHook);
-    assert.equal(g.enabled, false);
-    assert.equal(g.reason, 'target_incomplete');
-    assert.equal(g.webhook, null, '不得回退到默认 Webhook');
-
-    const incompleteUser = [{ id: 't_empty_user', name: '待填个人', type: 'user', webhook: '', receiver: '' }];
-    const u = Feishu.resolveFeishuTarget('t_empty_user', incompleteUser, defaultHook);
-    assert.equal(u.enabled, false);
-    assert.equal(u.reason, 'target_incomplete');
-    assert.equal(u.type, 'user');
-  });
-
-  it('normalizeFeishuTarget 兼容旧数据（只有 webhook 字段）并推断类型', () => {
-    const legacy = Feishu.normalizeFeishuTarget({ id: 't1', name: '旧目标', webhook: 'https://open.feishu.cn/hook/old' });
-    assert.equal(legacy.type, 'webhook');
-    assert.equal(legacy.receiver, '');
-    // 只有 receiver（手填个人账号）时推断为个人类型
-    const userLike = Feishu.normalizeFeishuTarget({ id: 't2', name: '个人', receiver: 'a@meitu.com' });
-    assert.equal(userLike.type, 'user');
-    assert.equal(Feishu.normalizeFeishuTarget(null), null);
-    assert.equal(Feishu.normalizeFeishuTarget('bad'), null);
-  });
-
-  it('汇总卡片包含目标名称展示，方便接收者确认归属群', () => {
-    const cardWithTarget = Feishu.buildScreeningSummaryCard({
+describe('Feishu 汇总卡片与 Bridge 脚本契约（v3.0.0 单链路）', () => {
+  it('汇总卡片不再展示推送目标（单链路发机器人私聊）', () => {
+    const jsonStr = JSON.stringify(Feishu.buildScreeningSummaryCard({
       jobTitle: '商业化广告产品经理',
-      targetName: '📱 商业化广告业务群',
       total: 50,
       prioritized: 5,
       recommended: 10
-    });
-    const jsonStr = JSON.stringify(cardWithTarget);
-    assert.match(jsonStr, /推送目标/);
-    assert.match(jsonStr, /商业化广告业务群/);
-
-    const cardWithoutTarget = Feishu.buildScreeningSummaryCard({
-      jobTitle: '商业化广告产品经理',
-      total: 50
-    });
-    const jsonStr2 = JSON.stringify(cardWithoutTarget);
-    assert.doesNotMatch(jsonStr2, /推送目标/);
+    }));
+    assert.doesNotMatch(jsonStr, /推送目标/, '目标库已删，卡片不得再出现推送目标字样');
   });
 
   it('Bridge 服务器脚本包含 updateFeishuAppCredentials 凭据热保存与热重连能力', () => {
@@ -437,4 +354,3 @@ describe('Feishu 推送目标解析器 (resolveFeishuTarget)', () => {
     assert.match(serverCode, /feishuRecommendByScore/);
   });
 });
-

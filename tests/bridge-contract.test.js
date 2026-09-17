@@ -133,16 +133,18 @@ describe('飞书 Bridge 加固契约（2.0.1）', () => {
     assert.match(feishuLib, /moka_action=batch_recommend&min_score=50/, '动作参数放 query 段');
   });
 
-  it('v2.1.0 推送目标按类型分流：个人走自建应用、群走 Webhook，配置不全明确报错', () => {
+  it('v3.0.0 单链路推送：只发绑定的机器人私聊，目标库/Webhook 分流已删且不得回潮', () => {
     const bg = source('background.js');
-    assert.match(bg, /async function dispatchFeishuCardByTarget\(/, '应集中按目标类型分流');
-    assert.match(bg, /target\.type === 'user'/, '个人类型目标走自建应用直推');
-    assert.match(bg, /本轮未推送（不会改发其他渠道）/, '配置不全时必须明确报错而非静默改道');
-    assert.match(bg, /所选推送目标（\$\{targetId\}）已不存在/, '目标被删要提示重新选择');
+    assert.match(bg, /async function dispatchFeishuCard\(/, '集中单链路发送');
+    assert.match(bg, /sendFeishuAppCard\(\{ appId, appSecret, receiver \}/, '唯一通道：自建应用私聊');
+    assert.match(bg, /未配置飞书自建应用（App ID \/ App Secret），无法推送/, '缺凭据明确报错');
+    assert.match(bg, /未填写接收人（企业邮箱 \/ Open ID）/, '缺接收人明确报错');
+    assert.match(bg, /📨 飞书汇总已推送：机器人私聊（本人）/, '成功日志写明去向');
     assert.match(bg, /addPluginLog\(\{ cat: 'err', text: `飞书汇总推送未完成/, '推送失败必须落运行日志');
-    assert.match(bg, /function describeFeishuTarget\(/, '卡片需写明本轮去向');
-    // 旧的「有自建应用就一律发单聊」分支不得复活
-    assert.doesNotMatch(bg, /hasAppCreds && \(!targetRes \|\| !targetRes\.webhook\)/);
+    // 多目标 / Webhook 分流不得回潮
+    assert.doesNotMatch(bg, /dispatchFeishuCardByTarget|feishuTargets|feishuWebhook|describeFeishuTarget/);
+    const lib = source('lib/feishu.js');
+    assert.doesNotMatch(lib, /sendFeishuWebhook|resolveFeishuTarget|normalizeFeishuTarget/, 'lib 层 Webhook/目标解析函数已删');
   });
 
   it('v2.2.0 飞书批量推进复用已打开页面：按卡片职位选标签页 + 执行后刷新 + 回执带对象姓名', () => {
