@@ -10,13 +10,6 @@
 
 const SEARCH_API_FALLBACK = '/api/outer/ats-candidate-search-left/candidate/search-candidate/v2';
 
-// 飞书卡片「一键批量推进」触发参数快照：本脚本 document_start 注入，先于 Moka SPA 路由器；
-// 路由器启动后可能改写/清空 hash，导致 600ms 兜底检查与 hashchange 扑空（v2.0.2）。
-// query 与 hash 双通道都记录，checkUrlBatchActions 优先消费快照（消费后置空防重复触发）
-let urlActionSnapshot = {
-  search: String(window.location.search || ''),
-  hash: String(window.location.hash || '')
-};
 /**
  * 评分并发数：默认 6，可由「连接与模型 → 评分并发数」设置（1–8）覆盖；
  * 开筛时经 modelPriceInfo 拉到生效值写入 scoreConcurrency。
@@ -1311,11 +1304,6 @@ function init() {
   const leftover = document.getElementById('moka-panel');
   if (leftover) leftover.remove();
 
-  // 监听飞书卡片操作携带的 URL 批量推荐指令
-  window.addEventListener('hashchange', () => {
-    checkUrlBatchActions();
-  });
-  setTimeout(checkUrlBatchActions, 600);
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'ping') {
       sendResponse({ ok: true });
@@ -3752,71 +3740,6 @@ async function handleFeishuRecommend(minScore, namePattern) {
     assigneeCount: lastAssigneeIds.length,
     jobTitle: lastKnownJobName || '当前岗位'
   };
-}
-
-let isExecutingUrlBatchAction = false;
-async function checkUrlBatchActions() {
-  if (isExecutingUrlBatchAction) return;
-  try {
-    // 优先消费 document_start 快照（防 SPA 路由器抢先改写），无快照时退回当前 URL
-    const snap = urlActionSnapshot;
-    urlActionSnapshot = null;
-    const search = snap ? snap.search : String(window.location.search || '');
-    const hash = snap ? snap.hash : String(window.location.hash || '');
-    const triggerSource = search.includes('moka_action=batch_recommend') ? search
-      : (hash.includes('moka_action=batch_recommend') ? hash : '');
-    if (!triggerSource) return;
-
-    // 解析参数：从 moka_action= 起截取，兼容 hash 路由中携带 query 的形态（#/route?moka_action=...）
-    const actionIdx = triggerSource.indexOf('moka_action=');
-    const searchParams = new URLSearchParams(triggerSource.slice(actionIdx).replace(/^[?&]/, ''));
-    const minScore = Number(searchParams.get('min_score')) || 50;
-
-    isExecutingUrlBatchAction = true;
-
-    // 清除触发残留：query 里删动作参数；hash 若仍是动作参数则清空，已是路由 hash 则保留
-    try {
-      const u = new URL(window.location.href);
-      u.searchParams.delete('moka_action');
-      u.searchParams.delete('min_score');
-      if (String(window.location.hash || '').includes('moka_action=')) u.hash = '';
-      history.replaceState(null, '', u.pathname + u.search + u.hash);
-    } catch (e) { /* ignore */ }
-
-    pushPluginLog({
-      cat: 'info',
-      text: `[飞书卡片协同] 检测到一键批量推进指令 (最低分: ${minScore})`
-    });
-
-    publishResults(`🤖 收到飞书卡片指令：正在准备批量推进 ${minScore} 分以上候选人...`, undefined, { flush: true });
-
-    // 若结果尚未加载，尝试静默恢复
-    let retries = 0;
-    while (!results.length && retries < 10) {
-      await restoreResultsSilently();
-      if (results.length) break;
-      await sleep(500);
-      retries++;
-    }
-
-    if (!results.length) {
-      publishResults('💡 收到飞书批量推进指令，但当前页面暂无筛选结果，请先在面板进行筛选', undefined, { flush: true });
-      return;
-    }
-
-    const res = await handleFeishuRecommend(minScore);
-    if (res.ok) {
-      const namesStr = (res.names || []).slice(0, 5).join('、');
-      const suffix = (res.names || []).length > 5 ? ' 等' : '';
-      publishResults(`✨ 飞书一键推进成功！已推进 ${res.count || 0} 位候选人（${namesStr}${suffix}）至用人部门`, undefined, { flush: true });
-    } else {
-      publishResults(`❌ 飞书批量推进未完成：${res.error || '未知异常'}`, undefined, { flush: true });
-    }
-  } catch (err) {
-    console.warn('[Moka 协同] 执行 URL 批量操作异常:', err);
-  } finally {
-    isExecutingUrlBatchAction = false;
-  }
 }
 
 /** 单个推荐优先走 API 直连重放（与批量推进同源，1.10.5）。

@@ -17,10 +17,22 @@ function changelogHasVersion(version) {
   return re.test(changelog);
 }
 
+// 顶部第一个版本条目必须就是 manifest 版本：历史条目也算数会导致漏 bump 假绿（v3.0.0 实锤）
+function changelogTopVersion() {
+  const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
+  const m = /^## (\S+)/m.exec(changelog);
+  return m ? m[1] : '';
+}
+
 function main() {
   const version = readManifestVersion();
   if (!version) {
     process.stderr.write('manifest.json 缺少 version\n');
+    process.exit(1);
+  }
+  const top = changelogTopVersion();
+  if (top !== version) {
+    process.stderr.write('CHANGELOG.md 顶部条目（' + (top || '无') + '）与 manifest 版本（' + version + '）不一致——是否漏了升版或漏写条目？\n');
     process.exit(1);
   }
   if (!changelogHasVersion(version)) {
@@ -32,4 +44,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { readManifestVersion, changelogHasVersion };
+module.exports = { readManifestVersion, changelogHasVersion, changelogTopVersion };

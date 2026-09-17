@@ -324,28 +324,10 @@ describe('Feishu 汇总卡片与 Bridge 脚本契约（v3.0.0 单链路）', () 
     assert.equal(batchBtn.value.minScore, 50);
     assert.match(batchBtn.value.mokaUrl, /app\.mokahr\.com/, '回传职位地址，供 Bridge 精准选择已打开的标签页');
 
-    // 备用兜底：Bridge 未运行或 Webhook 模式（无法接收卡片回调）时仍能手动新页面执行
+    // v3.0.1：备用「新页面执行」按钮已删——只保留回调主按钮 + 查看列表
     const fallbackBtn = actionBlock.actions.find((b) => /备用：新页面执行/.test(b.text.content));
-    assert.ok(fallbackBtn, '应保留「备用：新页面执行」按钮');
-    assert.match(fallbackBtn.url, /[?&]moka_action=batch_recommend&min_score=50/);
-  });
-
-  it('一键批量推进备用链接：原地址带 hash 路由时参数插入 query 段且路由 hash 原样保留', () => {
-    const cardRes = Feishu.buildScreeningSummaryCard({
-      jobTitle: '海外增长运营',
-      total: 10,
-      prioritized: 1,
-      recommended: 1,
-      mokaUrl: 'https://app.mokahr.com/recruit/candidate-list#/position/99/list',
-      topCandidates: [{ name: '张三', score: 90, tag: '优先推进' }]
-    });
-    const actions = cardRes.card.elements.find((el) => el.tag === 'action').actions;
-    const fallbackBtn = actions.find((b) => /备用：新页面执行/.test(b.text.content));
-    assert.equal(
-      fallbackBtn.url,
-      'https://app.mokahr.com/recruit/candidate-list?moka_action=batch_recommend&min_score=50#/position/99/list',
-      '参数插在真正 query 段，路由 hash 原样保留，打开页面视图不漂移'
-    );
+    assert.equal(fallbackBtn, undefined, '不得再有「备用：新页面执行」按钮');
+    assert.equal(actionBlock.actions.length, 2, '只保留回调主按钮与查看列表两个按钮');
   });
 
   it('Bridge 服务器脚本注册了 card.action.trigger 卡片交互按钮监听', () => {

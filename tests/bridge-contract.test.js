@@ -122,15 +122,12 @@ describe('飞书 Bridge 加固契约（2.0.1）', () => {
     );
   });
 
-  it('一键批量推进双通道触发：document_start 快照 + query/hash 双解析（v2.0.2 SPA hash 竞态回归）', () => {
+  it('v3.0.1 备用 URL 执行链路已整体删除：卡片只走回调，content 不得保留 URL 动作通道', () => {
     const content = source('content.js');
-    assert.match(content, /let urlActionSnapshot = \{/, 'document_start 顶层应快照触发参数');
-    assert.match(content, /search\.includes\('moka_action=batch_recommend'\)/, 'query 通道必须存在');
-    assert.match(content, /hash\.includes\('moka_action=batch_recommend'\)/, 'hash 通道保留兼容');
-    assert.match(content, /urlActionSnapshot = null;/, '快照消费后置空防重复触发');
+    assert.doesNotMatch(content, /urlActionSnapshot|checkUrlBatchActions|moka_action/, 'content 侧 URL 动作通道已删');
     const feishuLib = source('lib/feishu.js');
-    assert.doesNotMatch(feishuLib, /#moka_action=/, '卡片按钮 URL 不得把动作参数放 hash');
-    assert.match(feishuLib, /moka_action=batch_recommend&min_score=50/, '动作参数放 query 段');
+    assert.doesNotMatch(feishuLib, /buildBatchActionUrl|moka_action/, 'lib 不得再有备用链接构造');
+    assert.doesNotMatch(feishuLib, /备用：新页面执行/, '备用按钮不得回潮');
   });
 
   it('v3.0.0 单链路推送：只发绑定的机器人私聊，目标库/Webhook 分流已删且不得回潮', () => {
