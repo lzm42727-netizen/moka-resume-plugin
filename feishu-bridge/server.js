@@ -53,6 +53,20 @@ let activePluginSocket = null;
 let lastP2pSenderOpenId = '';
 let seqCounter = 0;
 const pendingRequests = new Map();
+// 死链探测：插件侧 MV3 SW 挂起后 TCP 可能半开（能写进去但对面收不到），
+// 定期 ping 插件、超时无 pong 主动断开，让下一次指令快速报错而不是石沉大海（v3.0.6）
+let lastPluginPongAt = 0;
+setInterval(() => {
+  const ws = activePluginSocket;
+  if (!ws || ws.readyState !== 1) return;
+  if (lastPluginPongAt && Date.now() - lastPluginPongAt > 70000) {
+    console.warn('[Bridge] ⛔ 检测到插件连接疑似死链（70 秒无 pong），主动断开等待重连');
+    try { ws.close(); } catch (e) { /* ignore */ }
+    if (activePluginSocket === ws) activePluginSocket = null;
+    return;
+  }
+  try { ws.send(JSON.stringify({ action: 'feishuBridgePing', ts: Date.now() })); } catch (e) { /* ignore */ }
+}, 25000);
 
 function sendToPlugin(action, data = {}) {
   return new Promise((resolve, reject) => {
@@ -135,6 +149,7 @@ function createWsServer(port) {
     };
 
     activePluginSocket = ws;
+    lastPluginPongAt = Date.now();
     console.log('\n[Bridge] 🟢 Moka Chrome 插件已连接！');
 
     let buffer = Buffer.alloc(0);
@@ -182,6 +197,10 @@ function createWsServer(port) {
           const text = data.toString('utf8');
           try {
             const msg = JSON.parse(text);
+            // 插件任何回包（含 pong / 插件自身心跳）都算活着的证据
+            if (msg.action === 'feishuBridgePong' || msg.action === 'feishuBridgePing' || msg.seq) {
+              lastPluginPongAt = Date.now();
+            }
             if (msg.action === 'updateFeishuAppCredentials') {
               handleUpdateCredentials(msg, ws);
             } else if (msg.action === 'feishuBridgePing') {
@@ -435,6 +454,7 @@ async function initFeishuLarkWs() {
                 mokaUrl: actionVal.mokaUrl || ''
               });
             } catch (err) {
+              console.warn(`[Bridge] ⚠️ 插件未在期限内响应（${err.message}），回执按失败处理`);
               res = { ok: false, error: err.message };
             }
 

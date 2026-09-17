@@ -147,6 +147,18 @@ describe('飞书 Bridge 加固契约（2.0.1）', () => {
     assert.doesNotMatch(server, /if \(senderOpenId && replyCard\) \{\s*\n\s*await larkClient\.im\.message\.create/, '不得无条件双发');
   });
 
+  it('v3.0.6 半开死链双向加固：插件 alarms 自愈 + Bridge 死链探测', () => {
+    const bg = source('background.js');
+    assert.match(bg, /FEISHU_BRIDGE_KEEPALIVE_ALARM = 'feishuBridgeKeepalive'/, 'SW 保活 alarm 存在');
+    assert.match(bg, /chrome\.alarms\.create\(FEISHU_BRIDGE_KEEPALIVE_ALARM, \{ periodInMinutes: 0\.5 \}\)/, 'alarm 半分钟一跳，挂起也会被唤醒');
+    assert.match(bg, /if \(msg\.action === 'feishuBridgePing'\)/, '插件应答 Bridge 的死链探测 ping');
+    const server = source('feishu-bridge/server.js');
+    assert.match(server, /lastPluginPongAt/, 'Bridge 记录插件最近 pong 时间');
+    assert.match(server, /70000/, '70 秒无 pong 判定死链');
+    assert.match(server, /action: 'feishuBridgePing', ts: Date\.now\(\)/, 'Bridge 主动 ping 插件');
+    assert.match(server, /插件未在期限内响应/, '下发超时必须落日志可诊断');
+  });
+
   it('v3.0.0 单链路推送：只发绑定的机器人私聊，目标库/Webhook 分流已删且不得回潮', () => {
     const bg = source('background.js');
     assert.match(bg, /async function dispatchFeishuCard\(/, '集中单链路发送');

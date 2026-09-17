@@ -650,8 +650,15 @@ function initFeishuBridge() {
           return;
         }
 
-        if (msg.action === 'feishuRecommendByScore' || msg.action === 'feishuCommand') {
-          const tabs = await chrome.tabs.query({ url: '*://app.mokahr.com/*' });
+        // Bridge 侧死链探测：收到 Bridge ping 立即回 pong（v3.0.6，供 Bridge 判定半开死链）
+        if (msg.action === 'feishuBridgePing') {
+          try {
+            feishuBridgeWs.send(JSON.stringify({ action: 'feishuBridgePong', seq: msg.seq }));
+          } catch (e) { /* 发送失败由 onclose 兜底重连 */ }
+          return;
+        }
+
+        if (msg.action === 'feishuRecommendByScore' || msg.action === 'feishuCommand') {          const tabs = await chrome.tabs.query({ url: '*://app.mokahr.com/*' });
           // 优先复用卡片所属职位的已打开标签页（避免多职位并存时推错岗）；
           // 匹配不到再退回「当前活动标签页 → 第一个 Moka 标签页」
           const hintPath = String(msg.mokaUrl || '').split('#')[0].split('?')[0];
@@ -756,6 +763,26 @@ function scheduleFeishuReconnect() {
 
 // 自动尝试连接本地 Bridge
 initFeishuBridge();
+
+// v3.0.6：MV3 SW 空闲挂起后 WS 会变成「半开死链」——Bridge 往里写指令石沉大海，
+// 页面无动作也无回执（20s 应用层心跳只在 SW 活着时有效，拦不住挂起本身）。
+// 用 alarms 兜底自愈：即使 SW 已被挂起，alarm 也会唤醒它——未连接则重连，已连接则补发一次 ping。
+const FEISHU_BRIDGE_KEEPALIVE_ALARM = 'feishuBridgeKeepalive';
+try {
+  chrome.alarms.create(FEISHU_BRIDGE_KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
+} catch (e) { /* ignore */ }
+
+if (chrome.alarms && chrome.alarms.onAlarm) {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (!alarm || alarm.name !== FEISHU_BRIDGE_KEEPALIVE_ALARM) return;
+    if (feishuBridgeManualDisconnected) return;
+    if (feishuBridgeWs && feishuBridgeWs.readyState === WebSocket.OPEN) {
+      try { feishuBridgeWs.send(JSON.stringify({ action: 'feishuBridgePing' })); } catch (e) { /* onclose 兜底 */ }
+    } else {
+      initFeishuBridge();
+    }
+  });
+}
 
 async function handleSendFeishuCard(card, customReceiver) {
   const settings = await getSettings();
