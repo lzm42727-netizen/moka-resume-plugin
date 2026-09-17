@@ -90,9 +90,8 @@ const DEFAULT_SETTINGS = {
   forceJsonMode: true,
   // 评分并发数（1–8）：同时评分的候选人数
   scoreConcurrency: 6,
-  // 飞书机器人协同设置（默认关闭单人打扰，仅推整轮汇总）
+  // 飞书机器人协同设置（默认关闭逐人打扰，只推整轮汇总）
   feishuWebhook: '',
-  feishuMinScore: 'off',
   feishuSummaryNotify: true,
   feishuBridgeEnabled: true
 };
@@ -654,7 +653,13 @@ function initFeishuBridge() {
 
         if (msg.action === 'feishuRecommendByScore' || msg.action === 'feishuCommand') {
           const tabs = await chrome.tabs.query({ url: '*://app.mokahr.com/*' });
-          const mokaTab = (tabs && tabs.find((t) => t.active)) || (tabs && tabs[0]);
+          // 优先复用卡片所属职位的已打开标签页（避免多职位并存时推错岗）；
+          // 匹配不到再退回「当前活动标签页 → 第一个 Moka 标签页」
+          const hintPath = String(msg.mokaUrl || '').split('#')[0].split('?')[0];
+          const matched = hintPath
+            ? (tabs || []).find((t) => String(t.url || '').split('#')[0].split('?')[0] === hintPath)
+            : null;
+          const mokaTab = matched || (tabs && tabs.find((t) => t.active)) || (tabs && tabs[0]);
           if (!mokaTab || !mokaTab.id) {
             if (feishuBridgeWs && feishuBridgeWs.readyState === WebSocket.OPEN) {
               feishuBridgeWs.send(JSON.stringify({
@@ -666,12 +671,41 @@ function initFeishuBridge() {
             return;
           }
 
-          chrome.tabs.sendMessage(mokaTab.id, {
+          // 聚焦该标签页：用户能直接看到执行过程（2.2.0 起不再新开网页）
+          try {
+            if (mokaTab.windowId != null) await chrome.windows.update(mokaTab.windowId, { focused: true });
+            await chrome.tabs.update(mokaTab.id, { active: true });
+          } catch (e) { /* 聚焦失败不阻断执行 */ }
+
+          addPluginLog({
+            cat: 'info',
+            text: `收到飞书批量推进指令（${msg.minScore != null ? msg.minScore + ' 分以上' : '指定人选'}），在已打开的 Moka 页面执行`
+          });
+
+          const execTabId = mokaTab.id;
+          chrome.tabs.sendMessage(execTabId, {
             action: 'feishuRecommendByScore',
             minScore: msg.minScore,
             name: msg.name
           }, (res) => {
             const err = chrome.runtime.lastError;
+            // 执行成功后延迟整页刷新：让候选人从「初筛」列表移出（与侧栏批量推进同款 1.2s）
+            let refreshed = false;
+            if (!err && res && res.ok) {
+              refreshed = true;
+              setTimeout(() => {
+                chrome.tabs.reload(execTabId, () => { void chrome.runtime.lastError; });
+              }, 1200);
+              addPluginLog({
+                cat: 'info',
+                text: `飞书批量推进完成：${res.count || 0} 位候选人 → ${(res.assignees || []).join('、') || '用人部门'}（页面已刷新）`
+              });
+            } else {
+              addPluginLog({
+                cat: 'err',
+                text: `飞书批量推进未完成：${err ? err.message : ((res && res.error) || '未知异常')}`
+              });
+            }
             if (feishuBridgeWs && feishuBridgeWs.readyState === WebSocket.OPEN) {
               if (err) {
                 feishuBridgeWs.send(JSON.stringify({
@@ -682,7 +716,8 @@ function initFeishuBridge() {
               } else {
                 feishuBridgeWs.send(JSON.stringify({
                   seq: msg.seq,
-                  ...res
+                  ...res,
+                  refreshed
                 }));
               }
             }

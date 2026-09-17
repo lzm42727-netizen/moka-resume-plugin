@@ -144,4 +144,29 @@ describe('飞书 Bridge 加固契约（2.0.1）', () => {
     // 旧的「有自建应用就一律发单聊」分支不得复活
     assert.doesNotMatch(bg, /hasAppCreds && \(!targetRes \|\| !targetRes\.webhook\)/);
   });
+
+  it('v2.2.0 飞书批量推进复用已打开页面：按卡片职位选标签页 + 执行后刷新 + 回执带对象姓名', () => {
+    const bg = source('background.js');
+    // 按卡片带回的职位 URL 匹配已打开标签页，匹配不到再退回活动/首个
+    assert.match(bg, /const hintPath = String\(msg\.mokaUrl \|\| ''\)\.split\('#'\)\[0\]\.split\('\?'\)\[0\]/);
+    assert.match(bg, /const matched = hintPath/);
+    assert.match(bg, /const mokaTab = matched \|\| \(tabs && tabs\.find\(\(t\) => t\.active\)\) \|\| \(tabs && tabs\[0\]\)/);
+    // 聚焦而不是新开页面
+    assert.match(bg, /chrome\.tabs\.update\(mokaTab\.id, \{ active: true \}\)/);
+    assert.doesNotMatch(bg, /chrome\.tabs\.create\(\{[^}]*app\.mokahr\.com/, '不得新开 Moka 网页');
+    // 执行成功后延迟刷新执行页
+    assert.match(bg, /setTimeout\(\(\) => \{\s*\n\s*chrome\.tabs\.reload\(execTabId/);
+    assert.match(bg, /refreshed = true;/);
+    // 回执回传推荐对象姓名
+    assert.match(bg, /（页面已刷新）/, '成功日志写明去向与刷新');
+
+    const content = source('content.js');
+    assert.match(content, /assignees: resolveAssigneeNamesForDisplay\(\)/, 'content 回传推荐对象姓名');
+
+    const server = source('feishu-bridge/server.js');
+    assert.match(server, /mokaUrl: actionVal\.mokaUrl \|\| ''/, 'Bridge 把职位地址透传给插件');
+    assert.match(server, /data\.context\.open_message_id/, '优先在原卡片会话里回复结果');
+    assert.match(server, /replyCard\.card \|\| replyCard/, 'content 只能取内层 card（外层包壳会被飞书判为非法）');
+    assert.match(server, /页面已刷新/, 'toast 反馈刷新状态');
+  });
 });

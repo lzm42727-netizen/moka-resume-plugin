@@ -404,22 +404,13 @@
                         <input type="text" id="feishu-receiver" placeholder="输入企业邮箱如 xxx@meitu.com 或 Open ID (选择「私聊直推本人」时发送至此)" class="input-field font-mono">
                     </div>
 
-                    <!-- 推送策略控制 -->
+                    <!-- 推送策略控制：只保留整轮汇总，避免逐人打扰 -->
                     <div class="settings-box" style="margin-top: 10px;">
                         <div class="form-group form-group-tight" style="display: flex; align-items: center; justify-content: space-between;">
-                            <label class="choice-pill"><input type="checkbox" id="feishu-summary-notify" checked> 整轮筛选完成自动私聊推送卡片</label>
+                            <label class="choice-pill"><input type="checkbox" id="feishu-summary-notify" checked> 整轮筛选完成自动推送汇总卡片</label>
                             <span class="badge-recommend">推荐·零打扰</span>
                         </div>
-
-                        <div class="settings-box-row">
-                            <label for="feishu-min-score" class="settings-box-label">单人实时推送</label>
-                            <select id="feishu-min-score" class="input-field input-field-sm">
-                                <option value="off" selected>🚫 关闭（仅整轮汇总）</option>
-                                <option value="80">≥ 80 分实时推送</option>
-                                <option value="70">≥ 70 分实时推送</option>
-                                <option value="50">≥ 50 分实时推送</option>
-                            </select>
-                        </div>
+                        <div class="cond-hint cond-hint-flush" style="margin-top: 6px;">💡 只推整轮汇总，不再逐人实时推送——避免开筛过程中反复打扰</div>
                     </div>
 
                     <div id="feishu-app-sync-status" class="cond-hint cond-hint-flush">💡 填入凭据自动保存同步；在飞书单聊直接回复「推荐 70 分」即可推进</div>

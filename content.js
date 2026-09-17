@@ -3725,6 +3725,7 @@ async function handleFeishuRecommend(minScore, namePattern) {
       count: 0,
       names: [],
       jobTitle: lastKnownJobName || '当前岗位',
+      assignees: resolveAssigneeNamesForDisplay(),
       message: '没有符合条件的候选人'
     };
   }
@@ -3749,6 +3750,9 @@ async function handleFeishuRecommend(minScore, namePattern) {
     ok: true,
     count: names.length,
     names,
+    // 推荐对象（用人部门 / 面试官）姓名随回执一并回传，飞书侧写明「推给了谁」
+    assignees: resolveAssigneeNamesForDisplay(),
+    assigneeCount: lastAssigneeIds.length,
     jobTitle: lastKnownJobName || '当前岗位'
   };
 }

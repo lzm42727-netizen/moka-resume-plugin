@@ -167,6 +167,33 @@ describe('Feishu 卡片组装与协议契约', () => {
     assert.match(JSON.stringify(card), /未找到打开的 Moka 标签页/);
   });
 
+  it('v2.2.0 回执写明推荐对象、候选人名单与页面已刷新', () => {
+    const card = Feishu.buildRecommendationResultCard({
+      ok: true,
+      count: 2,
+      names: ['张三', '李四'],
+      assignees: ['王用工'],
+      assigneeCount: 1,
+      refreshed: true,
+      minScore: 50,
+      jobTitle: '海外增长经理'
+    });
+    assert.equal(card.card.header.template, 'green');
+    const jsonStr = JSON.stringify(card);
+    assert.match(jsonStr, /推荐对象\*\*：王用工/, '必须写明推给了谁');
+    assert.match(jsonStr, /候选人（被推荐人）\*\*：张三、李四/);
+    assert.match(jsonStr, /Moka 页面\*\*：已自动刷新/);
+  });
+
+  it('v2.2.0 回执超过 30 人时截断展示并写明总数', () => {
+    const names = Array.from({ length: 35 }, (_, i) => `候选人${i + 1}`);
+    const card = Feishu.buildRecommendationResultCard({ ok: true, count: 35, names, assignees: [], refreshed: true });
+    const jsonStr = JSON.stringify(card);
+    assert.match(jsonStr, /候选人\(被推荐人\)|候选人（被推荐人）/);
+    assert.match(jsonStr, /等 35 位/);
+    assert.doesNotMatch(jsonStr, /候选人35、/, '第 31 位及以后不再逐个列出');
+  });
+
   it('达标人数超过 20 时统计用全量口径并注明截断（v2.0.1 回归）', () => {
     const top25 = Array.from({ length: 25 }, (_, i) => ({
       name: `候选人${i + 1}`,
@@ -374,12 +401,19 @@ describe('Feishu 推送目标解析器 (resolveFeishuTarget)', () => {
     assert.ok(actionBlock.actions.length >= 2, '有达标人选时至少包含 2 个操作按钮');
     const batchBtn = actionBlock.actions[0];
     assert.match(batchBtn.text.content, /一键批量推进 50分\+/);
-    assert.match(batchBtn.url, /[?&]moka_action=batch_recommend&min_score=50/, '动作参数应在 query 段');
-    assert.doesNotMatch(batchBtn.url, /#moka_action/, '不得再放 hash（SPA 路由会冲掉，v2.0.2）');
-    assert.deepEqual(batchBtn.value, { action: 'feishuRecommendByScore', minScore: 50 });
+    assert.equal(batchBtn.url, undefined, '主按钮不带 url——带 url 的按钮不会触发卡片回调，会新开网页');
+    assert.equal(batchBtn.type, 'primary');
+    assert.equal(batchBtn.value.action, 'feishuRecommendByScore');
+    assert.equal(batchBtn.value.minScore, 50);
+    assert.match(batchBtn.value.mokaUrl, /app\.mokahr\.com/, '回传职位地址，供 Bridge 精准选择已打开的标签页');
+
+    // 备用兜底：Bridge 未运行或 Webhook 模式（无法接收卡片回调）时仍能手动新页面执行
+    const fallbackBtn = actionBlock.actions.find((b) => /备用：新页面执行/.test(b.text.content));
+    assert.ok(fallbackBtn, '应保留「备用：新页面执行」按钮');
+    assert.match(fallbackBtn.url, /[?&]moka_action=batch_recommend&min_score=50/);
   });
 
-  it('一键批量推进 URL：原地址带 hash 路由时参数插入 query 段且路由 hash 原样保留', () => {
+  it('一键批量推进备用链接：原地址带 hash 路由时参数插入 query 段且路由 hash 原样保留', () => {
     const cardRes = Feishu.buildScreeningSummaryCard({
       jobTitle: '海外增长运营',
       total: 10,
@@ -388,9 +422,10 @@ describe('Feishu 推送目标解析器 (resolveFeishuTarget)', () => {
       mokaUrl: 'https://app.mokahr.com/recruit/candidate-list#/position/99/list',
       topCandidates: [{ name: '张三', score: 90, tag: '优先推进' }]
     });
-    const batchBtn = cardRes.card.elements.find((el) => el.tag === 'action').actions[0];
+    const actions = cardRes.card.elements.find((el) => el.tag === 'action').actions;
+    const fallbackBtn = actions.find((b) => /备用：新页面执行/.test(b.text.content));
     assert.equal(
-      batchBtn.url,
+      fallbackBtn.url,
       'https://app.mokahr.com/recruit/candidate-list?moka_action=batch_recommend&min_score=50#/position/99/list',
       '参数插在真正 query 段，路由 hash 原样保留，打开页面视图不漂移'
     );

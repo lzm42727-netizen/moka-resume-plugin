@@ -1309,7 +1309,6 @@ function readSettingsForm() {
     feishuAppId: String(document.getElementById('feishu-app-id')?.value || '').trim(),
     feishuAppSecret: String(document.getElementById('feishu-app-secret')?.value || '').trim(),
     feishuReceiver: String(document.getElementById('feishu-receiver')?.value || '').trim(),
-    feishuMinScore: String(document.getElementById('feishu-min-score')?.value || 'off'),
     feishuSummaryNotify: document.getElementById('feishu-summary-notify')?.checked !== false
   };
 }
@@ -1751,8 +1750,6 @@ async function loadSettings() {
     }
     renderFeishuTargetsList();
     updateJobFeishuTargetSelect(currentJobLabel());
-    const minScoreEl = document.getElementById('feishu-min-score');
-    if (minScoreEl) minScoreEl.value = s.feishuMinScore != null ? String(s.feishuMinScore) : 'off';
     const appIdEl = document.getElementById('feishu-app-id');
     if (appIdEl) appIdEl.value = s.feishuAppId || '';
     const appSecretEl = document.getElementById('feishu-app-secret');
@@ -1942,7 +1939,6 @@ safeEl('test-feishu')?.addEventListener('click', async () => {
         feishuAppSecret: appSecret,
         feishuReceiver: receiver,
         feishuWebhook: webhook,
-        feishuMinScore: String(document.getElementById('feishu-min-score')?.value || 'off'),
         feishuSummaryNotify: document.getElementById('feishu-summary-notify')?.checked !== false
       }
     });

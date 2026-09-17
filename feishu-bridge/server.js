@@ -395,10 +395,12 @@ async function initFeishuLarkWs() {
               res = { ok: false, error: err.message };
             }
 
-            // 组装回执卡片
+            // 组装回执卡片（buildRecommendationResultCard 返回 { msg_type, card } 包壳，
+            // 发消息的 content 只能取内层 card，否则飞书会判为非法卡片内容）
             let replyCard;
             if (MokaFeishu) {
-              replyCard = MokaFeishu.buildRecommendationResultCard(res);
+              const built = MokaFeishu.buildRecommendationResultCard(res);
+              replyCard = (built && built.card) || built;
             }
 
             // 发回复到飞书
@@ -425,24 +427,42 @@ async function initFeishuLarkWs() {
           console.log('[Bridge] 收到飞书卡片按钮点击事件:', JSON.stringify(actionVal));
           if (actionVal.action === 'feishuRecommendByScore') {
             const minScore = Number(actionVal.minScore) || 50;
-            console.log(`[Bridge] 正在下发卡片批量推荐指令 (最低分: ${minScore})...`);
+            console.log(`[Bridge] 正在向已打开的 Moka 页面下发批量推荐指令 (最低分: ${minScore})...`);
             let res;
             try {
-              res = await sendToPlugin('feishuRecommendByScore', { minScore });
+              res = await sendToPlugin('feishuRecommendByScore', {
+                minScore,
+                mokaUrl: actionVal.mokaUrl || ''
+              });
             } catch (err) {
               res = { ok: false, error: err.message };
             }
 
             if (larkClient) {
-              const replyCard = MokaFeishu ? MokaFeishu.buildRecommendationResultCard(res) : null;
+              const replyCard = MokaFeishu ? MokaFeishu.buildRecommendationResultCard({
+                ...res,
+                minScore
+              }) : null;
               const senderOpenId = (data && data.operator && data.operator.open_id) || lastP2pSenderOpenId;
+              const messageId = (data && data.context && data.context.open_message_id) || '';
+              // 优先回复原卡片所在会话（群里点按钮，结果就落在群里）；失败再退回私聊点击者
+              if (replyCard && messageId) {
+                try {
+                  await larkClient.im.message.reply({
+                    path: { message_id: messageId },
+                    data: { content: JSON.stringify(replyCard.card || replyCard), msg_type: 'interactive' }
+                  });
+                } catch (e) {
+                  console.warn('[Bridge] 回执卡回复原会话失败，改发点击者私聊:', e.message);
+                }
+              }
               if (senderOpenId && replyCard) {
                 await larkClient.im.message.create({
                   params: { receive_id_type: 'open_id' },
                   data: {
                     receive_id: senderOpenId,
                     msg_type: 'interactive',
-                    content: JSON.stringify(replyCard)
+                    content: JSON.stringify(replyCard.card || replyCard)
                   }
                 }).catch(() => {});
               }
@@ -451,7 +471,9 @@ async function initFeishuLarkWs() {
             return {
               toast: {
                 type: res.ok ? 'success' : 'error',
-                content: res.ok ? `已成功批量推荐 ${res.count || 0} 位候选人！` : `推进未完成: ${res.error}`
+                content: res.ok
+                  ? `已在已打开的 Moka 页面推荐 ${res.count || 0} 位候选人${res.refreshed ? '，页面已刷新' : ''}！`
+                  : `推进未完成: ${res.error}`
               }
             };
           }
