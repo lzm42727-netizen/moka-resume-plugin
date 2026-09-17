@@ -760,6 +760,95 @@ async function handleSendFeishuCard(card, customWebhook, customReceiver) {
   return MokaFeishu.sendFeishuWebhook(webhook, card);
 }
 
+// 目标展示名：卡片上写明这轮结果去了哪里，接收者能确认归属
+function describeFeishuTarget(targetId, settings) {
+  if (targetId === '__none__' || targetId === 'none') return '不推送';
+  const list = Array.isArray(settings.feishuTargets) ? settings.feishuTargets : [];
+  const found = list.find((t) => t && t.id === targetId);
+  if (found) {
+    const norm = MokaFeishu.normalizeFeishuTarget(found);
+    return norm ? norm.name : '指定目标';
+  }
+  const isDefault = !targetId || targetId === 'default' || targetId === 'p2p_app' || targetId === 'default_webhook';
+  if (!isDefault) return '目标已失效';
+  return (settings.feishuAppId && settings.feishuAppSecret) ? '个人私聊（本人）' : '默认群 Webhook';
+}
+
+/**
+ * 按「推送目标」类型把卡片发出去（2.1.0 语义修正）：
+ *  - 目标库命中：type=user → 自建应用直推该接收人；type=webhook → 该群 Webhook
+ *  - 目标配置不全（群没填 Webhook / 个人没填账号）：明确报错并落运行日志，绝不静默改道到其他渠道
+ *  - 目标 id 已不存在（目标被删）：报错提示到面板重新选择
+ *  - 默认目标（p2p_app / default / 空）：有自建应用凭据且填了个人账号 → 私聊直推；否则回退默认群 Webhook
+ */
+async function dispatchFeishuCardByTarget(card, targetId, settings) {
+  const appId = settings.feishuAppId;
+  const appSecret = settings.feishuAppSecret;
+  const hasAppCreds = !!(appId && appSecret);
+  const list = Array.isArray(settings.feishuTargets) ? settings.feishuTargets : [];
+
+  if (targetId === '__none__' || targetId === 'none') return { ok: true, skipped: true };
+
+  const found = list.find((t) => t && t.id === targetId);
+  if (found) {
+    const target = MokaFeishu.resolveFeishuTarget(targetId, list, '');
+    if (!target.enabled) {
+      const reason = target.type === 'user'
+        ? `目标「${target.name}」是个人接收人，但未填写邮箱 / Open ID`
+        : `目标「${target.name}」未填写群 Webhook 地址`;
+      return { ok: false, error: `${reason}；本轮未推送（不会改发其他渠道）` };
+    }
+    if (target.type === 'user') {
+      if (!hasAppCreds) {
+        return { ok: false, error: `目标「${target.name}」需要飞书自建应用凭据才能私聊发送，请先在设置页填写 App ID 与 App Secret` };
+      }
+      const nativeRes = await MokaFeishu.sendFeishuAppCard({ appId, appSecret, receiver: target.receiver }, card);
+      if (nativeRes.ok) return { ok: true, via: 'feishu_app_direct', targetName: target.name };
+      if (isFeishuBridgeConnected()) {
+        try {
+          const bridgeRes = await sendToFeishuBridge('sendFeishuCardViaBridge', { card, receiver: target.receiver });
+          if (bridgeRes && bridgeRes.ok) return { ok: true, via: 'bridge_app', targetName: target.name };
+        } catch (e) { /* 忽略，下方统一返回错误 */ }
+      }
+      return { ok: false, error: nativeRes.error || `目标「${target.name}」私聊直推失败` };
+    }
+    const webhookRes = await MokaFeishu.sendFeishuWebhook(target.webhook, card);
+    return webhookRes.ok
+      ? { ok: true, via: 'webhook', targetName: target.name }
+      : { ok: false, error: webhookRes.error || `目标「${target.name}」群推送失败` };
+  }
+
+  const isDefaultTarget = !targetId || targetId === 'default' || targetId === 'p2p_app' || targetId === 'default_webhook';
+  if (!isDefaultTarget) {
+    return { ok: false, error: `所选推送目标（${targetId}）已不存在，请在本职位面板重新选择` };
+  }
+  if (hasAppCreds && settings.feishuReceiver) {
+    const nativeRes = await MokaFeishu.sendFeishuAppCard({ appId, appSecret, receiver: settings.feishuReceiver }, card);
+    if (nativeRes.ok) return { ok: true, via: 'feishu_app_direct', targetName: '个人私聊（本人）' };
+    if (isFeishuBridgeConnected()) {
+      try {
+        const bridgeRes = await sendToFeishuBridge('sendFeishuCardViaBridge', {
+          card,
+          receiver: settings.feishuReceiver
+        });
+        if (bridgeRes && bridgeRes.ok) return { ok: true, via: 'bridge_app', targetName: '个人私聊（本人）' };
+      } catch (e) { /* 忽略，下方统一返回错误 */ }
+    }
+    return { ok: false, error: nativeRes.error || '自建应用单聊直推失败' };
+  }
+  if (hasAppCreds && !settings.feishuReceiver) {
+    return { ok: false, error: '已配置自建应用但未填写个人飞书账号（邮箱 / Open ID），无法私聊直推' };
+  }
+  const fallbackHook = String(settings.feishuWebhook || '').trim();
+  if (fallbackHook) {
+    const res = await MokaFeishu.sendFeishuWebhook(fallbackHook, card);
+    return res.ok
+      ? { ok: true, via: 'webhook', targetName: '默认群 Webhook' }
+      : { ok: false, error: res.error || '默认群 Webhook 推送失败' };
+  }
+  return { ok: false, error: '未配置推送渠道（飞书自建应用凭据或群 Webhook 均未填写）' };
+}
+
 // 筛选完成：支持插件内横幅与飞书汇总卡片自动推送
 async function notifyScreeningDone(payload) {
   const message = (payload && payload.message)
@@ -775,79 +864,42 @@ async function notifyScreeningDone(payload) {
     const settings = await getSettings();
     if (settings && settings.feishuSummaryNotify !== false) {
       const targetId = payload && payload.feishuTargetId;
-      const appId = settings.feishuAppId;
-      const appSecret = settings.feishuAppSecret;
-      const hasAppCreds = !!(appId && appSecret);
 
       // 若用户显式选择了「🚫 不推送飞书」，直接跳过
       if (targetId === '__none__' || targetId === 'none') {
-        return { ok: true };
+        return { ok: true, skipped: true };
       }
 
-      // 是否是用户在主界面显式指定的外部 Webhook 目标库（非自建应用，非默认）
-      const isSpecificWebhookTarget = targetId && targetId !== 'default' && targetId !== 'p2p_app';
-      const targetRes = isSpecificWebhookTarget
-        ? MokaFeishu.resolveFeishuTarget(targetId, settings.feishuTargets, '')
-        : null;
+      const targetDisplayName = describeFeishuTarget(targetId, settings);
+      const summaryCard = MokaFeishu.buildScreeningSummaryCard({
+        jobTitle: payload && payload.jobTitle,
+        targetName: targetDisplayName,
+        total: payload && payload.total,
+        prioritized: payload && payload.prioritized,
+        recommended: payload && payload.recommended,
+        durationText: payload && payload.durationText,
+        mokaUrl: payload && payload.mokaUrl,
+        topCandidates: payload && payload.topCandidates
+      });
 
-      // 1. 若配置了自建应用，且未显式指定外部群 Webhook：100% 直推个人单聊！
-      if (hasAppCreds && (!targetRes || !targetRes.webhook)) {
-        const summaryCard = MokaFeishu.buildScreeningSummaryCard({
-          jobTitle: payload && payload.jobTitle,
-          targetName: '个人单聊 (自建应用)',
-          total: payload && payload.total,
-          prioritized: payload && payload.prioritized,
-          recommended: payload && payload.recommended,
-          durationText: payload && payload.durationText,
-          mokaUrl: payload && payload.mokaUrl,
-          topCandidates: payload && payload.topCandidates
-        });
-
-        // 优先原生 OpenAPI 直发
-        const nativeRes = await MokaFeishu.sendFeishuAppCard({
-          appId,
-          appSecret,
-          receiver: settings.feishuReceiver
-        }, summaryCard);
-
-        if (nativeRes.ok) {
-          return { ok: true, via: 'feishu_app_direct' };
-        }
-
-        // Bridge 兜底
-        if (isFeishuBridgeConnected()) {
-          try {
-            const bridgeRes = await sendToFeishuBridge('sendFeishuCardViaBridge', {
-              card: summaryCard,
-              receiver: settings.feishuReceiver
-            });
-            if (bridgeRes && bridgeRes.ok) {
-              return { ok: true, via: 'bridge_app' };
-            }
-          } catch (bridgeErr) {
-            console.warn('[Moka 筛选] Bridge 兜底推送异常:', bridgeErr.message);
-          }
-        }
-
-        console.warn('[Moka 筛选] 飞书自建应用汇总直推失败:', nativeRes.error);
-        return { ok: false, error: nativeRes.error };
+      const pushRes = await dispatchFeishuCardByTarget(summaryCard, targetId, settings);
+      if (pushRes.skipped) return { ok: true, skipped: true };
+      if (pushRes.ok) {
+        addPluginLog({ cat: 'info', text: `📨 飞书汇总已推送：${pushRes.targetName || targetDisplayName}` });
+        return { ok: true, via: pushRes.via };
       }
 
-      // 2. 只有明确配置或指定了群 Webhook 时才发群
-      const webhookTarget = targetRes || MokaFeishu.resolveFeishuTarget(targetId, settings.feishuTargets, settings.feishuWebhook);
-      if (webhookTarget && webhookTarget.enabled && webhookTarget.webhook) {
-        const summaryCard = MokaFeishu.buildScreeningSummaryCard({
-          jobTitle: payload && payload.jobTitle,
-          targetName: webhookTarget.name,
-          total: payload && payload.total,
-          prioritized: payload && payload.prioritized,
-          recommended: payload && payload.recommended,
-          durationText: payload && payload.durationText,
-          mokaUrl: payload && payload.mokaUrl,
-          topCandidates: payload && payload.topCandidates
-        });
-        await MokaFeishu.sendFeishuWebhook(webhookTarget.webhook, summaryCard);
-      }
+      // 推送失败/配置不全：落运行日志 + 面板横幅，绝不静默
+      addPluginLog({ cat: 'err', text: `飞书汇总推送未完成：${pushRes.error}` });
+      try {
+        chrome.runtime.sendMessage({
+          action: 'screeningCompleteToast',
+          message: `飞书推送未完成：${pushRes.error}`,
+          tone: 'warn',
+          total: payload && payload.total
+        }).catch(() => {});
+      } catch (e) { /* 忽略 */ }
+      return { ok: false, error: pushRes.error };
     }
   } catch (e) {
     console.warn('[Moka 筛选] 飞书汇总通知发送异常:', e);

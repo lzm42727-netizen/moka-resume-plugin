@@ -685,11 +685,24 @@ describe('v2.0.0 飞书协同多目标推送库与职位精准记忆 UI', () => 
     assert.match(html, /飞书结果推送目标/);
   });
 
-  it('设置页包含常用推送目标库管理模块与添加按钮', () => {
+  it('设置页包含推送目标库管理模块与添加按钮', () => {
     assert.match(html, /id="feishu-targets-list"/);
     assert.match(html, /id="add-feishu-target-btn"/);
-    assert.match(html, /🎯 常用多群目标库/);
+    assert.match(html, /🎯 推送目标库/);
     assert.match(html, /id="bridge-advanced-details"/);
+  });
+
+  it('v2.1.0 目标库支持「群 Webhook / 个人接收人」两种类型且提到可见区', () => {
+    assert.match(html, /每个目标可选「群 Webhook」或「个人接收人/);
+    assert.match(css, /\.feishu-target-type-select/);
+    assert.match(css, /\.feishu-target-receiver-input/);
+    assert.match(js, /class="feishu-target-type-select"/);
+    assert.match(js, /class="feishu-target-receiver-input/);
+    assert.match(js, /function isFeishuTargetIncomplete/);
+    // 目标库不再被折叠在高级选项内：details 出现在目标库模块之后
+    const targetsIdx = html.indexOf('id="feishu-targets-list"');
+    const detailsIdx = html.indexOf('id="bridge-advanced-details"');
+    assert.ok(targetsIdx > -1 && detailsIdx > -1 && targetsIdx < detailsIdx, '目标库应在折叠区之前（可见）');
   });
 
   it('样式文件包含 Bento 质感卡片与微交互', () => {

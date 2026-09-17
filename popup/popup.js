@@ -1737,12 +1737,16 @@ async function loadSettings() {
     }
     const webhookEl = document.getElementById('feishu-webhook');
     if (webhookEl) webhookEl.value = s.feishuWebhook || '';
-    feishuTargetsList = Array.isArray(s.feishuTargets) ? s.feishuTargets : [];
+    feishuTargetsList = Array.isArray(s.feishuTargets)
+      ? s.feishuTargets.map((t) => MokaFeishu.normalizeFeishuTarget(t)).filter(Boolean)
+      : [];
     if (!feishuTargetsList.length && s.feishuWebhook) {
       feishuTargetsList.push({
         id: 'default',
         name: '默认业务群 / 个人专属',
-        webhook: s.feishuWebhook
+        type: 'webhook',
+        webhook: s.feishuWebhook,
+        receiver: ''
       });
     }
     renderFeishuTargetsList();
@@ -2068,11 +2072,15 @@ function collectFeishuTargetsFromUI() {
   items.forEach((el) => {
     const id = el.dataset.id || ('target_' + Date.now());
     const nameInput = el.querySelector('.feishu-target-name-input');
+    const typeSelect = el.querySelector('.feishu-target-type-select');
     const hookInput = el.querySelector('.feishu-target-webhook-input');
+    const receiverInput = el.querySelector('.feishu-target-receiver-input');
     const name = nameInput ? nameInput.value.trim() : '';
+    const type = typeSelect && typeSelect.value === 'user' ? 'user' : 'webhook';
     const webhook = hookInput ? hookInput.value.trim() : '';
-    if (name || webhook) {
-      result.push({ id, name: name || '未命名目标', webhook });
+    const receiver = receiverInput ? receiverInput.value.trim() : '';
+    if (name || webhook || receiver) {
+      result.push({ id, name: name || '未命名目标', type, webhook, receiver });
     }
   });
   feishuTargetsList = result;
@@ -2085,31 +2093,60 @@ function renderFeishuTargetsList() {
   container.innerHTML = '';
 
   feishuTargetsList.forEach((target, index) => {
+    const norm = MokaFeishu.normalizeFeishuTarget(target) || { id: target.id, name: '', type: 'webhook', webhook: '', receiver: '' };
+    target.type = norm.type;
     const itemEl = document.createElement('div');
     itemEl.className = 'feishu-target-item';
     itemEl.dataset.id = target.id;
+    itemEl.dataset.type = norm.type;
 
-    const safeName = escapeHtml(target.name || '');
-    const safeHook = escapeHtml(target.webhook || '');
+    const safeName = escapeHtml(norm.name || '');
+    const safeHook = escapeHtml(norm.webhook || '');
+    const safeReceiver = escapeHtml(norm.receiver || '');
 
     itemEl.innerHTML = `
       <div class="feishu-target-item-header">
-        <input type="text" class="feishu-target-name-input" value="${safeName}" placeholder="目标别名（如：📱 商业化业务群 / 👤 个人单人群）" title="点击编辑目标名称">
+        <input type="text" class="feishu-target-name-input" value="${safeName}" placeholder="目标别名（如：📱 商业化业务群 / 👤 用人部门负责人）" title="点击编辑目标名称">
         <div class="feishu-target-actions">
-          <button type="button" class="btn-target-test" title="发送一张测试卡片到该 Webhook">📨 测试</button>
+          <button type="button" class="btn-target-test" title="发送一张测试卡片到该目标">📨 测试</button>
           <button type="button" class="btn-target-del" title="删除此目标">✕</button>
         </div>
       </div>
-      <input type="text" class="feishu-target-webhook-input font-mono" value="${safeHook}" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/...">
+      <div class="feishu-target-type-row">
+        <select class="feishu-target-type-select" title="选择该目标的推送方式">
+          <option value="webhook">👥 群 Webhook</option>
+          <option value="user">👤 个人接收人</option>
+        </select>
+        <input type="text" class="feishu-target-webhook-input font-mono" value="${safeHook}" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/...">
+        <input type="text" class="feishu-target-receiver-input font-mono" value="${safeReceiver}" placeholder="邮箱 xxx@meitu.com 或 Open ID (ou_...)">
+      </div>
     `;
 
     const nameInput = itemEl.querySelector('.feishu-target-name-input');
+    const typeSelect = itemEl.querySelector('.feishu-target-type-select');
     const hookInput = itemEl.querySelector('.feishu-target-webhook-input');
+    const receiverInput = itemEl.querySelector('.feishu-target-receiver-input');
     const testBtn = itemEl.querySelector('.btn-target-test');
     const delBtn = itemEl.querySelector('.btn-target-del');
 
+    const syncTypeVisibility = () => {
+      const isUser = typeSelect.value === 'user';
+      hookInput.classList.toggle('hidden', isUser);
+      receiverInput.classList.toggle('hidden', !isUser);
+    };
+    typeSelect.value = norm.type;
+    syncTypeVisibility();
+
     nameInput?.addEventListener('input', () => {
       target.name = nameInput.value.trim();
+      updateJobFeishuTargetSelect(currentJobLabel());
+      debouncedSaveFeishuSettings();
+    });
+
+    typeSelect?.addEventListener('change', () => {
+      target.type = typeSelect.value === 'user' ? 'user' : 'webhook';
+      itemEl.dataset.type = target.type;
+      syncTypeVisibility();
       updateJobFeishuTargetSelect(currentJobLabel());
       debouncedSaveFeishuSettings();
     });
@@ -2119,15 +2156,26 @@ function renderFeishuTargetsList() {
       debouncedSaveFeishuSettings();
     });
 
+    receiverInput?.addEventListener('input', () => {
+      target.receiver = receiverInput.value.trim();
+      debouncedSaveFeishuSettings();
+    });
+
     testBtn?.addEventListener('click', async () => {
+      const isUser = typeSelect.value === 'user';
       const hook = hookInput ? hookInput.value.trim() : '';
-      if (!hook) {
+      const receiver = receiverInput ? receiverInput.value.trim() : '';
+      if (isUser && !receiver) {
+        alert('请先填写该目标的个人接收人（企业邮箱或 Open ID）');
+        return;
+      }
+      if (!isUser && !hook) {
         alert('请先填写该目标的 Webhook 地址');
         return;
       }
       testBtn.disabled = true;
       testBtn.textContent = '发送中…';
-      await ensureHostPermission(hook);
+      if (!isUser) await ensureHostPermission(hook);
       const testCard = MokaFeishu.buildCandidateCard(
         { name: '测试候选人', applicationId: 'test_demo', jobTitle: '测试岗位' },
         {
@@ -2144,7 +2192,10 @@ function renderFeishuTargetsList() {
         },
         { jobTitle: '测试岗位' }
       );
-      chrome.runtime.sendMessage({ action: 'sendFeishuCard', webhook: hook, card: testCard }, (res) => {
+      const payload = isUser
+        ? { action: 'sendFeishuCard', receiver, card: testCard }
+        : { action: 'sendFeishuCard', webhook: hook, card: testCard };
+      chrome.runtime.sendMessage(payload, (res) => {
         testBtn.disabled = false;
         testBtn.textContent = '📨 测试';
         if (res && res.ok) {
@@ -2167,6 +2218,15 @@ function renderFeishuTargetsList() {
   });
 }
 
+/** 目标必填项是否缺失：群目标缺 Webhook / 个人目标缺接收账号（缺失时本轮明确不推送） */
+function isFeishuTargetIncomplete(targetId) {
+  const target = (Array.isArray(feishuTargetsList) ? feishuTargetsList : []).find((t) => t && t.id === targetId);
+  if (!target) return false;
+  const norm = MokaFeishu.normalizeFeishuTarget(target);
+  if (!norm) return false;
+  return norm.type === 'user' ? !norm.receiver : !norm.webhook;
+}
+
 function updateJobFeishuTargetSelect(jobName) {
   const select = document.getElementById('feishu-job-target-select');
   const hint = document.getElementById('feishu-job-target-hint');
@@ -2180,19 +2240,39 @@ function updateJobFeishuTargetSelect(jobName) {
   p2pOpt.textContent = '🤖 飞书自建应用 (私聊直推本人 · 推荐)';
   select.appendChild(p2pOpt);
 
-  // 2. 常用多群目标库 (Webhook)
+  // 2. 目标库：群 Webhook 与个人接收人分组列出
   const targets = Array.isArray(feishuTargetsList) ? feishuTargetsList : [];
-  if (targets.length) {
+  const groupTargets = targets.filter((t) => {
+    const norm = MokaFeishu.normalizeFeishuTarget(t);
+    return norm && norm.type === 'webhook';
+  });
+  const userTargets = targets.filter((t) => {
+    const norm = MokaFeishu.normalizeFeishuTarget(t);
+    return norm && norm.type === 'user';
+  });
+  if (groupTargets.length) {
     const groupEl = document.createElement('optgroup');
-    groupEl.label = '群聊 Webhook 目标库';
-    targets.forEach((t) => {
+    groupEl.label = '群聊 Webhook 目标';
+    groupTargets.forEach((t) => {
       const opt = document.createElement('option');
       opt.value = t.id;
       opt.textContent = t.name || '未命名目标';
       groupEl.appendChild(opt);
     });
     select.appendChild(groupEl);
-  } else {
+  }
+  if (userTargets.length) {
+    const userEl = document.createElement('optgroup');
+    userEl.label = '个人接收人目标';
+    userTargets.forEach((t) => {
+      const opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = t.name || '未命名目标';
+      userEl.appendChild(opt);
+    });
+    select.appendChild(userEl);
+  }
+  if (!targets.length) {
     const defaultWebhook = String(document.getElementById('feishu-webhook')?.value || '').trim();
     if (defaultWebhook) {
       const opt = document.createElement('option');
@@ -2220,11 +2300,29 @@ function updateJobFeishuTargetSelect(jobName) {
     if (rememberedId && Array.from(select.options).some((o) => o.value === rememberedId)) {
       select.value = rememberedId;
       const matchedOpt = select.options[select.selectedIndex];
-      if (hint) hint.textContent = `✨ 已按本职位精确记忆：${matchedOpt ? matchedOpt.textContent : ''}`;
+      if (isFeishuTargetIncomplete(rememberedId)) {
+        if (hint) hint.textContent = `⚠️ 本职位记忆的目标「${matchedOpt ? matchedOpt.textContent : ''}」必填项未填写，本轮不会推送`;
+      } else if (hint) {
+        hint.textContent = `✨ 已按本职位精确记忆：${matchedOpt ? matchedOpt.textContent : ''}`;
+      }
     } else {
       // 默认选中推荐的自建应用私聊直推
       select.value = 'p2p_app';
-      if (hint) hint.textContent = '💡 当前职位默认：私聊直推本人';
+      if (hint) {
+        const appId = String(document.getElementById('feishu-app-id')?.value || '').trim();
+        const appSecret = String(document.getElementById('feishu-app-secret')?.value || '').trim();
+        const receiver = String(document.getElementById('feishu-receiver')?.value || '').trim();
+        if (!appId || !appSecret) {
+          const fallbackHook = String(document.getElementById('feishu-webhook')?.value || '').trim();
+          hint.textContent = fallbackHook
+            ? '💡 当前职位默认：私聊直推本人（未配置自建应用，将走备用 Webhook）'
+            : '⚠️ 当前职位默认：私聊直推本人，但未配置自建应用凭据，本轮不会推送';
+        } else if (!receiver) {
+          hint.textContent = '⚠️ 已配置自建应用但未填写默认个人接收人，本轮不会推送';
+        } else {
+          hint.textContent = '💡 当前职位默认：私聊直推本人';
+        }
+      }
     }
   });
 }
@@ -2244,7 +2342,9 @@ function bindJobFeishuTargetEvents() {
       chrome.storage.local.set({ [JOB_FEISHU_TARGET_MAP_KEY]: map }, () => {
         const matchedOpt = select.options[select.selectedIndex];
         if (hint) {
-          hint.textContent = `✨ 已为本职位记住推送目标：${matchedOpt ? matchedOpt.textContent : ''}`;
+          hint.textContent = isFeishuTargetIncomplete(targetId)
+            ? `⚠️ 目标「${matchedOpt ? matchedOpt.textContent : ''}」必填项未填写，本轮不会推送`
+            : `✨ 已为本职位记住推送目标：${matchedOpt ? matchedOpt.textContent : ''}`;
         }
       });
     });
@@ -2845,17 +2945,18 @@ function hideResumeBanner() {
 
 function showScreeningCompleteToast(payload) {
   const msg = (payload && payload.message) || '筛选完成';
-  setResultHint(msg, { tone: 'ok' });
+  const isWarn = (payload && payload.tone) === 'warn';
+  setResultHint(msg, { tone: isWarn ? 'warn' : 'ok' });
   const banner = document.getElementById('result-banner');
   if (banner) {
     banner.classList.add('show');
     banner.textContent = '';
     const ok = document.createElement('div');
-    ok.className = 'mp-banner-ok';
-    ok.textContent = '✓ ' + msg;
+    ok.className = isWarn ? 'mp-banner-warn' : 'mp-banner-ok';
+    ok.textContent = (isWarn ? '⚠️ ' : '✓ ') + msg;
     banner.appendChild(ok);
     setTimeout(() => {
-      if (banner.querySelector('.mp-banner-ok')) {
+      if (banner.querySelector('.mp-banner-ok') || banner.querySelector('.mp-banner-warn')) {
         banner.classList.remove('show');
         banner.textContent = '';
       }

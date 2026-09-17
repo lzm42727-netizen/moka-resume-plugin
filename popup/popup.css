@@ -232,6 +232,11 @@ body {
   font-weight: 600;
 }
 
+.mp-banner .mp-banner-warn {
+  color: #d46b08;
+  font-weight: 600;
+}
+
 .mp-result-head {
   padding: 10px 14px 8px;
   border-bottom: 1px solid #f0f0f0;
@@ -2921,6 +2926,46 @@ select:focus {
   border: 1px solid #e2e8f0;
   border-radius: 4px;
   padding: 4px 6px;
+}
+
+.feishu-target-type-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.feishu-target-type-select {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: #334155;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  padding: 4px 4px;
+  cursor: pointer;
+}
+
+.feishu-target-receiver-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 10.5px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: #334155;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+
+.feishu-target-receiver-input:focus {
+  background: #ffffff;
+  border-color: #2563eb;
+  outline: none;
+}
+
+.feishu-target-webhook-input.hidden,
+.feishu-target-receiver-input.hidden {
+  display: none;
 }
 
 .feishu-target-webhook-input:focus {

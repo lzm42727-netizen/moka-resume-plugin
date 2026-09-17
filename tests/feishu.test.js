@@ -269,6 +269,48 @@ describe('Feishu 推送目标解析器 (resolveFeishuTarget)', () => {
     assert.equal(res.enabled, false);
   });
 
+  it('v2.1.0 目标库支持个人接收人类型：type=user 走个人账号', () => {
+    const targets = [
+      { id: 't_group', name: '📱 商业化业务群', type: 'webhook', webhook: 'https://open.feishu.cn/hook/g', receiver: '' },
+      { id: 't_user', name: '👤 用人部门负责人', type: 'user', webhook: '', receiver: 'lead@meitu.com' }
+    ];
+    const res = Feishu.resolveFeishuTarget('t_user', targets, defaultHook);
+    assert.equal(res.enabled, true);
+    assert.equal(res.type, 'user');
+    assert.equal(res.receiver, 'lead@meitu.com');
+    assert.equal(res.webhook, null);
+    assert.equal(res.reason, 'ok');
+
+    const groupRes = Feishu.resolveFeishuTarget('t_group', targets, defaultHook);
+    assert.equal(groupRes.type, 'webhook');
+    assert.equal(groupRes.webhook, 'https://open.feishu.cn/hook/g');
+  });
+
+  it('v2.1.0 目标必填项为空时明确报 target_incomplete，绝不静默改道默认 Webhook', () => {
+    const incompleteGroup = [{ id: 't_empty_group', name: '待填群', type: 'webhook', webhook: '', receiver: '' }];
+    const g = Feishu.resolveFeishuTarget('t_empty_group', incompleteGroup, defaultHook);
+    assert.equal(g.enabled, false);
+    assert.equal(g.reason, 'target_incomplete');
+    assert.equal(g.webhook, null, '不得回退到默认 Webhook');
+
+    const incompleteUser = [{ id: 't_empty_user', name: '待填个人', type: 'user', webhook: '', receiver: '' }];
+    const u = Feishu.resolveFeishuTarget('t_empty_user', incompleteUser, defaultHook);
+    assert.equal(u.enabled, false);
+    assert.equal(u.reason, 'target_incomplete');
+    assert.equal(u.type, 'user');
+  });
+
+  it('normalizeFeishuTarget 兼容旧数据（只有 webhook 字段）并推断类型', () => {
+    const legacy = Feishu.normalizeFeishuTarget({ id: 't1', name: '旧目标', webhook: 'https://open.feishu.cn/hook/old' });
+    assert.equal(legacy.type, 'webhook');
+    assert.equal(legacy.receiver, '');
+    // 只有 receiver（手填个人账号）时推断为个人类型
+    const userLike = Feishu.normalizeFeishuTarget({ id: 't2', name: '个人', receiver: 'a@meitu.com' });
+    assert.equal(userLike.type, 'user');
+    assert.equal(Feishu.normalizeFeishuTarget(null), null);
+    assert.equal(Feishu.normalizeFeishuTarget('bad'), null);
+  });
+
   it('汇总卡片包含目标名称展示，方便接收者确认归属群', () => {
     const cardWithTarget = Feishu.buildScreeningSummaryCard({
       jobTitle: '商业化广告产品经理',
