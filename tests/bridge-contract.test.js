@@ -130,6 +130,16 @@ describe('飞书 Bridge 加固契约（2.0.1）', () => {
     assert.doesNotMatch(feishuLib, /备用：新页面执行/, '备用按钮不得回潮');
   });
 
+  it('v3.0.4 飞书批量推进成功后必须联动面板记入「已决策」，不能留在待处理', () => {
+    const content = source('content.js');
+    assert.match(content, /action: 'feishuBatchRecommended'/, 'content 成功后通知面板');
+    assert.match(content, /appIds,\s*\n\s*names/, '消息携带推进的候选人 id 与姓名');
+    const popup = source('popup/popup.js');
+    assert.match(popup, /request\.action === 'feishuBatchRecommended'/, '面板监听该消息');
+    assert.match(popup, /saveCandidateFeedback\(v\.id, 'recommend', v, \{ mokaSynced: true, syncFailed: false \}\)/, '与面板批量推进同款标记口径');
+    assert.match(popup, /renderResults\(\);/, '标记后重渲染列表');
+  });
+
   it('v3.0.0 单链路推送：只发绑定的机器人私聊，目标库/Webhook 分流已删且不得回潮', () => {
     const bg = source('background.js');
     assert.match(bg, /async function dispatchFeishuCard\(/, '集中单链路发送');

@@ -3731,6 +3731,15 @@ async function handleFeishuRecommend(minScore, namePattern) {
 
   publishResults('🤖 飞书指令：已成功推荐 ' + names.length + ' 位候选人', undefined, { flush: true });
 
+  // 面板联动：成功的候选人批量记入「已决策」存档（与面板批量推进同款处理），
+  // 否则 Moka 里已进用人部门筛选、插件列表还挂在「待处理」（v3.0.4）
+  chrome.runtime.sendMessage({
+    action: 'feishuBatchRecommended',
+    appIds,
+    names,
+    verdict: 'recommend'
+  }).catch(() => { /* 侧栏未打开时无接收方，忽略 */ });
+
   return {
     ok: true,
     count: names.length,

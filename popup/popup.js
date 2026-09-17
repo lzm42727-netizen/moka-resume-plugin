@@ -2582,6 +2582,20 @@ chrome.runtime.onMessage.addListener((request) => {
     appendPluginLogEntry(request.entry, request.replaceTail === true);
   } else if (request.action === 'mokaActionComplete') {
     refreshResultsAndJobContext();
+  } else if (request.action === 'feishuBatchRecommended') {
+    // 飞书卡片触发的批量推进成功 → 与面板批量推进同款：批量记入「已决策」存档，
+    // 自动从「待处理 / 推荐」移出（v3.0.4）。页面刷新后快照恢复时 feedbackRecord 会重新合并，状态不丢
+    const ids = Array.isArray(request.appIds) ? request.appIds : [];
+    let marked = 0;
+    ids.forEach((id) => {
+      const v = findResultView(id);
+      if (!v) return;
+      if (saveCandidateFeedback(v.id, 'recommend', v, { mokaSynced: true, syncFailed: false })) marked++;
+    });
+    if (marked) {
+      renderResults();
+      setResultHint(`🤖 飞书指令：${marked} 位候选人已推进并移入「已决策」`, { tone: 'ok' });
+    }
   } else if (request.action === 'mokaContentReady') {
     if (!resultState.screening && !isMokaActionLocked()) scheduleMokaRefresh();
     pollScreeningJobOffer();
