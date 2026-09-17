@@ -713,3 +713,17 @@ describe('v3.0.0 飞书协同极简化：单链路发绑定的机器人', () => 
   });
 });
 
+describe('v3.0.2 「立即连接」探测失败必须给出可见指引', () => {
+  it('探测失败展开的折叠区 id 必须真实存在（v3.0.2 修复 bridge-guide-details 幽灵 id）', () => {
+    assert.match(js, /getElementById\('bridge-advanced-details'\)/, '失败时展开的必须是 HTML 里真实存在的 id');
+    assert.doesNotMatch(js, /bridge-guide-details/, '旧幽灵 id 不得回潮');
+  });
+
+  it('探测失败后状态行给出「未启动 + 启动方法」指引且按钮可再试', () => {
+    assert.match(js, /bridgeGuidanceUntil/, '指引窗口期标记存在');
+    assert.match(js, /本地服务未启动：请先双击项目里的「启动飞书机器人\.command」/, '失败指引写明启动方法');
+    assert.match(js, /handleProbeFailure/, '探测失败走统一处理');
+    assert.match(js, /未启动 \(再试\)/, '按钮提示可再试');
+  });
+});
+

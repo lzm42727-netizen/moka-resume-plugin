@@ -1752,6 +1752,8 @@ async function loadSettings() {
 let feishuBridgePollingTimer = null;
 let isOperatingFeishuBridge = false;
 let isBridgeCurrentlyConnected = false;
+// 探测失败后的指引窗口：期内状态行显示「未启动 + 怎么办」而不是干巴巴的未运行（v3.0.2）
+let bridgeGuidanceUntil = 0;
 
 function updateFeishuBridgeStatus(callback) {
   const statusEl = document.getElementById('feishu-bridge-status');
@@ -1772,11 +1774,15 @@ function updateFeishuBridgeStatus(callback) {
       }
     } else {
       if (!isOperatingFeishuBridge) {
-        statusEl.textContent = '⚪ 本地服务未运行';
-        statusEl.style.color = '#64748b';
+        // 探测失败后的指引窗口期内给出明确的「为什么 + 怎么办」，避免看起来像点了没反应
+        const guidanceActive = Date.now() < bridgeGuidanceUntil;
+        statusEl.textContent = guidanceActive
+          ? '⚠️ 本地服务未启动：请先双击项目里的「启动飞书机器人.command」'
+          : '⚪ 本地服务未运行';
+        statusEl.style.color = guidanceActive ? '#d97706' : '#64748b';
         barEl?.classList.remove('is-connected');
         if (actionBtn) {
-          actionBtn.textContent = '🔄 立即连接';
+          actionBtn.textContent = guidanceActive ? '未启动 (再试)' : '🔄 立即连接';
           actionBtn.title = '点击尝试连接本地 18888 端口';
           actionBtn.classList.remove('btn-action-disconnect');
           actionBtn.disabled = false;
@@ -1799,7 +1805,8 @@ function startFeishuBridgePolling() {
 safeEl('reconnect-feishu-bridge')?.addEventListener('click', () => {
   const btn = document.getElementById('reconnect-feishu-bridge');
   const statusEl = document.getElementById('feishu-bridge-status');
-  const detailsEl = document.getElementById('bridge-guide-details');
+  // 注意 id 必须与 popup.html 一致（bridge-advanced-details）；v3.0.2 前此处 id 写错导致指引永远不展开
+  const detailsEl = document.getElementById('bridge-advanced-details');
 
   if (isOperatingFeishuBridge) return;
   isOperatingFeishuBridge = true;
@@ -1829,43 +1836,38 @@ safeEl('reconnect-feishu-bridge')?.addEventListener('click', () => {
     statusEl.style.color = '#f59e0b';
   }
 
+  // 探测失败：状态行给明确指引并展开「本地服务与常见说明」折叠区
+  const handleProbeFailure = () => {
+    bridgeGuidanceUntil = Date.now() + 8000;
+    updateFeishuBridgeStatus((connected) => {
+      if (!connected) {
+        if (detailsEl) detailsEl.open = true;
+        if (btn) {
+          btn.textContent = '未启动 (再试)';
+          setTimeout(() => {
+            if (btn && btn.textContent === '未启动 (再试)') {
+              btn.textContent = '🔄 立即连接';
+            }
+          }, 3000);
+        }
+      }
+    });
+  };
+
   // 1.2 秒硬性超时兜底
   const timeoutGuard = setTimeout(() => {
     if (isOperatingFeishuBridge) {
       isOperatingFeishuBridge = false;
-      updateFeishuBridgeStatus((connected) => {
-        if (!connected) {
-          if (detailsEl) detailsEl.open = true;
-          if (btn) {
-            btn.textContent = '未启动 (再试)';
-            setTimeout(() => {
-              if (btn && btn.textContent === '未启动 (再试)') {
-                btn.textContent = '🔄 立即连接';
-              }
-            }, 2000);
-          }
-        }
-      });
+      handleProbeFailure();
     }
   }, 1200);
 
   chrome.runtime.sendMessage({ action: 'reconnectFeishuBridge' }, () => {
     clearTimeout(timeoutGuard);
     setTimeout(() => {
+      if (!isOperatingFeishuBridge) return;
       isOperatingFeishuBridge = false;
-      updateFeishuBridgeStatus((connected) => {
-        if (!connected) {
-          if (detailsEl) detailsEl.open = true;
-          if (btn) {
-            btn.textContent = '未启动 (再试)';
-            setTimeout(() => {
-              if (btn && btn.textContent === '未启动 (再试)') {
-                btn.textContent = '🔄 立即连接';
-              }
-            }, 2000);
-          }
-        }
-      });
+      handleProbeFailure();
     }, 400);
   });
 });
