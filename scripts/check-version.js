@@ -33,6 +33,14 @@ function htmlBadgesMissing(version) {
   });
 }
 
+// README「当前版本要点」标题漂移实锤（v3.2.2 时仍停在 v3.1.0）：
+// 此前门禁只管 CHANGELOG 与两份 HTML 徽标，README 是最后一个漏网点
+function readmeHighlightsVersion() {
+  const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+  const m = /当前版本要点（v([0-9.]+)）/.exec(readme);
+  return m ? m[1] : '';
+}
+
 function main() {
   const version = readManifestVersion();
   if (!version) {
@@ -53,9 +61,14 @@ function main() {
     process.stderr.write('以下页面没有 v' + version + ' 版本徽标（徽标须随 manifest 同更）：' + missing.join('、') + '\n');
     process.exit(1);
   }
+  const readmeVer = readmeHighlightsVersion();
+  if (readmeVer !== version) {
+    process.stderr.write('README「当前版本要点」（' + (readmeVer || '无') + '）与 manifest 版本（' + version + '）不一致——请同步「当前版本要点」标题\n');
+    process.exit(1);
+  }
   process.stdout.write('check:version ok (' + version + ')\n');
 }
 
 if (require.main === module) main();
 
-module.exports = { readManifestVersion, changelogHasVersion, changelogTopVersion, htmlBadgesMissing };
+module.exports = { readManifestVersion, changelogHasVersion, changelogTopVersion, htmlBadgesMissing, readmeHighlightsVersion };
