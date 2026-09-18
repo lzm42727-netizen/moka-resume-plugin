@@ -17,7 +17,8 @@
     "bridge": "node feishu-bridge/server.js",
     "bridge:bg": "./启动飞书机器人.command",
     "bridge:stop": "./停止飞书机器人.command",
-    "check": "npm run syntax:check && npm run check:version && npm run lint && npm test"
+    "check": "npm run syntax:check && npm run check:version && npm run lint && npm test",
+    "release": "bash scripts/create-release.sh"
   },
   "devDependencies": {
     "@eslint/js": "^9.35.0",
