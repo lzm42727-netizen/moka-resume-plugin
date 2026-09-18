@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Moka 筛选插件 · 健康检查</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --bg-panel: #ffffff;
+      --border: #e5e7eb;
+      --text-primary: #1f2937;
+      --text-secondary: #6b7280;
+      --ok: #16a34a;
+      --ok-bg: #f0fdf4;
+      --warn: #d97706;
+      --warn-bg: #fffbeb;
+      --bad: #dc2626;
+      --bad-bg: #fef2f2;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text-primary);
+      font: 13px/1.6 -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 24px 16px 48px;
+    }
+    h1 { font-size: 18px; margin-bottom: 4px; }
+    .meta { color: var(--text-secondary); font-size: 12px; margin-bottom: 20px; }
+    .toolbar { display: flex; gap: 8px; margin-bottom: 16px; }
+    .toolbar button {
+      border: 1px solid var(--border);
+      background: var(--bg-panel);
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 12px;
+      cursor: pointer;
+      color: var(--text-primary);
+    }
+    .toolbar button:hover { border-color: #c7cad1; }
+    .check-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-left-width: 4px;
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin-bottom: 10px;
+    }
+    .check-card.is-ok { border-left-color: var(--ok); background: var(--ok-bg); }
+    .check-card.is-warn { border-left-color: var(--warn); background: var(--warn-bg); }
+    .check-card.is-bad { border-left-color: var(--bad); background: var(--bad-bg); }
+    .check-title { font-weight: 600; font-size: 13px; }
+    .check-title .badge {
+      display: inline-block;
+      margin-left: 8px;
+      font-size: 11px;
+      font-weight: 500;
+      padding: 1px 8px;
+      border-radius: 999px;
+      color: #fff;
+    }
+    .is-ok .badge { background: var(--ok); }
+    .is-warn .badge { background: var(--warn); }
+    .is-bad .badge { background: var(--bad); }
+    .check-body { color: var(--text-secondary); font-size: 12px; margin-top: 4px; white-space: pre-line; }
+    .pending { opacity: 0.6; }
+  </style>
+</head>
+<body>
+  <h1>🩺 健康检查</h1>
+  <div class="meta">扩展版本 <span id="ext-version">…</span> · 检查时间 <span id="checked-at">…</span></div>
+  <div class="toolbar">
+    <button id="rerun" type="button">🔄 重新检查</button>
+  </div>
+  <div id="results"></div>
+
+  <script src="../config.local.js"></script>
+  <script src="health.js"></script>
+</body>
+</html>

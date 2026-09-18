@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.4.0 - 2026-09-18
+
+- **popup.js 结构拆分（第 3 批结构性）**：4741 行拆为三个功能域模块——`popup-results.js`（结果页渲染/反馈/导出，~1100 行）、`popup-batch.js`（批量推进/简历推荐对象面板/重评豁免，~650 行）、主体保留配置与设置（~3100 行）；经典脚本按序加载、运行期互调，函数名零改动，对外行为不变
+- **DOM 适配层落位**：弹窗芯片刮取全链路（标签邻域两遍扫描、全页兜底、拼接串归一、采信门）从 content.js 移入 `lib/moka-dom-adapter.js`（UMD，与 moka-actions 同款双端模式）——content 只留委托，Node 可直接跑行为测试
+- **E2E 冒烟链**：新增 `tests/e2e-smoke.test.js` 八环行为链（最小 DOM stub → 刮取 → 采信门 → 模板合成 → 重放体 → 响应判定 → 飞书回执卡片），开始扭转「正则锚多、行为测试少」的测试结构失衡
+- **健康检查页**：新增 `popup/health.html`（标签栏「🩺 健康检查」入口）——评分模型配置 / 部署态 / 本地 Bridge / 飞书凭据 / Moka 页面连接 / 本地存储六项体检，红黄绿分级卡片 + 每项「怎么办」指引，只读诊断不改设置
+- 测试 548 → 559；打包清单、lint 覆盖、eslint 跨模块全局登记同步更新
+
 ## 3.3.1 - 2026-09-18
 
 - **Bridge 可测化**：`server.js` 启动收进 `startBridge()` + `require.main` 门卫——被测试/工具脚本 require 时不再自动监听端口、连飞书、抢 stdin；死链探测定时器收进 `startDeadLinkProbe()`（require 不挂住事件循环）；导出 `config`/`createWsServer`/`sendToPlugin` 等供复用

@@ -82,6 +82,7 @@ describe('content.js 顶层加载', () => {
     require('../lib/screening-job.js');
     require('../lib/usage.js');
     require('../lib/moka-actions.js');
+    require('../lib/moka-dom-adapter.js');
     require('../lib/match.js');
     require('../lib/candidate-profile.js');
     require('../lib/contracts.js');

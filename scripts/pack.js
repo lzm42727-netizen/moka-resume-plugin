@@ -14,6 +14,10 @@ const REQUIRED = [
   'inject.js',
   'popup/popup.html',
   'popup/popup.js',
+  'popup/popup-results.js',
+  'popup/popup-batch.js',
+  'popup/health.html',
+  'popup/health.js',
   'popup/popup.css',
   'icons/icon48.png',
   'icons/icon128.png'

@@ -372,15 +372,10 @@ function assigneeIdNames() {
 // 弹窗芯片刮到的人名集合（顺序与 id 无对应关系，仅作整组展示）
 let lastAssigneeNames = [];
 
-/** 弹窗刮到的名字 → 可采信的姓名集合：去重清洗后数量必须与分配 id 数一致 */
+/** 弹窗刮到的名字 → 可采信的姓名集合：去重清洗后数量必须与分配 id 数一致
+ *  （v3.4.0 实现移入 lib/moka-dom-adapter.js，content 只留委托） */
 function validAssigneeNames(scraped, count) {
-  if (!Array.isArray(scraped) || !count) return [];
-  const clean = [];
-  (scraped || []).forEach((n) => {
-    const t = String(n || '').trim();
-    if (t && t.length <= 12 && clean.indexOf(t) === -1) clean.push(t);
-  });
-  return clean.length === count ? clean : [];
+  return MokaDomAdapter.validAssigneeNames(scraped, count);
 }
 
 /** 展示用姓名：id→姓名 能凑齐优先（逐人精确）；凑不齐但弹窗刮到了整组名字则用整组 */
@@ -436,131 +431,19 @@ function storeRecommendNames(payload) {
 
 /** 单元素是否像「人名芯片」：名字纯文本形态（× 是图标）时，需芯片本身/
  *  紧邻兄弟带关闭图标类名，或芯片类名像 tag/chip 组件。防止把「确定」误当姓名。 */
-function chipLikeNameElement(el) {
-  try {
-    const CLOSE_HINT_RE = /close|cross|del|remove|clear|closable/i;
-    const CHIP_HINT_RE = /tag|chip|closable|selected[-_]?item|member[-_]?item|assign/i;
-    const classOf = (node) => {
-      try { return String((node && node.getAttribute && node.getAttribute('class')) || ''); }
-      catch (e) { return ''; }
-    };
-    const sib = el && el.nextElementSibling;
-    if (CLOSE_HINT_RE.test(classOf(el)) || CLOSE_HINT_RE.test(classOf(sib))) return true;
-    if (el.querySelector('[class*="close"],[class*="cross"],[class*="del"],[class*="remove"],[class*="clear"]')) return true;
-    return CHIP_HINT_RE.test(classOf(el));
-  } catch (e) {
-    return false;
-  }
-}
-
-/** 从元素收集芯片姓名（文本 × 形态 + 纯名字+图标佐证形态），返回去重数组 */
-function collectChipNamesFrom(el, out, seen) {
-  try {
-    const t = String(el.textContent || '').trim();
-    let m = t.match(/^([\u4e00-\u9fa5A-Za-z0-9·]{1,12})\s*[×✕⨯✖xX]$/); // 形态一：文本 ×
-    if (!m) {
-      m = t.match(/^([\u4e00-\u9fa5A-Za-z0-9·]{1,12})$/);               // 形态二：× 是图标
-      if (m && !chipLikeNameElement(el)) m = null;
-    }
-    if (m && !seen[m[1]]) {
-      seen[m[1]] = 1;
-      out.push(m[1]);
-      return true;
-    }
-    return false;
-  } catch (e) {
-    return false;
-  }
-}
-
-const CHIP_LABEL_SET = ['推荐到', '分配给', '分配对象'];
-
-/** 找「推荐到/分配给/分配对象」标签元素（最多 4 个） */
-function findChipLabels() {
-  const labels = [];
-  try {
-    document.querySelectorAll('span,div,label,p,dt').forEach((el) => {
-      if (labels.length >= 4) return;
-      const t = String(el.textContent || '').trim().replace(/^\*/, '').replace(/[:：]\s*$/, '');
-      if (CHIP_LABEL_SET.indexOf(t) !== -1) labels.push(el);
-    });
-  } catch (e) { /* ignore */ }
-  return labels;
-}
-
-/** 第一遍：从标签向上 6 层找芯片层（推荐弹窗内）。返回 { labels, names } */
-function chipNamesByLabelWalk() {
-  const labels = findChipLabels();
-  const out = [];
-  const seen = {};
-  labels.forEach((lb) => {
-    let node = lb;
-    for (let i = 0; i < 6 && node && node !== document.body; i++) {
-      node = node.parentElement;
-      if (!node) break;
-      node.querySelectorAll('span,div,li,em,p').forEach((el) => {
-        if (labels.indexOf(el) !== -1 || el.children.length > 3) return;
-        collectChipNamesFrom(el, out, seen);
-      });
-      if (out.length) break; // 找到芯片层就停，防止收进弹窗外别的 × 芯片
-    }
-  });
-  return { labels: labels.length, names: out };
-}
-
-/** 第二遍：全页兜底扫「文本 ×」与「名字+关闭图标」芯片（标签结构不同时用），
- *  数量由 merge 侧按本岗分配 id 数校验，多收无害（会整组拒掉）。上限 30 防误伤。 */
-function chipNamesPageWide() {
-  const out = [];
-  const seen = {};
-  try {
-    const all = document.querySelectorAll('span,div,li,em,p');
-    for (let i = 0; i < all.length && out.length < 30; i++) {
-      const el = all[i];
-      if (!el.children || el.children.length > 3) continue;
-      collectChipNamesFrom(el, out, seen);
-    }
-  } catch (e) { /* ignore */ }
-  return out;
-}
-
-/** 实时刮取当前打开的「推荐给用人部门」弹窗芯片姓名。content 与页面共享 DOM，
- *  弹窗开着时配置页点「重新读取」即可直接带出名字，不必等点确认发请求那一刻。
- *  逻辑与 inject.js 的 scrapeRecommendChipNames 保持一致思路（两处需同步维护）。
- *  返回 { labels, anchored, pageWide } —— anchored 第一遍标签邻域，pageWide 全页兜底。 */
+// ---- v3.4.0：芯片刮取实现移入 lib/moka-dom-adapter.js，这里只留委托 ----
 function scrapeRecommendChipNamesFromDom() {
-  const anchored = chipNamesByLabelWalk();
-  const pageWide = chipNamesPageWide();
-  // v3.1.0：在刮取出口就去掉拼接串——标签邻域会把「推荐到」芯片的容器整串收进来
-  // （如「陈晓庆万树吴彦霖李琼」），下游所有消费方（数量门采信、与已记录比对、面板展示）
-  // 都会被它污染：名字多一个、人数对不上，显示永远不一致。出口归一，一处解决。
-  return {
-    labels: anchored.labels,
-    anchored: dedupeSeenChipNames(anchored.names),
-    pageWide: dedupeSeenChipNames(pageWide)
-  };
+  return MokaDomAdapter.scrapeRecommendChipNamesFromDom(document);
 }
 
-/** 两路刮取结果的采信顺序：先标签邻域（anchored），凑不齐再用全页兜底（pageWide），
- *  数量必须与分配 id 数一致才采信 */
 function pickValidAssigneeNames(anchored, pageWide, count) {
-  const first = validAssigneeNames(anchored, count);
-  if (first.length) return first;
-  return validAssigneeNames(pageWide, count);
+  return MokaDomAdapter.pickValidAssigneeNames(anchored, pageWide, count);
 }
 
-/** 刮取结果归一（v3.1.0）：① 精确重复；② 拼接串——标签邻域会把「推荐到」芯片的
- *  容器整串收进来（如「陈晓庆万树吴彦霖李琼」），它包含其它真实姓名，会让
- *  人数虚高、「弹窗当前 vs 已记录」永远比对不一致、面板上还把 4 个人显示成一坨。
- *  长度 ≥6 且包含其它已见姓名的判为拼接串丢弃（中文姓名 2~3 字，不会误伤） */
-function dedupeSeenChipNames(list) {
-  const arr = [];
-  (Array.isArray(list) ? list : []).forEach((n) => {
-    const s = String(n || '').trim();
-    if (s && arr.indexOf(s) === -1) arr.push(s);
-  });
-  return arr.filter((x) => !(x.length >= 6 && arr.some((y) => y !== x && x.indexOf(y) !== -1)));
+function chipNamesByLabelWalk() {
+  return MokaDomAdapter.chipNamesByLabelWalk(document);
 }
+
 
 /** 单人分配时姓名↔id 可唯一对应，把绑定种进成员映射，供后续「采纳姓名」反查 */
 function bindSingleAssigneeName(ids, names) {

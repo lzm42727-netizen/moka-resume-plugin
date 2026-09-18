@@ -5,7 +5,12 @@ const path = require('node:path');
 const { ACTIONS, ok, fail, isKnownAction, unknownActionResponse } = require('../lib/contracts.js');
 
 function source(rel) {
-  return fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+  // v3.4.0 拆分后按「原 popup.js 线性顺序」拼接，保住跨窗口的 \s\S 锚点语义
+  const bundles = {
+    'popup/popup.js': ['popup/popup.js', 'popup/popup-results.js', 'popup/popup-batch.js']
+  };
+  const files = bundles[rel] || [rel];
+  return files.map((f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8')).join('\n');
 }
 
 describe('message contracts', () => {

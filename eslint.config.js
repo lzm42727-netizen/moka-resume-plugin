@@ -12,6 +12,7 @@ const sharedGlobals = {
   MokaFeedback: 'readonly',
   MokaScreeningJob: 'readonly',
   MokaActions: 'readonly',
+  MokaDomAdapter: 'readonly',
   MokaMatch: 'readonly',
   MokaCalibrate: 'readonly',
   MokaContracts: 'readonly',
@@ -20,7 +21,8 @@ const sharedGlobals = {
   MokaCandidateProfile: 'readonly',
   MokaResultSession: 'readonly',
   MokaScreeningRunner: 'readonly',
-  MokaFeishu: 'readonly'
+  MokaFeishu: 'readonly',
+  LOCAL_DEFAULTS: 'readonly'
 };
 
 // lib/*.js 在 content 的 ISOLATED world / SW 里按加载顺序互相暴露的命名空间。
@@ -33,6 +35,7 @@ const mokaNamespaceGlobals = {
   MokaFeedback: 'readonly',
   MokaScreeningJob: 'readonly',
   MokaActions: 'readonly',
+  MokaDomAdapter: 'readonly',
   MokaMatch: 'readonly',
   MokaCalibrate: 'readonly',
   MokaContracts: 'readonly',
@@ -44,6 +47,52 @@ const mokaNamespaceGlobals = {
   MokaBatch: 'readonly',
   MokaPluginLog: 'readonly',
   MokaFeishu: 'readonly'
+};
+
+// popup 三文件（popup.js / popup-results.js / popup-batch.js）在页面里按经典脚本
+// 共享全局作用域，eslint 单文件分析看不见跨文件声明——这里显式登记 v3.4.0 拆分后
+// 的跨模块符号（新增/移动符号时同步维护）。
+const popupSharedGlobals = {
+  WEIGHT_KEYS: 'writable',
+  activePresetJobLabel: 'writable',
+  applySnapshot: 'writable',
+  arrivedScoreRows: 'writable',
+  batchSelected: 'writable',
+  bindResultFilters: 'writable',
+  buildFeedbackButtons: 'writable',
+  currentAssigneeConfirmedAt: 'writable',
+  currentJobId: 'writable',
+  currentJobLabel: 'writable',
+  effectiveJobId: 'writable',
+  feedbackRecord: 'writable',
+  findResultView: 'writable',
+  getMokaTab: 'writable',
+  isMokaActionLocked: 'writable',
+  isMokaTab: 'writable',
+  lastAdoptNote: 'writable',
+  lastKnownPageJobId: 'writable',
+  loadFeedbackFromStorage: 'writable',
+  markRescoreError: 'writable',
+  pullResults: 'writable',
+  refreshCalibrationButton: 'writable',
+  refreshResultsAndJobContext: 'writable',
+  reloadMokaTabSoon: 'writable',
+  renderAssigneeStatus: 'writable',
+  renderResults: 'writable',
+  requestMokaDecision: 'writable',
+  requestRescore: 'writable',
+  requestWaiveMustHave: 'writable',
+  resultState: 'writable',
+  safeEl: 'writable',
+  saveCandidateFeedback: 'writable',
+  sendToMoka: 'writable',
+  setPresetNote: 'writable',
+  setResultHint: 'writable',
+  setScreeningUi: 'writable',
+  startingScreen: 'writable',
+  syncActiveJobFromSnapshot: 'writable',
+  updateBatchButton: 'writable',
+  writeJobPresetRecord: 'writable'
 };
 
 // 入口脚本规则：no-undef 锁死「引用未声明标识符」（1.6.17 死调用即此类漏网）；
@@ -89,13 +138,18 @@ module.exports = [
     }
   },
   {
-    files: ['content.js', 'inject.js', 'popup/popup.js'],
+    files: ['content.js', 'inject.js', 'popup/popup.js', 'popup/popup-results.js', 'popup/popup-batch.js'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'script',
-      globals: entryPageEnv
+      globals: { ...entryPageEnv, ...popupSharedGlobals }
     },
-    rules: entryRules
+    rules: {
+      ...entryRules,
+      // 跨模块符号既登记在 popupSharedGlobals 又在某一文件里真实声明，no-redeclare 会误报；
+      // 误报只在「登记名单」与「真实声明」重叠处出现，关闭它不影响 no-undef 对名单外符号的锁死
+      'no-redeclare': 'off'
+    }
   },
   {
     files: ['background.js'],

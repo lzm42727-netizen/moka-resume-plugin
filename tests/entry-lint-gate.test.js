@@ -4,11 +4,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 function source(rel) {
-  return fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+  // v3.4.0 拆分后按「原 popup.js 线性顺序」拼接，保住跨窗口的 \s\S 锚点语义
+  const bundles = {
+    'popup/popup.js': ['popup/popup.js', 'popup/popup-results.js', 'popup/popup-batch.js']
+  };
+  const files = bundles[rel] || [rel];
+  return files.map((f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8')).join('\n');
 }
 
 describe('工程门禁：入口文件纳入 lint（P2-1，1.7.0）', () => {
-  const ENTRY_FILES = ['content.js', 'background.js', 'inject.js', 'popup/popup.js'];
+  const ENTRY_FILES = ['content.js', 'background.js', 'inject.js', 'popup/popup.js', 'popup/popup-results.js', 'popup/popup-batch.js'];
 
   it('package.json lint 覆盖四个入口文件', () => {
     const pkg = JSON.parse(source('package.json'));

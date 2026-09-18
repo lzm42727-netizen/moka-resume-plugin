@@ -14,7 +14,12 @@ const {
 } = require('../lib/batch.js');
 
 function source(rel) {
-  return fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+  // v3.4.0 拆分后按「原 popup.js 线性顺序」拼接，保住跨窗口的 \s\S 锚点语义
+  const bundles = {
+    'popup/popup.js': ['popup/popup.js', 'popup/popup-results.js', 'popup/popup-batch.js']
+  };
+  const files = bundles[rel] || [rel];
+  return files.map((f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8')).join('\n');
 }
 
 const css = source('popup/popup.css');
@@ -293,10 +298,14 @@ describe('batch wiring', () => {
     assert.match(content, /scrapeAssigneeNames/);
     assert.match(contracts, /scrapeAssigneeNames: 'scrapeAssigneeNames'/);
     // content：实时刮取两遍扫描（标签邻域优先 + 全页兜底），并带诊断快照回给配置页
+    // v3.4.0：刮取实现移入 lib/moka-dom-adapter.js（Node 可跑行为测试），content 只留委托
+    const domAdapter = source('lib/moka-dom-adapter.js');
     assert.match(content, /function chipNamesByLabelWalk/);
-    assert.match(content, /function chipNamesPageWide/);
-    assert.match(content, /function collectChipNamesFrom/);
+    assert.match(domAdapter, /function chipNamesByLabelWalk\(doc\)/);
+    assert.match(domAdapter, /function chipNamesPageWide\(doc\)/);
+    assert.match(domAdapter, /function collectChipNamesFrom\(el, out, seen\)/);
     assert.match(content, /function pickValidAssigneeNames/);
+    assert.match(domAdapter, /function pickValidAssigneeNames\(anchored, pageWide, count\)/);
     assert.match(content, /debug: \{[\s\S]{0,80}labels[\s\S]{0,80}anchored[\s\S]{0,80}pageWide/);
     // inject：请求时刻同样两遍扫描（anchored + pageWideNames），确认瞬间弹窗可能
     // 已在关闭，全页兜底保证姓名能跟上记录更新
@@ -432,9 +441,11 @@ describe('batch wiring', () => {
     assert.match(content, /const seenRaw = !popupOpen/);
     // v3.1.0 刮取出口归一：标签邻域会把「推荐到」芯片容器整串收进来（「陈晓庆万树吴彦霖李琼」），
     // 拼接串必须在出口去掉，否则人数虚高、面板把 4 个人显示成一坨、比对永远不一致
-    assert.match(content, /function dedupeSeenChipNames\(list\)/);
-    assert.match(content, /anchored: dedupeSeenChipNames\(anchored\.names\)/);
-    assert.match(content, /pageWide: dedupeSeenChipNames\(pageWide\)/);
+    // v3.4.0：dedupeSeenChipNames 实现移入 lib/moka-dom-adapter.js
+    if (!domAdapter) throw new Error('domAdapter 未加载');
+    assert.match(domAdapter, /function dedupeSeenChipNames\(list\)/);
+    assert.match(domAdapter, /anchored: dedupeSeenChipNames\(anchored\.names\)/);
+    assert.match(domAdapter, /pageWide: dedupeSeenChipNames\(pageWide\)/);
     // popup：弹窗没开时不倒诊断杂项，一句干净指引 + 强调「确认后关弹窗也不丢」
     assert.match(js, /function summarizeScrapeDebug\(debug\)/);
     assert.match(js, /推荐弹窗当前未打开，读不到页面上的姓名/);

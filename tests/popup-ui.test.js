@@ -4,7 +4,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const html = fs.readFileSync(path.join(__dirname, '../popup/popup.html'), 'utf8');
-const js = fs.readFileSync(path.join(__dirname, '../popup/popup.js'), 'utf8');
+// v3.4.0 拆分后按「原 popup.js 线性顺序」拼接，保住跨窗口的 \s\S 锚点语义
+const js = ['popup/popup.js', 'popup/popup-results.js', 'popup/popup-batch.js']
+  .map((rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8')).join('\n');
 const css = fs.readFileSync(path.join(__dirname, '../popup/popup.css'), 'utf8');
 
 describe('screening configuration UI', () => {
@@ -735,3 +737,34 @@ describe('v3.0.2 「立即连接」探测失败必须给出可见指引', () => 
   });
 });
 
+
+describe('健康检查页（v3.4.0）', () => {
+  const fs2 = fs;
+  const path2 = path;
+  const healthHtml = fs2.readFileSync(path2.join(__dirname, '../popup/health.html'), 'utf8');
+  const healthJs = fs2.readFileSync(path2.join(__dirname, '../popup/health.js'), 'utf8');
+  const packSrc = fs2.readFileSync(path2.join(__dirname, '../scripts/pack.js'), 'utf8');
+
+  it('popup 标签栏有健康检查入口，新标签打开 health.html', () => {
+    assert.match(html, /class="health-entry"/);
+    assert.match(html, /href="health\.html"/);
+  });
+
+  it('健康检查页覆盖六项检查且每项给「怎么办」级指引', () => {
+    assert.match(healthHtml, /健康检查/);
+    assert.match(healthHtml, /health\.js/);
+    // 六项检查函数齐全
+    for (const fn of ['checkModel', 'checkDeploy', 'checkBridge', 'checkFeishu', 'checkMokaTab', 'checkStorage']) {
+      assert.match(healthJs, new RegExp('function ' + fn + '\\('), fn + ' 存在');
+    }
+    // 检查结论带指引，不给裸报错
+    assert.match(healthJs, /怎么办：/);
+    // Bridge 状态复用后台既有消息
+    assert.match(healthJs, /getFeishuBridgeStatus/);
+  });
+
+  it('健康检查页纳入打包清单', () => {
+    assert.ok(packSrc.includes("'popup/health.html'"));
+    assert.ok(packSrc.includes("'popup/health.js'"));
+  });
+});

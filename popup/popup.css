@@ -2793,3 +2793,21 @@ select:focus {
 }
 
 
+
+/* 健康检查入口（v3.4.0）：标签栏右侧常驻小链接，新标签打开 health.html */
+.tabs .health-entry {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  border-left: 1px solid var(--border);
+  white-space: nowrap;
+}
+.tabs .health-entry:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
+}
