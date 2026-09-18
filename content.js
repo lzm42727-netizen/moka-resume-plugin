@@ -407,16 +407,31 @@ function storeRecommendNames(payload) {
   }
   bindSingleAssigneeName(ids, names);
   seedMemberNamesFromPairs(payload.pairs);
-  readAssignmentStore((captures) => {
-    const entry = captures[pipelineId];
-    if (entry && Array.isArray(entry.assigneeIds)
-      && entry.assigneeIds.join(',') === ids.join(',')) {
-      entry.assigneeNames = names;
-      try {
-        chrome.storage.local.set({ [ASSIGNMENT_CAPTURE_KEY]: { captures } });
-      } catch (e) { /* ignore */ }
-    }
-  });
+  // v3.3.0：入写队列串行（消除并发整包覆盖）+ 名章守卫——姓名只能写进
+  // 「名章与当前页面职位一致」的记录（与 mergeLiveScrapedAssigneeNames 同口径）
+  enqueueAssigneeStoreWrite(() => new Promise((resolve) => {
+    readAssignmentStore((captures) => {
+      const entry = captures[pipelineId];
+      const entryName = entry ? normalizeJobName(entry.jobName) : '';
+      const pageName = normalizeJobName(pageJobName());
+      const sameJob = !entryName || !pageName || jobNameMatches(entryName, pageName);
+      if (entry && sameJob && Array.isArray(entry.assigneeIds)
+        && entry.assigneeIds.join(',') === ids.join(',')) {
+        entry.assigneeNames = names;
+        try {
+          chrome.storage.local.set({ [ASSIGNMENT_CAPTURE_KEY]: { captures } }, () => {
+            if (chrome.runtime && chrome.runtime.lastError) {
+              pushPluginLog({ cat: 'warn', text: '推荐姓名落库失败：'
+                + ((chrome.runtime.lastError && chrome.runtime.lastError.message) || '未知原因') });
+            }
+            resolve();
+          });
+        } catch (e) { resolve(); }
+      } else {
+        resolve();
+      }
+    });
+  }));
 }
 
 /** 单元素是否像「人名芯片」：名字纯文本形态（× 是图标）时，需芯片本身/
@@ -777,20 +792,31 @@ function mergeLiveScrapedAssigneeNames(scraped) {
     lastAssigneeNames = names;
     const pipelineId = currentPipelineId();
     if (pipelineId) {
-      readAssignmentStore((captures) => {
-        const entry = captures[String(pipelineId)];
-        // v3.1.3：名章与当前页面职位不符的存档不更新（同 persistAssignmentEntry 守卫）——
-        // 弹窗属于页面当前职位，不能把它的姓名写进别的职位的记录
-        const entryName = normalizeJobName(entry && entry.jobName);
-        const pageName = normalizeJobName(pageJobName());
-        const sameJob = !entryName || !pageName || jobNameMatches(entryName, pageName);
-        if (entry && sameJob) {
-          entry.assigneeNames = names;
-          try {
-            chrome.storage.local.set({ [ASSIGNMENT_CAPTURE_KEY]: { captures } });
-          } catch (e) { /* ignore */ }
-        }
-      });
+      // v3.3.0：入写队列串行（消除并发整包覆盖）
+      enqueueAssigneeStoreWrite(() => new Promise((resolve) => {
+        readAssignmentStore((captures) => {
+          const entry = captures[String(pipelineId)];
+          // v3.1.3：名章与当前页面职位不符的存档不更新（同 persistAssignmentEntry 守卫）——
+          // 弹窗属于页面当前职位，不能把它的姓名写进别的职位的记录
+          const entryName = normalizeJobName(entry && entry.jobName);
+          const pageName = normalizeJobName(pageJobName());
+          const sameJob = !entryName || !pageName || jobNameMatches(entryName, pageName);
+          if (entry && sameJob) {
+            entry.assigneeNames = names;
+            try {
+              chrome.storage.local.set({ [ASSIGNMENT_CAPTURE_KEY]: { captures } }, () => {
+                if (chrome.runtime && chrome.runtime.lastError) {
+                  pushPluginLog({ cat: 'warn', text: '实时姓名落库失败：'
+                    + ((chrome.runtime.lastError && chrome.runtime.lastError.message) || '未知原因') });
+                }
+                resolve();
+              });
+            } catch (e) { resolve(); }
+          } else {
+            resolve();
+          }
+        });
+      }));
     }
     return resolveAssigneeNamesForDisplay();
   });
@@ -929,35 +955,59 @@ function captureAssignmentRequest(payload) {
   seedMemberNamesFromPairs(payload.pairs);
 }
 
+// v3.3.0：ASSIGNMENT_CAPTURE_KEY 写队列——四条写链路（storeRecommendNames /
+// mergeLiveScrapedAssigneeNames / persistAssignmentEntry / getAssigneeForJob 自愈补章）
+// 全部经此串行，消除「get→改→set」并发整包覆盖（串岗事故的存储层根因形态）
+let assigneeStoreQueue = Promise.resolve();
+function enqueueAssigneeStoreWrite(task) {
+  const run = assigneeStoreQueue.then(task, task);
+  assigneeStoreQueue = run.catch(() => {});
+  return run;
+}
+
 /** 把分配存档写入 storage（按职位分桶 + 超限清理）。
  *  done(written)：落库是否真正写入（v3.2.1），调用方据此如实上报 */
 function persistAssignmentEntry(entry, done) {
-  readAssignmentStore((captures) => {
-    const existing = captures[entry.pipelineId];
-    const conflict = existing && normalizeJobName(existing.jobName)
-      && normalizeJobName(entry.jobName)
-      && !jobNameMatches(entry.jobName, existing.jobName);
-    if (conflict) {
-      // v3.2.2：冲突不再拒写（v3.1.3 的拒写会把干净页面永久卡死——污染期留下的
-      // 脏记录在 storage 里，刷新也清不掉，确认永远失败，实锤）。以当前页面为准：
-      // 旧记录移到「pid#名章」别名键保留——按职位名的查档扫描与键无关，旧岗记录
-      // 仍可命中；新记录占本位，批量推进跟随用户当前正在操作的页面
-      const aliasKey = entry.pipelineId + '#' + normalizeJobName(existing.jobName);
-      captures[aliasKey] = existing;
-      pushPluginLog({ cat: 'warn', text: '分配对象记录按当前页面覆盖：pipelineId ' + entry.pipelineId
-        + ' 原「' + existing.jobName + '」（已移至别名键保留，按职位名仍可查到）→ 现写入「'
-        + entry.jobName + '」' });
-    }
-    captures[entry.pipelineId] = entry;
-    // 每个职位一份；总数超限时丢弃最旧的职位记录
-    const keys = Object.keys(captures)
-      .sort((a, b) => (captures[b] && captures[b].savedAt || 0) - (captures[a] && captures[a].savedAt || 0));
-    keys.slice(ASSIGNMENT_CAPTURE_LIMIT).forEach((k) => { delete captures[k]; });
-    try {
-      chrome.storage.local.set({ [ASSIGNMENT_CAPTURE_KEY]: { captures } });
-    } catch (e) { /* ignore */ }
-    if (typeof done === 'function') done(true);
-  });
+  enqueueAssigneeStoreWrite(() => new Promise((resolve) => {
+    readAssignmentStore((captures) => {
+      const existing = captures[entry.pipelineId];
+      const conflict = existing && normalizeJobName(existing.jobName)
+        && normalizeJobName(entry.jobName)
+        && !jobNameMatches(entry.jobName, existing.jobName);
+      if (conflict) {
+        // v3.2.2：冲突不再拒写（v3.1.3 的拒写会把干净页面永久卡死——污染期留下的
+        // 脏记录在 storage 里，刷新也清不掉，确认永远失败，实锤）。以当前页面为准：
+        // 旧记录移到「pid#名章」别名键保留——按职位名的查档扫描与键无关，旧岗记录
+        // 仍可命中；新记录占本位，批量推进跟随用户当前正在操作的页面
+        const aliasKey = entry.pipelineId + '#' + normalizeJobName(existing.jobName);
+        captures[aliasKey] = existing;
+        pushPluginLog({ cat: 'warn', text: '分配对象记录按当前页面覆盖：pipelineId ' + entry.pipelineId
+          + ' 原「' + existing.jobName + '」（已移至别名键保留，按职位名仍可查到）→ 现写入「'
+          + entry.jobName + '」' });
+      }
+      captures[entry.pipelineId] = entry;
+      // 每个职位一份；总数超限时丢弃最旧的职位记录
+      const keys = Object.keys(captures)
+        .sort((a, b) => (captures[b] && captures[b].savedAt || 0) - (captures[a] && captures[a].savedAt || 0));
+      keys.slice(ASSIGNMENT_CAPTURE_LIMIT).forEach((k) => { delete captures[k]; });
+      try {
+        chrome.storage.local.set({ [ASSIGNMENT_CAPTURE_KEY]: { captures } }, () => {
+          // v3.3.0：写失败（配额/被回收）必须如实上报——「written」语义不可信比失败更糟
+          const failed = !!(chrome.runtime && chrome.runtime.lastError);
+          if (failed) {
+            pushPluginLog({ cat: 'warn', text: '分配对象存档写入失败：'
+              + ((chrome.runtime.lastError && chrome.runtime.lastError.message) || '未知原因') });
+          }
+          if (typeof done === 'function') done(!failed);
+          resolve();
+        });
+      } catch (e) {
+        pushPluginLog({ cat: 'warn', text: '分配对象存档写入异常：' + ((e && e.message) || e) });
+        if (typeof done === 'function') done(false);
+        resolve();
+      }
+    });
+  }));
 }
 
 function currentPipelineId() {
@@ -1168,7 +1218,30 @@ function loadAssignmentForCurrentPipeline() {
       return;
     }
     readAssignmentStore((captures) => {
-      const entry = captures[pipelineId];
+      let entry = captures[pipelineId];
+      // v3.3.0：主键记录名章与当前页面职位不符时，按页面职位名全表精确匹配
+      // （含「pid#名」别名键）——别名键保留的旧记录、id 复用场景都能正确取到本岗
+      // 模板；都匹配不上且页面名可信时宁可返回 null（批量推进如实报「未捕获」），
+      // 也绝不拿别的职位的模板去推进（推进到错误用人部门是不可逆动作）
+      const pageName = normalizeJobName(pageJobName());
+      const entryName = entry ? normalizeJobName(entry.jobName) : '';
+      if (entry && entry.template && pageName && entryName && !jobNameMatches(entryName, pageName)) {
+        const byPageName = Object.keys(captures)
+          .map((k) => captures[k])
+          .filter((e) => e && e.template && typeof e.template === 'object'
+            && normalizeJobName(e.jobName) === pageName)
+          .sort((a, b) => (Number(b.savedAt) || 0) - (Number(a.savedAt) || 0));
+        if (byPageName.length) {
+          pushPluginLog({ cat: 'warn', text: '分配模板按职位名改道：pipelineId ' + pipelineId
+            + ' 下名章为「' + entryName + '」，改用页面职位「' + pageName + '」的记录' });
+          entry = byPageName[0];
+        } else {
+          pushPluginLog({ cat: 'warn', text: '分配模板拒绝使用：pipelineId ' + pipelineId
+            + ' 名章为「' + entryName + '」，与页面职位「' + pageName + '」不符且无同名记录' });
+          resolve(null);
+          return;
+        }
+      }
       if (entry && entry.template && typeof entry.template === 'object') {
         capturedAssignment = entry.template;
         capturedAssignmentPipelineId = String(entry.pipelineId || pipelineId);

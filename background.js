@@ -658,14 +658,25 @@ function initFeishuBridge() {
           return;
         }
 
-        if (msg.action === 'feishuRecommendByScore' || msg.action === 'feishuCommand') {          const tabs = await chrome.tabs.query({ url: '*://app.mokahr.com/*' });
+        if (msg.action === 'feishuRecommendByScore' || msg.action === 'feishuCommand') {
+          const tabs = await chrome.tabs.query({ url: '*://app.mokahr.com/*' });
           // 优先复用卡片所属职位的已打开标签页（避免多职位并存时推错岗）；
           // 匹配不到再退回「当前活动标签页 → 第一个 Moka 标签页」
+          // v3.3.0：职位身份优先按 URL query 的 pipelineId 精确匹配——此前按 path 匹配
+          // 会把 query 全截掉，而 Moka 职位身份恰在 query 里，等于「任意 Moka 列表页」
+          // 都可命中，多职位标签并存时可能把候选人推进错误职位
+          const pidOf = (u) => {
+            try { return new URL(u).searchParams.get('pipelineId') || ''; } catch (e) { return ''; }
+          };
+          const hintPipeline = pidOf(String(msg.mokaUrl || ''));
+          const matched = hintPipeline
+            ? (tabs || []).find((t) => pidOf(t.url) === hintPipeline)
+            : null;
           const hintPath = String(msg.mokaUrl || '').split('#')[0].split('?')[0];
-          const matched = hintPath
+          const matchedByPath = !matched && hintPath
             ? (tabs || []).find((t) => String(t.url || '').split('#')[0].split('?')[0] === hintPath)
             : null;
-          const mokaTab = matched || (tabs && tabs.find((t) => t.active)) || (tabs && tabs[0]);
+          const mokaTab = matched || matchedByPath || (tabs && tabs.find((t) => t.active)) || (tabs && tabs[0]);
           if (!mokaTab || !mokaTab.id) {
             if (feishuBridgeWs && feishuBridgeWs.readyState === WebSocket.OPEN) {
               feishuBridgeWs.send(JSON.stringify({

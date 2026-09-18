@@ -680,6 +680,22 @@ function applyJobPreset(preset) {
   return true;
 }
 
+// v3.3.0：JOB_PRESET_STORAGE_KEY 统一写入口（串行队列）——「保存筛选条件/自动保存」
+// 与「确认推荐对象盖章」此前各自 get→改→set，并发时确认章或整份存档可被对方覆盖。
+// 所有对该 key 的写入一律走这里，mutator 拿到最新整包记录、返回下一份整包记录
+let jobPresetWriteQueue = Promise.resolve();
+function writeJobPresetRecord(mutator) {
+  const run = jobPresetWriteQueue.then(() => {
+    const key = MokaPersist.JOB_PRESET_STORAGE_KEY;
+    return chrome.storage.local.get(key).then((res) => {
+      const next = mutator(res[key] || {});
+      return chrome.storage.local.set({ [key]: next }).then(() => next);
+    });
+  });
+  jobPresetWriteQueue = run.catch(() => {});
+  return run;
+}
+
 function saveJobPresetFor(jobId, opts) {
   if (applyingPreset || !window.MokaPersist) return Promise.resolve(false);
   const id = MokaPersist.jobPresetKey(jobId);
@@ -691,8 +707,7 @@ function saveJobPresetFor(jobId, opts) {
     lastPresetSaveBlock = { at: Date.now(), wanted: id, formHolds: String(presetFormJobId || '') };
     return Promise.resolve(false);
   }
-  const key = MokaPersist.JOB_PRESET_STORAGE_KEY;
-  return chrome.storage.local.get(key).then((res) => {
+  return writeJobPresetRecord((record) => {
     // 盖上「当前职位」身份锚点：jobId 是存档 key，职位名是刷新后 jobId 漂移时的兜底索引。
     // 不依赖「按 JD 刷新」产物——纯手配门槛/关键词的存档也要能按名找回。
     const raw = collectJobPreset();
@@ -702,8 +717,7 @@ function saveJobPresetFor(jobId, opts) {
     // 造成 A↔B 交叉错位、恢复按名兜底时串岗/命中空壳。
     const label = (opts && opts.label) || currentJobLabel() || activePresetJobLabel || '';
     if (label) raw.jobNameAnchor = String(label).trim();
-    const next = MokaPersist.putJobPreset(res[key] || {}, id, raw, Date.now());
-    return chrome.storage.local.set({ [key]: next });
+    return MokaPersist.putJobPreset(record, id, raw, Date.now());
   }).then(() => {
     setPresetNote('已保存本岗配置，下次打开会自动填充', '#52c41a');
     return true;
@@ -4415,24 +4429,23 @@ async function renderAssigneeStatus(viaButton) {
 /** 把确认时间写进本岗存档（不影响表单其它字段） */
 async function stampAssigneeConfirmed(jobId) {
   if (!jobId || !window.MokaPersist) return;
-  const key = MokaPersist.JOB_PRESET_STORAGE_KEY;
   const id = MokaPersist.jobPresetKey(jobId);
   if (!id) return;
   try {
-    const res = await chrome.storage.local.get(key);
-    const record = res[key] || {};
-    const existing = MokaPersist.getJobPreset(record, jobId);
     currentAssigneeConfirmedAt = Date.now();
-    // 只盖确认章：绝不用当前表单内容兜底覆盖存档——表单可能装着别的职位（串档源头之一）。
-    // 没有存档时就建一条只含确认章 + 身份锚点的最小档，其余字段等用户真正保存时再写。
-    const base = existing || {
-      jobType: /实习/.test(currentJobLabel() || '') ? 'intern' : 'full-time',
-      jobIdAnchor: id,
-      jobNameAnchor: String(currentJobLabel() || '').trim()
-    };
-    const merged = Object.assign({}, base, { assigneeConfirmedAt: currentAssigneeConfirmedAt });
-    const next = MokaPersist.putJobPreset(record, id, merged, Date.now());
-    await chrome.storage.local.set({ [key]: next });
+    // v3.3.0：走统一写队列——与「保存筛选条件/自动保存」并发时不再互相整包覆盖
+    await writeJobPresetRecord((record) => {
+      // 只盖确认章：绝不用当前表单内容兜底覆盖存档——表单可能装着别的职位（串档源头之一）。
+      // 没有存档时就建一条只含确认章 + 身份锚点的最小档，其余字段等用户真正保存时再写。
+      const existing = MokaPersist.getJobPreset(record, jobId);
+      const base = existing || {
+        jobType: /实习/.test(currentJobLabel() || '') ? 'intern' : 'full-time',
+        jobIdAnchor: id,
+        jobNameAnchor: String(currentJobLabel() || '').trim()
+      };
+      const merged = Object.assign({}, base, { assigneeConfirmedAt: currentAssigneeConfirmedAt });
+      return MokaPersist.putJobPreset(record, id, merged, Date.now());
+    });
   } catch (e) { /* 存储失败不打断 */ }
 }
 

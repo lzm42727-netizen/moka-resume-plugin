@@ -192,9 +192,13 @@ describe('飞书 Bridge 加固契约（2.0.1）', () => {
   it('v2.2.0 飞书批量推进复用已打开页面：按卡片职位选标签页 + 执行后刷新 + 回执带对象姓名', () => {
     const bg = source('background.js');
     // 按卡片带回的职位 URL 匹配已打开标签页，匹配不到再退回活动/首个
+    // v3.3.0：职位身份优先按 URL query 的 pipelineId 精确匹配（path 匹配降为兜底）
     assert.match(bg, /const hintPath = String\(msg\.mokaUrl \|\| ''\)\.split\('#'\)\[0\]\.split\('\?'\)\[0\]/);
-    assert.match(bg, /const matched = hintPath/);
-    assert.match(bg, /const mokaTab = matched \|\| \(tabs && tabs\.find\(\(t\) => t\.active\)\) \|\| \(tabs && tabs\[0\]\)/);
+    assert.match(bg, /const pidOf = \(u\) =>/);
+    assert.match(bg, /const hintPipeline = pidOf\(String\(msg\.mokaUrl \|\| ''\)\)/);
+    assert.match(bg, /const matched = hintPipeline/);
+    assert.match(bg, /const matchedByPath = !matched && hintPath/);
+    assert.match(bg, /const mokaTab = matched \|\| matchedByPath \|\| \(tabs && tabs\.find\(\(t\) => t\.active\)\) \|\| \(tabs && tabs\[0\]\)/);
     // 聚焦而不是新开页面
     assert.match(bg, /chrome\.tabs\.update\(mokaTab\.id, \{ active: true \}\)/);
     assert.doesNotMatch(bg, /chrome\.tabs\.create\(\{[^}]*app\.mokahr\.com/, '不得新开 Moka 网页');

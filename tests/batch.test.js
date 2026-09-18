@@ -357,7 +357,17 @@ describe('batch wiring', () => {
     assert.match(content, /if \(synthesized\) entry\.synthesizedTemplate = true;/);
     // v3.2.1：落库结果通过 done(written) 如实回传调用方（adopt 据此决定成败）
     assert.match(content, /persistAssignmentEntry\(entry, \(written\) =>/);
-    assert.match(content, /if \(typeof done === 'function'\) done\(true\);/);
+    // v3.3.0：写入成功语义 = set 回调无 lastError（done(true) 已被 done(!failed) 取代）
+    assert.match(content, /if \(typeof done === 'function'\) done\(!failed\);/);
+    // v3.3.0 第一批加固：存档写队列串行 + 写失败如实上报 + 模板名章校验/按职位名回退
+    assert.match(content, /let assigneeStoreQueue = Promise\.resolve\(\);/);
+    assert.match(content, /function enqueueAssigneeStoreWrite\(task\)/);
+    assert.match(content, /const failed = !!\(chrome\.runtime && chrome\.runtime\.lastError\);/);
+    assert.match(content, /分配模板按职位名改道：pipelineId/);
+    assert.match(content, /分配模板拒绝使用：pipelineId/);
+    assert.match(js, /let jobPresetWriteQueue = Promise\.resolve\(\);/);
+    assert.match(js, /function writeJobPresetRecord\(mutator\)/);
+    assert.match(js, /await writeJobPresetRecord\(\(record\) =>/);
     // 分配对象以「职位名」为锚点（URL title 与下拉框文案同源），
     // 彻底绕开 jobId/pipelineId 两套 id 空间的桥接错配
     assert.match(content, /function jobNameMatches/);

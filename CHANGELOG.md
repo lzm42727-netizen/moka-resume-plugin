@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.3.0 - 2026-09-18
+
+- **推荐对象存档写队列（正确性加固第 1 批）**：`persistAssignmentEntry` / `storeRecommendNames` / `mergeLiveScrapedAssigneeNames` 全部经 `assigneeStoreQueue` 串行执行——此前「确认本岗推荐对象」与自动存档并发时存在 read-modify-write 互相覆盖窗口，确认记录可能被旧快照冲掉
+- **写失败如实上报**：`chrome.storage.local.set` 回调里检查 `runtime.lastError`，写入失败时 `adoptScrapedAssignees` 如实返回失败，弹窗状态行不再「点了确认没变绿也不报错」
+- **批量推进模板名章校验 + 按职位名改道**：`loadAssignmentForCurrentPipeline` 现在校验存档 `jobName` 与页面职位名一致，不一致时先按归一职位名在同 pipeline 下找正确记录（日志「分配模板按职位名改道」），找不到才拒绝使用（日志「分配模板拒绝使用」）——根除「SPA 切岗瞬间 pipelineId 已变、职位名还没变」窗口期拿错模板
+- **岗位预设写队列（popup.js）**：新增 `writeJobPresetRecord` 串行化 `saveJobPresetFor` 与 `stampAssigneeConfirmed` 的读改写，确认名章不再被自动存档的旧快照覆盖回退
+- **飞书选 tab 按 pipelineId 精确匹配**：`feishuRecommendByScore` / `feishuCommand` 选目标 tab 优先取页面 URL query 里的 `pipelineId`，路径匹配降为兜底——多岗同开时不再把推送打到别的职位的页面上
+
 ## 3.2.3 - 2026-09-18
 
 - **README「当前版本要点」纳入版本门禁**：外部评估指出 README 要点在 v3.2.2 时仍停在 v3.1.0——此前 `check:version` 只管 CHANGELOG 与两份 HTML 徽标，README 是最后一个漏网点。现在要点标题版本必须与 manifest 一致，否则 `npm run check` 直接失败
