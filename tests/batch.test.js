@@ -315,6 +315,14 @@ describe('batch wiring', () => {
     // 存档盖职位名章 + 按职位名匹配优先（错配直接暴露为「未记录」，绝不串岗）
     assert.match(content, /jobNameMatches\(label, e\.jobName\)/);
     assert.match(content, /jobName: normalizeJobName\(pageJobName\(\)\)/);
+    // v3.0.8 两遍制：精确同名优先，包含式近似只作兜底且回包标 fuzzyMatched——
+    // 切岗后绝不静默把名字相近的别的岗记录当成自己本岗的
+    assert.match(content, /let entry = exact \|\| fuzzy;/);
+    assert.match(content, /const fuzzyMatched = !exact && !!fuzzy;/);
+    assert.match(content, /fuzzyMatched,/);
+    // v3.0.8 popup：跨岗不继承旧职位名（label 未知时宁可占位，不拿旧岗名查档）
+    assert.match(js, /const safeLabel = label \|\| \(sameJob \? activePresetJobLabel : ''\)/);
+    assert.match(js, /const text = label \|\| jobLabelFallback\(key\)/);
     // 旧记录自愈：查询命中页面自身 pipeline 下缺职位名章的存档时当场补章（同源才写）
     assert.match(content, /self-heal|自愈/);
     assert.match(content, /entry\.jobName = normalizeJobName\(pageName\)/);

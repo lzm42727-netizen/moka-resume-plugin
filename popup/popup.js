@@ -314,7 +314,14 @@ function resolveTargetJobFromResponse(response, jobs) {
   if (!label && response.jobName && targetJobId && (!memoryJobId || memoryJobId === targetJobId)) {
     label = response.jobName;
   }
-  if (!label) label = activePresetJobLabel;
+  if (!label) {
+    // v3.0.8：只有「还是同一个职位」时才沿用旧标签。切到新职位却拿不到名字时
+    // 绝不继承上一个职位的名字——否则推荐对象按旧名字查档，会把上一个岗位的
+    // 面试官当成新岗位的显示/执行（串岗实锤）。宁可先显示占位，等拿到真名再渲染。
+    if (targetJobId && activePresetJobId && String(targetJobId) === String(activePresetJobId)) {
+      label = activePresetJobLabel;
+    }
+  }
   return { targetJobId, label, pageJobId, pageJob };
 }
 
@@ -463,7 +470,9 @@ function ensureJobSelectOption(id, label) {
   const jobSelect = document.getElementById('job-select');
   if (!jobSelect || !id) return;
   const key = String(id);
-  const text = label || activePresetJobLabel || jobLabelFallback(key);
+  // v3.0.8：label 为空时用中性占位（职位 xxx），绝不继承 activePresetJobLabel——
+  // 那可能是上一个职位的名字，盖到新职位的 option 上会直接导致推荐对象串岗
+  const text = label || jobLabelFallback(key);
   const existing = Array.from(jobSelect.options).find((o) => o.value === key);
   if (existing) {
     if (label && existing.textContent !== label) existing.textContent = label;
@@ -477,9 +486,13 @@ function ensureJobSelectOption(id, label) {
 
 function syncActiveJobFromSnapshot(jobId, label) {
   if (!jobId) return;
+  // v3.0.8：同名兜底只允许「同一个职位」使用——切到新职位且名字未知时，
+  // 用中性占位，绝不把上一个职位的名字安到新职位头上
+  const sameJob = String(jobId) === String(activePresetJobId);
+  const safeLabel = label || (sameJob ? activePresetJobLabel : '');
   activePresetJobId = String(jobId);
   if (label) activePresetJobLabel = String(label);
-  ensureJobSelectOption(activePresetJobId, label || activePresetJobLabel);
+  ensureJobSelectOption(activePresetJobId, safeLabel);
   const jobSelect = document.getElementById('job-select');
   if (jobSelect) jobSelect.value = activePresetJobId;
   persistActivePresetJobId();
@@ -2237,7 +2250,9 @@ async function loadJobs() {
     && !MokaPersist.needsPresetReload(targetJobId, presetFormJobId);
   if (formHoldsTargetJob) {
     if (label) activePresetJobLabel = String(label);
-    ensureJobSelectOption(targetJobId, label || activePresetJobLabel);
+    // v3.0.8：label 未知（新职位拿不到名字）时绝不用旧岗名盖章到新岗 option 上，
+    // 传空让 ensureJobSelectOption 走中性占位，等真实职位名到位再更新
+    ensureJobSelectOption(targetJobId, label || '');
     jobSelect.value = targetJobId;
   } else {
     // prevLabel 取 activePresetJobLabel（此刻仍是「离开岗」的名字，target 的 label
@@ -4320,18 +4335,22 @@ async function renderAssigneeStatusInner(viaButton) {
       return;
     }
   }
+  // v3.0.8：近似匹配（职位名包含式命中，非精确同名）必须明示——可能是名字相近的别的岗记录
+  const fuzzyHint = ctx.fuzzyMatched
+    ? '（⚠️ 此记录按职位名近似匹配而来，可能不是本岗的：如不符，请在本职位打开「推荐给用人部门」弹窗后点「确认本岗简历推荐对象」重认）'
+    : '';
   if (confirmedAt) {
     // 已确认：一行干净的状态——姓名 + 记录时间；主动点「重新读取」却没比对到页面时，追加提示
     const nm = Array.isArray(ctx.assigneeNames) && ctx.assigneeNames.length
       ? ctx.assigneeNames.join('、') : '';
     el.textContent = '✓ 已确认本岗简历推荐对象：' + (nm ? nm + '（' + ctx.assigneeCount + ' 人）' : ctx.assigneeCount + ' 人')
       + '，记录于 ' + formatAssigneeTime(confirmedAt) + '，开筛后批量推进按此执行'
-      + compareMissedHint;
+      + fuzzyHint + compareMissedHint;
     el.style.color = '#52c41a';
   } else {
     el.textContent = recorded + (liveNames ? '（本次从推荐弹窗实时读取）' : '')
       + '。确认后开筛即可直接批量推进；不同职位各自记录，不会串用'
-      + compareMissedHint;
+      + fuzzyHint + compareMissedHint;
     el.style.color = '';
     if (btn) btn.classList.remove('hidden');
   }

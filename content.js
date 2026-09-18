@@ -1007,16 +1007,28 @@ function getAssigneeForJob(jobId, jobLabel) {
         });
       }
       readAssignmentStore((captures) => {
-        // ① 职位名章精确匹配（同名取最新）
-        let entry = null;
+        // ① 职位名章匹配（v3.0.8 两遍制）：**精确同名优先**（同名取最新）；
+        //    全部精确不中才退回「包含式」近似匹配（兼容 URL title 被截断的旧存档）。
+        //    近似命中必须在回包标 fuzzyMatched，让面板明示「这是近似匹配」——
+        //    否则切到新岗时会静默把名字相近的别的岗记录当成自己本岗的（串岗实锤）
+        const ln = normalizeJobName(label);
+        let exact = null;
+        let fuzzy = null;
         Object.keys(captures).forEach((k) => {
           const e = captures[k];
-          if (e && jobNameMatches(label, e.jobName)
-            && (!entry || (Number(e.savedAt) || 0) > (Number(entry.savedAt) || 0))) {
-            entry = e;
+          if (!e) return;
+          const en = normalizeJobName(e.jobName);
+          if (!en || !ln) return;
+          const saved = Number(e.savedAt) || 0;
+          if (en === ln) {
+            if (!exact || saved > (Number(exact.savedAt) || 0)) exact = e;
+          } else if (jobNameMatches(label, e.jobName)) {
+            if (!fuzzy || saved > (Number(fuzzy.savedAt) || 0)) fuzzy = e;
           }
         });
-        // ② 映射/页面 pipeline 兜底
+        let entry = exact || fuzzy;
+        const fuzzyMatched = !exact && !!fuzzy;
+        // ② 映射/页面 pipeline 兜底（缺职位名章的旧记录走这里）
         if (!entry && mappedPid) entry = captures[String(mappedPid)];
         const pid = entry ? String(entry.pipelineId || mappedPid || '') : String(mappedPid || '');
         // 自愈：命中页面自身 pipeline 下缺职位名章的旧记录（round15 之前的存档），
@@ -1038,6 +1050,7 @@ function getAssigneeForJob(jobId, jobLabel) {
           assigneeNames: entry && Array.isArray(entry.assigneeNames) ? entry.assigneeNames : [],
           savedAt: entry ? Number(entry.savedAt) || 0 : 0,
           pipelineId: pid,
+          fuzzyMatched,
           isPageJob: isPageJob || (!!pid && !!pagePipelineId && pid === String(pagePipelineId))
         });
       });
