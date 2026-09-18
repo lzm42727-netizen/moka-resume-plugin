@@ -495,7 +495,9 @@ async function initFeishuLarkWs() {
             try {
               res = await sendToPlugin('feishuRecommendByScore', {
                 minScore,
-                mokaUrl: actionVal.mokaUrl || ''
+                mokaUrl: actionVal.mokaUrl || '',
+                // v3.5.0：卡片自带职位身份，执行侧核对页面职位后再推进（防推错岗）
+                jobTitle: actionVal.jobTitle || ''
               });
               console.log(`[Bridge] 插件已响应: ${JSON.stringify({ ok: !!res.ok, count: res.count || 0, refreshed: !!res.refreshed, error: res.error || undefined })}`);
             } catch (err) {

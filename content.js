@@ -285,6 +285,9 @@ let capturedAssignment = null;      // 当前职位的 { url, headers, body }
 let capturedAssignmentPipelineId = ''; // capturedAssignment 所属的职位
 let capturedAssignmentSavedAt = 0; // 该条分配记录的捕获时间（配置页展示用）
 let lastAssigneeIds = [];           // 当前职位最近一次手动批量分配的对象 id 列表
+// v3.5.0：最近一次查档命中的完整记录（含确认章字段）。批量推进执行前的最终守卫、
+// 飞书回执里的「确认于 …」都从这里取——只有名单 id 不够，必须能追溯到是哪条记录
+let lastLoadedAssignmentEntry = null;
 
 // 成员姓名映射：从「非候选人」接口的 JSON 响应里收割 {数字 id → 姓名}，
 // 供配置页/批量推进确认时把分配对象显示成名字。持久化，跨页面刷新可用。
@@ -631,6 +634,12 @@ function adoptScrapedAssignees() {
       savedAt: Date.now()
     };
     if (synthesized) entry.synthesizedTemplate = true;
+    // v3.5.0：确认章——用户点「确认本岗简历推荐对象」拍板的名单快照。
+    // 查档时确认章记录优先于无章记录（页面操作不再能静默替换确认名单），
+    // 批量推进执行前守卫与飞书回执里的「确认于 …」都以这三个字段为准
+    entry.confirmedAt = entry.savedAt;
+    entry.confirmedIds = ids.slice();
+    entry.confirmedNames = capped.slice();
     if (entry.jobName) rememberJobPipeline(entry.pipelineId, entry.jobName);
     // v3.2.1：落库可能被名章守卫拒绝（页面 id 与职位名不同源）——必须如实上报，
     // 否则确认「成功」了记录却没写进去，面板永远不变绿也不报错（实锤）
@@ -828,12 +837,21 @@ function captureAssignmentRequest(payload) {
     savedAt: Date.now()
   };
   if (entry.jobName) rememberJobPipeline(entry.pipelineId, entry.jobName);
-  persistAssignmentEntry(entry);
-  capturedAssignment = entry.template;
-  capturedAssignmentPipelineId = entry.pipelineId;
-  capturedAssignmentSavedAt = entry.savedAt;
-  lastAssigneeIds = assigneeIds;
-  lastAssigneeNames = assigneeNames;
+  // v3.5.0：页面操作捕获带确认章保护——本岗已确认过名单且这次名单不同时，
+  // 确认记录保留主位，本次内容写别名键留档（Moka 弹窗会预选 pipeline 上次用的人，
+  // 共用 pipeline 的别岗人选就是这样静默混进本岗记录的，实锤）
+  persistAssignmentEntry(entry, (ok, detail) => {
+    if (ok && detail === 'kept-confirmed') {
+      // 主位仍是确认记录：内存必须跟着回到确认记录，绝不让页面操作名单留在内存里
+      loadAssignmentForCurrentPipeline();
+      return;
+    }
+    capturedAssignment = entry.template;
+    capturedAssignmentPipelineId = entry.pipelineId;
+    capturedAssignmentSavedAt = entry.savedAt;
+    lastAssigneeIds = assigneeIds;
+    lastAssigneeNames = assigneeNames;
+  }, { protectConfirmed: true });
   bindSingleAssigneeName(assigneeIds, assigneeNames);
   seedMemberNamesFromPairs(payload.pairs);
 }
@@ -849,8 +867,12 @@ function enqueueAssigneeStoreWrite(task) {
 }
 
 /** 把分配存档写入 storage（按职位分桶 + 超限清理）。
- *  done(written)：落库是否真正写入（v3.2.1），调用方据此如实上报 */
-function persistAssignmentEntry(entry, done) {
+ *  done(ok, detail)：ok=是否真正写入；detail='kept-confirmed' 表示触发确认章保护、
+ *  本次内容只写了别名键（v3.5.0，调用方据此决定内存要不要跟着改）。
+ *  opts.protectConfirmed=true（页面操作捕获链路）：本岗已有确认章且名单不同时，
+ *  确认记录保留主位，本次内容写别名键留档——确认过的名单绝不被页面操作静默替换 */
+function persistAssignmentEntry(entry, done, opts) {
+  const protectConfirmed = !!(opts && opts.protectConfirmed);
   enqueueAssigneeStoreWrite(() => new Promise((resolve) => {
     readAssignmentStore((captures) => {
       const existing = captures[entry.pipelineId];
@@ -868,6 +890,37 @@ function persistAssignmentEntry(entry, done) {
           + ' 原「' + existing.jobName + '」（已移至别名键保留，按职位名仍可查到）→ 现写入「'
           + entry.jobName + '」' });
       }
+      // v3.5.0：确认章保护。名章一致（同一岗位）但名单与确认章不同 = 页面操作带着
+      // pipeline 上次预选的人（很可能是共用 pipeline 的别岗人选）来覆盖本岗确认记录
+      if (protectConfirmed && existing && !conflict
+        && (Number(existing.confirmedAt) || 0) > 0
+        && Array.isArray(existing.confirmedIds) && existing.confirmedIds.length
+        && MokaBatch.sanitizeIdList(existing.confirmedIds, 5).join(',')
+          !== MokaBatch.sanitizeIdList(entry.assigneeIds, 5).join(',')) {
+        const aliasKey = entry.pipelineId + '#' + normalizeJobName(entry.jobName || existing.jobName);
+        captures[aliasKey] = entry;
+        pushPluginLog({ cat: 'warn', text: '已拦截对本岗确认名单的覆盖：本岗「'
+          + (Array.isArray(existing.confirmedNames) ? existing.confirmedNames.join('、') : '')
+          + '」保留为批量推进名单；本次页面操作（'
+          + (Array.isArray(entry.assigneeNames) ? entry.assigneeNames.join('、') : '')
+          + '）已存别名键留档。如确要以本次为准，请回「配置」页重新点「确认本岗简历推荐对象」' });
+        try {
+          chrome.storage.local.set({ [ASSIGNMENT_CAPTURE_KEY]: { captures } }, () => {
+            const failed = !!(chrome.runtime && chrome.runtime.lastError);
+            if (failed) {
+              pushPluginLog({ cat: 'warn', text: '分配对象存档写入失败：'
+                + ((chrome.runtime.lastError && chrome.runtime.lastError.message) || '未知原因') });
+            }
+            if (typeof done === 'function') done(!failed, 'kept-confirmed');
+            resolve();
+          });
+        } catch (e) {
+          pushPluginLog({ cat: 'warn', text: '分配对象存档写入异常：' + ((e && e.message) || e) });
+          if (typeof done === 'function') done(false, 'kept-confirmed');
+          resolve();
+        }
+        return;
+      }
       captures[entry.pipelineId] = entry;
       // 每个职位一份；总数超限时丢弃最旧的职位记录
       const keys = Object.keys(captures)
@@ -881,12 +934,12 @@ function persistAssignmentEntry(entry, done) {
             pushPluginLog({ cat: 'warn', text: '分配对象存档写入失败：'
               + ((chrome.runtime.lastError && chrome.runtime.lastError.message) || '未知原因') });
           }
-          if (typeof done === 'function') done(!failed);
+          if (typeof done === 'function') done(!failed, 'written');
           resolve();
         });
       } catch (e) {
         pushPluginLog({ cat: 'warn', text: '分配对象存档写入异常：' + ((e && e.message) || e) });
-        if (typeof done === 'function') done(false);
+        if (typeof done === 'function') done(false, 'written');
         resolve();
       }
     });
@@ -1076,7 +1129,8 @@ function getAssigneeDiagnostics() {
             jobName: e.jobName || '',
             assigneeCount: Array.isArray(e.assigneeIds) ? e.assigneeIds.length : 0,
             assigneeNames: Array.isArray(e.assigneeNames) ? e.assigneeNames : [],
-            savedAt: Number(e.savedAt) || 0
+            savedAt: Number(e.savedAt) || 0,
+            confirmedAt: Number(e.confirmedAt) || 0
           };
         }).sort((a, b) => b.savedAt - a.savedAt);
         resolve({
@@ -1091,52 +1145,128 @@ function getAssigneeDiagnostics() {
   });
 }
 
+/**
+ * v3.5.0：批量推进与配置面板统一的查档口径（此前两处口径不一致，是「确认 4 人、
+ * 推进时却用了罗耀钏」的直接根因——面板全表扫描精确同名，批量推进只信主键记录）。
+ *
+ * 全表扫描名章与页面职位匹配的记录，按三级排序取最优：
+ *   ① 名章精确同名 > 包含式近似（近似匹配曾造成串岗，批量推进从严）；
+ *   ② 同名里「有确认章的」> 没确认章的——用户确认过的名单绝不被页面操作静默替换
+ *     （实锤：海外SEO确认 4 人后，页面操作带着 pipeline 上次预选的罗耀钏占住主键，
+ *     名章同为海外SEO，旧逻辑按名章放行直接用错人）；
+ *   ③ 同级取 savedAt 最新的。
+ * 兼容旧行为的两条特例：无页面职位名（无法判定身份）或主键缺名章（自愈补章链路）时，
+ * 仍直接用主键记录；主键名章与本页不符时只按精确同名改道，扫不到宁可拒绝。
+ *
+ * 返回 { entry, exact, confirmed, rerouted } 或 null（调用方拒绝执行）。
+ */
+function pickAssignmentEntry(captures, pipelineId, pageName) {
+  const caps = captures && typeof captures === 'object' ? captures : {};
+  const primary = caps[pipelineId] || null;
+  const name = normalizeJobName(pageName);
+  const primaryName = primary ? normalizeJobName(primary.jobName) : '';
+  if (!name) {
+    return primary && primary.template && typeof primary.template === 'object'
+      ? { entry: primary, exact: !primaryName, confirmed: !!primary.confirmedAt, rerouted: false }
+      : null;
+  }
+  if (primary && primary.template && typeof primary.template === 'object' && !primaryName) {
+    // 缺名章的旧存档：沿用旧行为直接用（getAssigneeForJob 的自愈链路会补上名章）
+    return { entry: primary, exact: false, confirmed: !!primary.confirmedAt, rerouted: false };
+  }
+  if (primary && primary.template && typeof primary.template === 'object'
+    && primaryName && !jobNameMatches(primaryName, name)) {
+    // 主键名章与本页职位不符（同 pipeline 挂多职位）：按职位名精确扫描改道
+    let hit = null;
+    Object.keys(caps).forEach((k) => {
+      const e = caps[k];
+      if (e && e.template && typeof e.template === 'object'
+        && normalizeJobName(e.jobName) === name) {
+        if (!hit || (Number(e.savedAt) || 0) > (Number(hit.savedAt) || 0)) hit = e;
+      }
+    });
+    if (!hit) return null;
+    return { entry: hit, exact: true, confirmed: !!hit.confirmedAt, rerouted: true };
+  }
+  // 主键名章与页面一致（或无主键）：全表扫描同名记录取最优，确认章优先
+  let best = null;
+  let bestKey = null;
+  Object.keys(caps).forEach((k) => {
+    const e = caps[k];
+    if (!e || !e.template || typeof e.template !== 'object') return;
+    const en = normalizeJobName(e.jobName);
+    if (!en || (en !== name && !jobNameMatches(en, name))) return;
+    const key = [
+      en === name ? 1 : 0,
+      (Number(e.confirmedAt) || 0) > 0 ? 1 : 0,
+      Number(e.savedAt) || 0
+    ];
+    if (!best
+      || key[0] > bestKey[0]
+      || (key[0] === bestKey[0] && key[1] > bestKey[1])
+      || (key[0] === bestKey[0] && key[1] === bestKey[1] && key[2] > bestKey[2])) {
+      best = e;
+      bestKey = key;
+    }
+  });
+  if (best) {
+    return { entry: best, exact: bestKey[0] === 1, confirmed: bestKey[1] === 1, rerouted: false };
+  }
+  return primary && primary.template && typeof primary.template === 'object'
+    ? { entry: primary, exact: false, confirmed: !!primary.confirmedAt, rerouted: false }
+    : null;
+}
+
 /** 确保内存中的模板属于当前职位；不是（或缺失）则从存储里取当前职位那份 */
 function loadAssignmentForCurrentPipeline() {
   return new Promise((resolve) => {
     const pipelineId = currentPipelineId();
     if (!pipelineId) { resolve(null); return; }
-    if (capturedAssignmentPipelineId === pipelineId && capturedAssignment && lastAssigneeIds.length) {
-      resolve(capturedAssignment);
-      return;
-    }
+    // v3.5.0：不再走「内存命中即返回」的快速路径——同 pipeline 挂多职位（id 复用）时，
+    // 内存里可能是别的岗位/页面操作留下的模板，只比对 pipelineId 会拿错名单；
+    // 每次都按统一口径查档（批量推进/采纳都是低频动作，一次 storage 读取可忽略）
+    const pageName = normalizeJobName(pageJobName());
     readAssignmentStore((captures) => {
-      let entry = captures[pipelineId];
-      // v3.3.0：主键记录名章与当前页面职位不符时，按页面职位名全表精确匹配
-      // （含「pid#名」别名键）——别名键保留的旧记录、id 复用场景都能正确取到本岗
-      // 模板；都匹配不上且页面名可信时宁可返回 null（批量推进如实报「未捕获」），
-      // 也绝不拿别的职位的模板去推进（推进到错误用人部门是不可逆动作）
-      const pageName = normalizeJobName(pageJobName());
-      const entryName = entry ? normalizeJobName(entry.jobName) : '';
-      if (entry && entry.template && pageName && entryName && !jobNameMatches(entryName, pageName)) {
-        const byPageName = Object.keys(captures)
-          .map((k) => captures[k])
-          .filter((e) => e && e.template && typeof e.template === 'object'
-            && normalizeJobName(e.jobName) === pageName)
-          .sort((a, b) => (Number(b.savedAt) || 0) - (Number(a.savedAt) || 0));
-        if (byPageName.length) {
-          pushPluginLog({ cat: 'warn', text: '分配模板按职位名改道：pipelineId ' + pipelineId
-            + ' 下名章为「' + entryName + '」，改用页面职位「' + pageName + '」的记录' });
-          entry = byPageName[0];
-        } else {
+      const picked = pickAssignmentEntry(captures, pipelineId, pageName);
+      const entry = picked ? picked.entry : null;
+      if (!entry) {
+        const primary = captures[pipelineId];
+        const primaryName = primary ? normalizeJobName(primary.jobName) : '';
+        if (primary && primary.template && primaryName && pageName
+          && !jobNameMatches(primaryName, pageName)) {
+          // v3.3.0 沿革：主键名章与本页职位不符且无同名记录时，宁可拒绝也不拿别的职位的
+          // 模板去推进（推进到错误用人部门不可逆）
           pushPluginLog({ cat: 'warn', text: '分配模板拒绝使用：pipelineId ' + pipelineId
-            + ' 名章为「' + entryName + '」，与页面职位「' + pageName + '」不符且无同名记录' });
-          resolve(null);
-          return;
+            + ' 名章为「' + primaryName + '」，与页面职位「' + pageName + '」不符且无同名记录' });
         }
-      }
-      if (entry && entry.template && typeof entry.template === 'object') {
-        capturedAssignment = entry.template;
-        capturedAssignmentPipelineId = String(entry.pipelineId || pipelineId);
-        capturedAssignmentSavedAt = Number(entry.savedAt) || 0;
-        lastAssigneeIds = MokaBatch.sanitizeIdList(entry.assigneeIds, 5);
-        lastAssigneeNames = Array.isArray(entry.assigneeNames)
-          ? validAssigneeNames(entry.assigneeNames, lastAssigneeIds.length)
-          : [];
-        resolve(capturedAssignment);
-      } else {
+        lastLoadedAssignmentEntry = null;
         resolve(null);
+        return;
       }
+      if (picked.rerouted) {
+        pushPluginLog({ cat: 'warn', text: '分配模板按职位名改道：pipelineId ' + pipelineId
+          + ' 下名章为「' + normalizeJobName(captures[pipelineId] && captures[pipelineId].jobName)
+          + '」，改用页面职位「' + pageName + '」的记录' });
+      }
+      capturedAssignment = entry.template;
+      capturedAssignmentPipelineId = String(entry.pipelineId || pipelineId);
+      capturedAssignmentSavedAt = Number(entry.savedAt) || 0;
+      // v3.5.0：记录带确认章时，执行名单直接以确认章快照为准（确认过的名单绝不被
+      // 页面操作替换）；无确认章沿用记录当前名单（旧版本确认过的记录升级后需补一次章）
+      const useConfirmed = (Number(entry.confirmedAt) || 0) > 0
+        && Array.isArray(entry.confirmedIds) && entry.confirmedIds.length;
+      lastAssigneeIds = MokaBatch.sanitizeIdList(
+        useConfirmed ? entry.confirmedIds : entry.assigneeIds,
+        5
+      );
+      const namesSource = useConfirmed && Array.isArray(entry.confirmedNames)
+        ? entry.confirmedNames
+        : entry.assigneeNames;
+      lastAssigneeNames = Array.isArray(namesSource)
+        ? validAssigneeNames(namesSource, lastAssigneeIds.length)
+        : [];
+      lastLoadedAssignmentEntry = entry;
+      resolve(capturedAssignment);
     });
   });
 }
@@ -1576,7 +1706,8 @@ function init() {
         .catch((err) => sendResponse({ ok: false, error: (err && err.message) || '批量推进失败' }));
       return true;
     } else if (request.action === 'feishuRecommendByScore') {
-      handleFeishuRecommend(request.minScore, request.name)
+      // v3.5.0：卡片自带职位身份（jobTitle），执行前核对页面职位，防选错 tab 推错岗
+      handleFeishuRecommend(request.minScore, request.name, request.jobTitle)
         .then((result) => sendResponse(result))
         .catch((err) => sendResponse({ ok: false, error: (err && err.message) || '飞书指令推进失败' }));
       return true;
@@ -3753,6 +3884,33 @@ async function handleBatchAssign(appIds) {
       error: '本职位尚未记录简历推荐对象：请先在本职位的简历列表页勾选候选人、点「推荐给用人部门」打开弹窗（插件自动记录），再回「配置」页点「重新读取」（每个职位的简历推荐对象各自记录，不会串用）'
     };
   }
+  // v3.5.0：执行前最终守卫。查档口径已优先确认章记录，这里防的是极端竞态
+  //（确认章记录刚被换掉、内存与存档短暂不一致等）——推进给错误的人不可逆，宁可拒绝。
+  // 无确认章的记录（旧版本确认的 / 从未点过确认）不拦，但会在日志里提示补章
+  const loadedEntry = lastLoadedAssignmentEntry;
+  if (loadedEntry && (Number(loadedEntry.confirmedAt) || 0) > 0
+    && Array.isArray(loadedEntry.confirmedIds) && loadedEntry.confirmedIds.length) {
+    const confirmedIds = MokaBatch.sanitizeIdList(loadedEntry.confirmedIds, 5);
+    if (confirmedIds.join(',') !== lastAssigneeIds.join(',')) {
+      const confirmedNames = validAssigneeNames(
+        Array.isArray(loadedEntry.confirmedNames) ? loadedEntry.confirmedNames : [],
+        confirmedIds.length
+      );
+      pushPluginLog({ cat: 'warn', text: '批量推进已拦截：本次名单（'
+        + resolveAssigneeNamesForDisplay().join('、') + '）与本岗确认名单（'
+        + confirmedNames.join('、') + '）不一致' });
+      return {
+        ok: false,
+        error: '本岗已确认的简历推荐对象是「' + confirmedNames.join('、') + '」，而当前将使用的是「'
+          + (resolveAssigneeNamesForDisplay().join('、') || '未知') + '」。为防止推进给错误的人已拦截；'
+          + '请回「配置」页点「重新读取」+「确认本岗简历推荐对象」后再试'
+      };
+    }
+  }
+  pushPluginLog({ cat: 'info', text: '批量推进名单：' + (resolveAssigneeNamesForDisplay().join('、') || '未知')
+    + (loadedEntry && (Number(loadedEntry.confirmedAt) || 0) > 0
+      ? '（确认章记录）'
+      : '（无确认章 · 建议回「配置」页点「确认本岗简历推荐对象」补章）') });
   const built = MokaBatch.buildBatchAssignmentBody(
     template.body, appIds, lastAssigneeIds
   );
@@ -3775,9 +3933,25 @@ async function handleBatchAssign(appIds) {
   };
 }
 
-async function handleFeishuRecommend(minScore, namePattern) {
+async function handleFeishuRecommend(minScore, namePattern, expectedJobName) {
   if (isScreening) {
     return { ok: false, error: '当前筛选进行中，请先停止筛选再推进' };
+  }
+  // v3.5.0：飞书卡片自带职位身份——当前页面职位对不上就拒绝执行。多职位标签并存时
+  // 选错 tab 的代价是把 A 岗的候选人推进 B 岗（不可逆），宁可让用户切对页面再点
+  const expected = normalizeJobName(expectedJobName);
+  const currentPageName = pageJobName() || lastKnownJobName || '';
+  const current = normalizeJobName(currentPageName);
+  if (expected && current && !jobNameMatches(expected, current)) {
+    pushPluginLog({ cat: 'warn', text: '飞书批量推进已拦截：卡片属于职位「'
+      + normalizeJobName(expectedJobName) + '」，当前页面是「' + normalizeJobName(currentPageName) + '」' });
+    return {
+      ok: false,
+      jobTitle: lastKnownJobName || '当前岗位',
+      error: '该卡片属于职位「' + normalizeJobName(expectedJobName) + '」，但当前打开的 Moka 页面是「'
+        + normalizeJobName(currentPageName) + '」。为防止推进错岗位已拦截；'
+        + '请切到该职位的候选人列表页后，回飞书重新点「一键批量推进」'
+    };
   }
   if (!results.length) {
     await restoreResultsSilently();
@@ -3843,9 +4017,13 @@ async function handleFeishuRecommend(minScore, namePattern) {
     ok: true,
     count: names.length,
     names,
-    // 推荐对象（用人部门 / 面试官）姓名随回执一并回传，飞书侧写明「推给了谁」
+    // 推荐对象（用人部门 / 面试官）姓名随回执一并回传，飞书侧写明「推给了谁」；
+    // v3.5.0：再带上确认章时间，回执直接可见「这份名单是否确认过、何时确认的」
     assignees: resolveAssigneeNamesForDisplay(),
     assigneeCount: lastAssigneeIds.length,
+    assigneeConfirmedAt: lastLoadedAssignmentEntry
+      ? (Number(lastLoadedAssignmentEntry.confirmedAt) || 0)
+      : 0,
     jobTitle: lastKnownJobName || '当前岗位'
   };
 }
@@ -4243,6 +4421,7 @@ if (typeof module !== 'undefined' && module.exports) {
     rememberJobPipeline,
     getAssigneeForJob,
     getAssigneeDiagnostics,
+    pickAssignmentEntry,
     normalizeScoreConcurrency,
     scoreDiagnosticsText,
     resolveConcurrencyStep,

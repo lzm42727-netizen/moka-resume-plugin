@@ -710,7 +710,9 @@ function initFeishuBridge() {
           chrome.tabs.sendMessage(execTabId, {
             action: 'feishuRecommendByScore',
             minScore: msg.minScore,
-            name: msg.name
+            name: msg.name,
+            // v3.5.0：卡片自带职位身份，content 执行前核对当前页面职位（防推错岗）
+            jobTitle: msg.jobTitle || ''
           }, (res) => {
             const err = chrome.runtime.lastError;
             // 执行成功后延迟整页刷新：让候选人从「初筛」列表移出（与侧栏批量推进同款 1.2s）

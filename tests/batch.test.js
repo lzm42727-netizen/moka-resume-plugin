@@ -204,8 +204,17 @@ describe('batch wiring', () => {
     assert.match(content, /pipelineId: String\(pipelineId\)/);
     assert.match(content, /\[ASSIGNMENT_CAPTURE_KEY\]: \{ captures \}/);
     // 读取/执行前校验当前职位的模板，职位不匹配则回存储取对应那份
+    // v3.5.0：查档统一口径 pickAssignmentEntry——「内存命中即返回」的快速路径必须移除
+    //（同 pipeline 挂多职位时，内存里可能是别岗/页面操作留下的模板，只比 pipelineId 会拿错名单），
+    // 改为每次全表扫描同名记录、确认章优先
     assert.match(content, /function loadAssignmentForCurrentPipeline/);
-    assert.match(content, /capturedAssignmentPipelineId === pipelineId/);
+    assert.match(content, /function pickAssignmentEntry\(captures, pipelineId, pageName\)/);
+    assert.match(content, /const picked = pickAssignmentEntry\(captures, pipelineId, pageName\)/);
+    assert.doesNotMatch(
+      content,
+      /capturedAssignmentPipelineId === pipelineId && capturedAssignment/,
+      '内存快速路径不得回潮：实锤「确认 4 人却推进给罗耀钏」的一条根因路径'
+    );
     // handleBatchAssign 明确拒绝未记录分配对象的职位
     assert.match(content, /本职位尚未记录简历推荐对象/);
   });
@@ -364,10 +373,10 @@ describe('batch wiring', () => {
     // v3.2.0 免真发：无真实模板时合成默认模板建记录（真发捕获同名覆盖为真实偏好）
     assert.match(content, /const templateRaw = template \|\| MokaBatch\.buildDefaultTemplate\(ids, location\.origin\);/);
     assert.match(content, /if \(synthesized\) entry\.synthesizedTemplate = true;/);
-    // v3.2.1：落库结果通过 done(written) 如实回传调用方（adopt 据此决定成败）
+    // v3.2.1：落库结果通过 done(ok, detail) 如实回传调用方（adopt 据此决定成败）
     assert.match(content, /persistAssignmentEntry\(entry, \(written\) =>/);
-    // v3.3.0：写入成功语义 = set 回调无 lastError（done(true) 已被 done(!failed) 取代）
-    assert.match(content, /if \(typeof done === 'function'\) done\(!failed\);/);
+    // v3.3.0：写入成功语义 = set 回调无 lastError；v3.5.0：detail 区分 written / kept-confirmed
+    assert.match(content, /if \(typeof done === 'function'\) done\(!failed, 'written'\);/);
     // v3.3.0 第一批加固：存档写队列串行 + 写失败如实上报 + 模板名章校验/按职位名回退
     assert.match(content, /let assigneeStoreQueue = Promise\.resolve\(\);/);
     assert.match(content, /function enqueueAssigneeStoreWrite\(task\)/);
@@ -503,5 +512,57 @@ describe('batch wiring', () => {
 
     // popup：姓名凑得齐就显示名字，否则退回「N 人」
     assert.match(js, /function formatAssigneeWho/);
+  });
+});
+
+describe('确认章贯穿全链路（v3.5.0 确认过的名单绝不被静默替换）', () => {
+  const readContent = () => source('content.js');
+
+  it('确认时落章：confirmedAt/confirmedIds/confirmedNames 写进分配存档', () => {
+    const content = readContent();
+    assert.match(content, /entry\.confirmedAt = entry\.savedAt;/);
+    assert.match(content, /entry\.confirmedIds = ids\.slice\(\);/);
+    assert.match(content, /entry\.confirmedNames = capped\.slice\(\);/);
+  });
+
+  it('查档命中确认章记录时，执行名单直接取确认章快照', () => {
+    const content = readContent();
+    assert.match(content, /const useConfirmed = \(Number\(entry\.confirmedAt\) \|\| 0\) > 0/);
+    assert.match(content, /useConfirmed \? entry\.confirmedIds : entry\.assigneeIds/);
+  });
+
+  it('页面操作捕获走确认章保护：不同名单不得覆盖主位，只能写别名键留档', () => {
+    const content = readContent();
+    assert.match(content, /persistAssignmentEntry\(entry, \(ok, detail\) => \{/);
+    assert.match(content, /\{ protectConfirmed: true \}/);
+    assert.match(content, /已拦截对本岗确认名单的覆盖/);
+    assert.match(content, /detail === 'kept-confirmed'/, '保护触发时内存必须回到确认记录');
+  });
+
+  it('批量推进执行前守卫 + 名单来源可见（日志与飞书回执都写明确认状态）', () => {
+    const content = readContent();
+    assert.match(content, /批量推进已拦截：本次名单/);
+    assert.match(content, /为防止推进给错误的人已拦截/);
+    assert.match(content, /批量推进名单：/);
+    assert.match(content, /assigneeConfirmedAt: lastLoadedAssignmentEntry/);
+  });
+
+  it('飞书指令带职位身份：卡片 → Bridge → background → content 四段透传并核验', () => {
+    const content = readContent();
+    const lib = source('lib/feishu.js');
+    const bg = source('background.js');
+    const server = source('feishu-bridge/server.js');
+    assert.match(lib, /jobTitle: String\(jobTitle \|\| ''\)/, '卡片按钮 value 带职位名');
+    assert.match(server, /jobTitle: actionVal\.jobTitle \|\| ''/, 'Bridge 透传职位名');
+    assert.match(bg, /jobTitle: msg\.jobTitle \|\| ''/, 'background 下发时带上职位名');
+    assert.match(content, /handleFeishuRecommend\(request\.minScore, request\.name, request\.jobTitle\)/);
+    assert.match(content, /为防止推进错岗位已拦截/, '页面职位与卡片职位不符时拒绝执行');
+  });
+
+  it('回执标注名单来源：确认章时间 / 未补章提示', () => {
+    const lib = source('lib/feishu.js');
+    assert.match(lib, /function assigneeSourceText\(confirmedAt\)/);
+    assert.match(lib, /确认于 \$\{d\.getMonth\(\) \+ 1\}-\$\{d\.getDate\(\)\}/);
+    assert.match(lib, /未确认章 · 建议回插件「配置」页点「确认本岗简历推荐对象」补章/);
   });
 });

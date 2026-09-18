@@ -404,3 +404,75 @@ describe('v1.8.8 结果页用量行（用时 + 预估花费）', () => {
     assert.match(src, /screeningStartedAt = job\.startedAt \|\| Date\.now\(\);[\s\S]{0,60}screeningEndedAt = 0;/);
   });
 });
+
+describe('pickAssignmentEntry 统一查档口径（v3.5.0 确认章优先）', () => {
+  // 事故背景：海外SEO运营实习生与广告投放运营实习生共用同一 pipelineId（Moka id 复用）。
+  // 用户确认了 4 人推荐对象，但页面手动操作带着 pipeline 上次预选的罗耀钏占住主键，
+  // 旧查档逻辑按名章放行 → 飞书一键批量推进把人推给了罗耀钏（不可逆）
+  const P = '42938';
+  const mk = (over) => Object.assign({
+    template: { url: 'https://app.mokahr.com/x', headers: {}, body: '{"assigneeIds":[1]}' },
+    assigneeIds: [1],
+    assigneeNames: ['甲'],
+    pipelineId: P,
+    jobName: '',
+    savedAt: 0
+  }, over);
+
+  it('同岗位「有确认章的记录」优先于更新的无章记录：确认名单不被页面操作静默替换', () => {
+    const captures = {
+      [P]: mk({
+        jobName: '海外SEO运营实习生',
+        assigneeIds: [9],
+        assigneeNames: ['罗耀钏'],
+        savedAt: 200
+      }),
+      [P + '#海外SEO运营实习生']: mk({
+        jobName: '海外SEO运营实习生',
+        assigneeIds: [1, 2, 3, 4],
+        assigneeNames: ['陈晓庆', '万树', '吴彦霖', '李琼'],
+        savedAt: 100,
+        confirmedAt: 100,
+        confirmedIds: [1, 2, 3, 4],
+        confirmedNames: ['陈晓庆', '万树', '吴彦霖', '李琼']
+      })
+    };
+    const picked = contentApi.pickAssignmentEntry(captures, P, '海外SEO运营实习生');
+    assert.ok(picked, '必须命中记录');
+    assert.equal(picked.confirmed, true, '应选中确认章记录');
+    assert.deepEqual(picked.entry.assigneeIds, [1, 2, 3, 4]);
+  });
+
+  it('都无确认章时取最新（升级前确认过的记录没有章，需补章后才受保护）', () => {
+    const captures = {
+      [P]: mk({ jobName: '海外SEO运营实习生', assigneeIds: [9], savedAt: 200 }),
+      [P + '#海外SEO运营实习生']: mk({ jobName: '海外SEO运营实习生', assigneeIds: [1, 2, 3, 4], savedAt: 100 })
+    };
+    const picked = contentApi.pickAssignmentEntry(captures, P, '海外SEO运营实习生');
+    assert.equal(picked.confirmed, false);
+    assert.deepEqual(picked.entry.assigneeIds, [9], '这正是升级后必须回配置页补一次确认章的原因');
+  });
+
+  it('主键名章是别的职位时按页面职位名精确改道；扫不到返回 null（拒绝执行）', () => {
+    const captures = {
+      [P]: mk({ jobName: '全球化增长实习生', assigneeIds: [9], savedAt: 200 })
+    };
+    assert.equal(contentApi.pickAssignmentEntry(captures, P, '广告投放运营实习生'), null);
+    captures[P + '#广告投放运营实习生'] = mk({
+      jobName: '广告投放运营实习生',
+      assigneeIds: [7],
+      savedAt: 50
+    });
+    const picked = contentApi.pickAssignmentEntry(captures, P, '广告投放运营实习生');
+    assert.ok(picked && picked.rerouted, '应按职位名改道');
+    assert.deepEqual(picked.entry.assigneeIds, [7]);
+  });
+
+  it('无页面职位名 / 主键缺名章时沿用旧行为直接用主键（不误伤旧存档与自愈补章）', () => {
+    const captures = { [P]: mk({ jobName: '', savedAt: 5 }) };
+    const noPage = contentApi.pickAssignmentEntry(captures, P, '');
+    assert.ok(noPage && noPage.entry, '无页面名：用主键');
+    const nameless = contentApi.pickAssignmentEntry(captures, P, '海外SEO运营实习生');
+    assert.ok(nameless && nameless.entry, '主键缺名章：用主键（自愈补章链路依赖此行为）');
+  });
+});
