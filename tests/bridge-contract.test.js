@@ -218,3 +218,67 @@ describe('飞书 Bridge 加固契约（2.0.1）', () => {
     assert.match(server, /页面已刷新/, 'toast 反馈刷新状态');
   });
 });
+
+describe('Bridge 可测性与安全加固（v3.3.1）', () => {
+  it('server.js 可被 require：启动收进 startBridge + require.main 门卫 + 导出内部', () => {
+    const server = source('feishu-bridge/server.js');
+    assert.match(server, /if \(require\.main === module\) \{\s*\n\s*startBridge\(\);\s*\n\s*\}/,
+      '直接运行才启动，require 不再自动监听端口/连飞书/抢 stdin');
+    assert.match(server, /function startBridge\(\) \{[\s\S]*?startDeadLinkProbe\(\);[\s\S]*?createWsServer\(/);
+    assert.match(server, /module\.exports = \{[\s\S]*?config,/,
+      '导出 config/createWsServer/sendToPlugin 等供测试复用');
+    // 死链探测定时器收进函数——import 时不挂住测试进程事件循环
+    assert.doesNotMatch(server, /^setInterval\(/m, '顶层不得直接 setInterval（收进 startDeadLinkProbe）');
+    assert.match(server, /function startDeadLinkProbe\(\) \{[\s\S]*?setInterval\(/);
+  });
+
+  it('Origin 精确校验 + bridgeHello 握手：配置 allowedExtensionId 后双重核对', () => {
+    const server = source('feishu-bridge/server.js');
+    // 未配置时保持旧行为（前缀校验），配置后升级为精确匹配
+    assert.match(server, /const expectedExt = String\(config\.allowedExtensionId \|\| ''\)\.trim\(\);/);
+    assert.match(server, /if \(expectedExt\) \{[\s\S]*?origin !== 'chrome-extension:\/\/' \+ expectedExt/,
+      '配置后 Origin 必须精确等于 chrome-extension://<allowedExtensionId>');
+    assert.match(server, /\} else if \(origin && !origin\.startsWith\('chrome-extension:\/\/'\)\) \{/,
+      '未配置时保留非插件来源拒绝');
+    // 握手：插件上报扩展 ID，不符即断
+    assert.match(server, /msg\.action === 'bridgeHello'/);
+    assert.match(server, /if \(expectedExt && extId && extId !== expectedExt\) \{[\s\S]*?socket\.destroy\(\)/);
+    assert.match(server, /握手扩展 ID 与来源不符/);
+    // 示例配置带 allowedExtensionId 字段
+    const example = JSON.parse(source('feishu-bridge/config.example.json'));
+    assert.ok('allowedExtensionId' in example, 'config.example.json 应带 allowedExtensionId 示例字段');
+    // 插件侧：连接成功先握手
+    const bg = source('background.js');
+    assert.match(bg, /action: 'bridgeHello', extensionId: chrome\.runtime\.id/);
+  });
+
+  it('config.json 含 App Secret，落盘权限 0600（启动收紧 + 写入后收紧）', () => {
+    const server = source('feishu-bridge/server.js');
+    assert.match(server, /if \(\(st\.mode & 0o777\) !== 0o600\) \{[\s\S]*?fs\.chmodSync\(configPath, 0o600\)/,
+      '启动时发现权限过松自动收紧');
+    assert.match(server, /fs\.writeFileSync\(configPath, JSON\.stringify\(config, null, 2\), 'utf8'\);\s*\n\s*try \{ fs\.chmodSync\(configPath, 0o600\); \} catch \(e\) \{ \/\* ignore \*\/ \}/,
+      '凭据持久化写入后必须 chmod 0600');
+    // 本地真实配置文件如果存在，权限必须已经是 0600
+    const realConfig = path.join(__dirname, '..', 'feishu-bridge', 'config.json');
+    if (fs.existsSync(realConfig)) {
+      const mode = fs.statSync(realConfig).mode & 0o777;
+      assert.equal(mode, 0o600, '本地 config.json 权限必须是 0600（当前 ' + mode.toString(8) + '）');
+    }
+  });
+
+  it('回执两条路都失败时重试一次私聊（防飞书限流导致推进成功但无通知）', () => {
+    const server = source('feishu-bridge/server.js');
+    assert.match(server, /const sendPrivateReceipt = \(\) => larkClient\.im\.message\.create\(/);
+    assert.match(server, /回执私聊兜底失败，3 秒后重试一次/);
+    assert.match(server, /重试后回执已私聊发送给点击者/);
+    assert.match(server, /回执私聊兜底重试仍失败/);
+  });
+
+  it('bridge.log 轮转：启动与自启安装脚本都做 2MB 归档（launchd 持有 FD，只能脚本轮转）', () => {
+    const start = source('启动飞书机器人.command');
+    const install = source('安装开机自启.command');
+    const rotate = /-gt 2097152 \]; then\s*\n\s*mv -f "\$LOG_FILE" "\$LOG_FILE\.1"/;
+    assert.match(start, rotate, '手动启动脚本超 2MB 归档');
+    assert.match(install, rotate, '自启安装脚本超 2MB 归档');
+  });
+});

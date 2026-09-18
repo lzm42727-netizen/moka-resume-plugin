@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.3.1 - 2026-09-18
+
+- **Bridge 可测化**：`server.js` 启动收进 `startBridge()` + `require.main` 门卫——被测试/工具脚本 require 时不再自动监听端口、连飞书、抢 stdin；死链探测定时器收进 `startDeadLinkProbe()`（require 不挂住事件循环）；导出 `config`/`createWsServer`/`sendToPlugin` 等供复用
+- **WebSocket 鉴权升级**：配置 `config.json` 的 `allowedExtensionId` 后，来源 Origin 必须精确等于 `chrome-extension://<ID>`（此前只验前缀，本机其它扩展/伪造 Origin 的本地进程也能连上触发批量推进）；插件连接成功先发 `bridgeHello` 上报自身扩展 ID，Bridge 双重核对不符即断，并在日志留档
+- **config.json 权限收紧**：文件含 App Secret——启动时发现权限过松自动 chmod 0600，凭据持久化写入后同样收紧
+- **回执重试**：飞书卡片回执「回复原会话 + 私聊兜底」两条路都失败时，等 3 秒重试一次私聊——飞书偶发限流不至于「推进成功了但用户没收到任何通知」
+- **bridge.log 轮转**：启动/自启安装脚本在拉起 Bridge 前把超 2MB 的 bridge.log 归档为 `.1`（launchd 持有文件句柄，进程内轮转对托管场景无效，故在脚本层做）
+
 ## 3.3.0 - 2026-09-18
 
 - **推荐对象存档写队列（正确性加固第 1 批）**：`persistAssignmentEntry` / `storeRecommendNames` / `mergeLiveScrapedAssigneeNames` 全部经 `assigneeStoreQueue` 串行执行——此前「确认本岗推荐对象」与自动存档并发时存在 read-modify-write 互相覆盖窗口，确认记录可能被旧快照冲掉

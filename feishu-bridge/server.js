@@ -59,6 +59,14 @@ if (fs.existsSync(configPath)) {
   } catch (e) {
     console.warn('[Bridge] 解析 config.json 失败，使用默认配置:', e.message);
   }
+  // v3.3.1：config.json 含 App Secret，权限收紧为本用户可读写（0600）
+  try {
+    const st = fs.statSync(configPath);
+    if ((st.mode & 0o777) !== 0o600) {
+      fs.chmodSync(configPath, 0o600);
+      console.log('[Bridge] 🔒 config.json 权限已收紧为 0600（App Secret 仅本用户可读）');
+    }
+  } catch (e) { /* ignore */ }
 }
 
 // ----------------- WebSocket 连接管理 -----------------
@@ -68,18 +76,21 @@ let seqCounter = 0;
 const pendingRequests = new Map();
 // 死链探测：插件侧 MV3 SW 挂起后 TCP 可能半开（能写进去但对面收不到），
 // 定期 ping 插件、超时无 pong 主动断开，让下一次指令快速报错而不是石沉大海（v3.0.6）
+// v3.3.1：收进函数——server.js 被 require（测试/工具脚本）时不自动启动定时器
 let lastPluginPongAt = 0;
-setInterval(() => {
-  const ws = activePluginSocket;
-  if (!ws || ws.readyState !== 1) return;
-  if (lastPluginPongAt && Date.now() - lastPluginPongAt > 70000) {
-    console.warn('[Bridge] ⛔ 检测到插件连接疑似死链（70 秒无 pong），主动断开等待重连');
-    try { ws.close(); } catch (e) { /* ignore */ }
-    if (activePluginSocket === ws) activePluginSocket = null;
-    return;
-  }
-  try { ws.send(JSON.stringify({ action: 'feishuBridgePing', ts: Date.now() })); } catch (e) { /* ignore */ }
-}, 25000);
+function startDeadLinkProbe() {
+  setInterval(() => {
+    const ws = activePluginSocket;
+    if (!ws || ws.readyState !== 1) return;
+    if (lastPluginPongAt && Date.now() - lastPluginPongAt > 70000) {
+      console.warn('[Bridge] ⛔ 检测到插件连接疑似死链（70 秒无 pong），主动断开等待重连');
+      try { ws.close(); } catch (e) { /* ignore */ }
+      if (activePluginSocket === ws) activePluginSocket = null;
+      return;
+    }
+    try { ws.send(JSON.stringify({ action: 'feishuBridgePing', ts: Date.now() })); } catch (e) { /* ignore */ }
+  }, 25000);
+}
 
 function sendToPlugin(action, data = {}) {
   return new Promise((resolve, reject) => {
@@ -113,8 +124,17 @@ function createWsServer(port) {
   server.on('upgrade', (req, socket, head) => {
     // 鉴权：浏览器发起的 WebSocket 必带 Origin 头（WS 不受 CORS 限制），
     // 恶意网页可直连 127.0.0.1 触发批量推进；只放行本扩展与非浏览器本地客户端（无 Origin）
+    // v3.3.1：配置 allowedExtensionId 后升级为精确校验——此前只验前缀，本机其它
+    // 扩展（或伪造 chrome-extension:// Origin 的本地进程）同样能连上触发推进
     const origin = req.headers.origin || '';
-    if (origin && !origin.startsWith('chrome-extension://')) {
+    const expectedExt = String(config.allowedExtensionId || '').trim();
+    if (expectedExt) {
+      if (origin !== 'chrome-extension://' + expectedExt) {
+        console.warn(`[Bridge] ⛔ 已拒绝非授权来源的 WebSocket 连接 (Origin: ${origin || '(无)'}，期望扩展: ${expectedExt})`);
+        socket.destroy();
+        return;
+      }
+    } else if (origin && !origin.startsWith('chrome-extension://')) {
       console.warn(`[Bridge] ⛔ 已拒绝非插件来源的 WebSocket 连接 (Origin: ${origin})`);
       socket.destroy();
       return;
@@ -216,6 +236,16 @@ function createWsServer(port) {
             }
             if (msg.action === 'updateFeishuAppCredentials') {
               handleUpdateCredentials(msg, ws);
+            } else if (msg.action === 'bridgeHello') {
+              // v3.3.1 握手：插件连接后先上报自身扩展 ID——配置了 allowedExtensionId
+              // 时与来源 Origin 双重核对，不符即断；同时在日志里留档便于排查
+              const extId = String(msg.extensionId || '');
+              if (expectedExt && extId && extId !== expectedExt) {
+                console.warn(`[Bridge] ⛔ 握手扩展 ID 与来源不符 (${extId})，断开连接`);
+                try { socket.destroy(); } catch (e) { /* ignore */ }
+                return;
+              }
+              console.log(`[Bridge] 🤝 握手完成：扩展 ${extId || '(未上报)'}`);
             } else if (msg.action === 'feishuBridgePing') {
               // 插件保活心跳：回 pong 维持双向活性探测
               ws.send(JSON.stringify({ action: 'feishuBridgePong', seq: msg.seq }));
@@ -266,6 +296,7 @@ async function handleUpdateCredentials(msg, ws) {
 
   try {
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+    try { fs.chmodSync(configPath, 0o600); } catch (e) { /* ignore */ }
     console.log(`[Bridge] 🔑 凭据已持久化至 config.json (App ID: ${appId ? appId.slice(0, 6) + '...' : '(空)'}, 接收者: ${config.receiver || '(未指定)'})`);
   } catch (e) {
     console.warn('[Bridge] 保存 config.json 失败:', e.message);
@@ -495,18 +526,28 @@ async function initFeishuLarkWs() {
                 }
               }
               if (!replied && senderOpenId && replyCard) {
+                // v3.3.1：回执两条路都失败时等 3 秒重试一次私聊——飞书偶发限流/
+                // 抖动不至于让「推进成功了但用户没收到任何通知」
+                const sendPrivateReceipt = () => larkClient.im.message.create({
+                  params: { receive_id_type: 'open_id' },
+                  data: {
+                    receive_id: senderOpenId,
+                    msg_type: 'interactive',
+                    content: JSON.stringify(replyCard.card || replyCard)
+                  }
+                });
                 try {
-                  await larkClient.im.message.create({
-                    params: { receive_id_type: 'open_id' },
-                    data: {
-                      receive_id: senderOpenId,
-                      msg_type: 'interactive',
-                      content: JSON.stringify(replyCard.card || replyCard)
-                    }
-                  });
+                  await sendPrivateReceipt();
                   console.log('[Bridge] ✅ 回执已私聊发送给点击者');
                 } catch (e) {
-                  console.warn('[Bridge] ⚠️ 回执私聊兜底也失败:', e.message);
+                  console.warn('[Bridge] 回执私聊兜底失败，3 秒后重试一次:', e.message);
+                  await new Promise((r) => setTimeout(r, 3000));
+                  try {
+                    await sendPrivateReceipt();
+                    console.log('[Bridge] ✅ 重试后回执已私聊发送给点击者');
+                  } catch (e2) {
+                    console.warn('[Bridge] ⚠️ 回执私聊兜底重试仍失败:', e2.message);
+                  }
                 }
               }
             }
@@ -587,7 +628,28 @@ function startCli() {
   });
 }
 
-// 启动服务
-createWsServer(config.wsPort || 18888);
-initFeishuLarkWs();
-startCli();
+// ----------------- 启动 -----------------
+// v3.3.1：启动收进 startBridge——server.js 被 require（测试/工具脚本）时不再
+// 自动监听端口 / 连飞书 / 抢 stdin，只有直接运行才启动
+function startBridge() {
+  startDeadLinkProbe();
+  createWsServer(config.wsPort || 18888);
+  initFeishuLarkWs();
+  startCli();
+}
+
+if (require.main === module) {
+  startBridge();
+}
+
+// 供测试与工具脚本复用（不发请求即可校验配置、组装消息等）
+module.exports = {
+  config,
+  configPath,
+  startBridge,
+  createWsServer,
+  sendToPlugin,
+  handleUpdateCredentials,
+  handleSendCardViaBridge,
+  initFeishuLarkWs
+};

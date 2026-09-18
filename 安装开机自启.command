@@ -35,6 +35,13 @@ mkdir -p "$HOME/Library/LaunchAgents"
 # 若已安装过，先卸载旧实例
 launchctl bootout "gui/$(id -u)/${LABEL}" >/dev/null 2>&1
 
+# v3.3.1 日志轮转：bridge.log 超 2MB 归档为 bridge.log.1（只保留一代）
+LOG_FILE="$DIR/feishu-bridge/bridge.log"
+if [ -f "$LOG_FILE" ] && [ "$(stat -f%z "$LOG_FILE" 2>/dev/null || echo 0)" -gt 2097152 ]; then
+  mv -f "$LOG_FILE" "$LOG_FILE.1"
+  echo "🗂 bridge.log 已超 2MB，归档为 bridge.log.1"
+fi
+
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

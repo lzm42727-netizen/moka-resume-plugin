@@ -73,6 +73,13 @@ echo "========================================================"
 echo "🚀 正在启动 Moka 飞书机器人桥接服务 (后台静默常驻模式)..."
 echo "========================================================"
 
+# v3.3.1 日志轮转：bridge.log 超 2MB 归档为 bridge.log.1（只保留一代，
+# 防止长年常驻把日志撑到几十 MB 拖慢排查）
+if [ -f "$LOG_FILE" ] && [ "$(stat -f%z "$LOG_FILE" 2>/dev/null || echo 0)" -gt 2097152 ]; then
+  mv -f "$LOG_FILE" "$LOG_FILE.1"
+  echo "🗂 bridge.log 已超 2MB，归档为 bridge.log.1"
+fi
+
 nohup "$NODE_BIN" "$DIR/feishu-bridge/server.js" > "$LOG_FILE" 2>&1 &
 NEW_PID=$!
 echo "$NEW_PID" > "$PID_FILE"

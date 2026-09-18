@@ -622,6 +622,13 @@ function initFeishuBridge() {
       console.log('[Moka 筛选] 本地飞书 Bridge 已连接 (127.0.0.1:18888)');
       feishuBridgeConnected = true;
       startFeishuHeartbeat();
+      // v3.3.1 握手：上报自身扩展 ID——Bridge 配置 allowedExtensionId 后做
+      // 来源 Origin + 握手双重核对，日志同时留档便于排查
+      try {
+        if (feishuBridgeWs && feishuBridgeWs.readyState === WebSocket.OPEN) {
+          feishuBridgeWs.send(JSON.stringify({ action: 'bridgeHello', extensionId: chrome.runtime.id }));
+        }
+      } catch (e) { /* ignore */ }
       try {
         const s = await getSettings();
         if (s && (s.feishuAppId || s.feishuAppSecret)) {

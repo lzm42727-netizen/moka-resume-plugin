@@ -4,5 +4,6 @@
   "receiver": "xxx@meitu.com",
   "wsPort": 18888,
   "defaultMinScore": 50,
-  "defaultBatchLimit": 30
+  "defaultBatchLimit": 30,
+  "allowedExtensionId": ""
 }
