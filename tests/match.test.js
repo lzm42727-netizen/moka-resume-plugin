@@ -7,6 +7,7 @@ const {
   itemMatchesFilter,
   extractResumeKeywordsFromText,
   toResultView,
+  formatWaitDuration,
   summarizeResultViews,
   sortResultViews,
   viewMatchesFilter,
@@ -104,6 +105,16 @@ describe('extractResumeKeywordsFromText', () => {
 });
 
 describe('toResultView', () => {
+  it('v3.4.1：评分阶段带上 stageSince（卡片显示「已等待 X」），无阶段/无时间戳时不带该字段', () => {
+    const scoring = toResultView({ app: { id: 'a1' }, stage: 'score', stageSince: 1730000000000 });
+    assert.equal(scoring.stage, 'score');
+    assert.equal(scoring.stageSince, 1730000000000);
+    // 空闲行不带时间戳，避免快照里塞无用字段
+    assert.equal('stageSince' in toResultView({ app: { id: 'a1' } }), false);
+    // 有阶段但时间戳缺失（老版本 content 推送的快照）也不能炸
+    assert.equal('stageSince' in toResultView({ app: { id: 'a1' }, stage: 'score' }), false);
+  });
+
   it('keeps display fields and drops bulky resume text', () => {
     const view = toResultView({
       app: {
@@ -301,6 +312,22 @@ describe('bonusScoreDisplay', () => {
   it('hides bonus details for errors or no configured bonus keywords', () => {
     assert.equal(bonusScoreDisplay({ level: '错误', bonusTotalCount: 3 }), '');
     assert.equal(bonusScoreDisplay({ level: '可推进', bonusTotalCount: 0 }), '');
+  });
+});
+
+describe('formatWaitDuration（v3.4.1 结果卡「已等待 X」）', () => {
+  it('60 秒内用秒，超过用 m+ss；非法/负数回 0s', () => {
+    assert.equal(formatWaitDuration(0), '0s');
+    assert.equal(formatWaitDuration(999), '1s', '四舍五入到秒');
+    assert.equal(formatWaitDuration(45000), '45s');
+    assert.equal(formatWaitDuration(59000), '59s');
+    assert.equal(formatWaitDuration(60000), '1m00s');
+    assert.equal(formatWaitDuration(125000), '2m05s');
+    assert.equal(formatWaitDuration(600000), '10m00s');
+    // 时钟回拨 / 缺字段时不能出现 '-3s' 这种文案
+    assert.equal(formatWaitDuration(-5000), '0s');
+    assert.equal(formatWaitDuration(undefined), '0s');
+    assert.equal(formatWaitDuration('abc'), '0s');
   });
 });
 

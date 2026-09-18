@@ -566,6 +566,7 @@ function renderResults() {
       empty.textContent = '结果会出现在这里，左边 Moka 名单保持完整可见';
     }
     list.appendChild(empty);
+    ensureStageTick();
     return;
   }
   visible.forEach((view) => list.appendChild(createResultRow(view)));
@@ -574,6 +575,7 @@ function renderResults() {
     const first = list.querySelector('.mp-row');
     if (first) first.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
+  ensureStageTick();
 }
 
 function buildEvidenceSplit(appId, cols, fitDetail) {
@@ -787,6 +789,39 @@ function buildEvidenceSplit(appId, cols, fitDetail) {
   return split;
 }
 
+// v3.4.1：评分阶段计时。整表会随快照重建，所以计时节点用 data-* 外置，
+// 由单个定时器统一改写文案；列表里没有阶段节点时自动停表，不空转。
+let stageTickTimer = null;
+
+function applyStageWaits() {
+  const nodes = document.querySelectorAll('.mp-stage[data-since]');
+  nodes.forEach((el) => {
+    const since = Number(el.dataset.since) || 0;
+    const base = el.dataset.base || 'AI 评分中…';
+    if (!since) {
+      el.textContent = base;
+      return;
+    }
+    const waited = Date.now() - since;
+    el.textContent = base + '（已等待 ' + MokaMatch.formatWaitDuration(waited) + '）';
+    if (waited >= 90000 && !el.dataset.tipped) {
+      el.dataset.tipped = '1';
+      el.title = '单次模型请求最长 150 秒，超时会自动重试一次。若长时间无结果，可点右上角「重新评分」。';
+    }
+  });
+  if (!nodes.length && stageTickTimer) {
+    clearInterval(stageTickTimer);
+    stageTickTimer = null;
+  }
+}
+
+function ensureStageTick() {
+  applyStageWaits();
+  if (stageTickTimer) return;
+  if (!document.querySelector('.mp-stage[data-since]')) return;
+  stageTickTimer = setInterval(applyStageWaits, 1000);
+}
+
 function createResultRow(view) {
   const row = document.createElement('div');
   row.className = 'mp-row'
@@ -869,7 +904,10 @@ function createResultRow(view) {
   if ((view.stage && ROW_STAGE[view.stage]) || view.rescoring) {
     const stage = document.createElement('div');
     stage.className = 'mp-stage';
-    stage.textContent = (view.stage && ROW_STAGE[view.stage]) || '② AI 评分中…';
+    const base = (view.stage && ROW_STAGE[view.stage]) || '② AI 评分中…';
+    stage.dataset.base = base;
+    if (view.stageSince) stage.dataset.since = String(view.stageSince);
+    stage.textContent = base;
     info.appendChild(stage);
     const bar = document.createElement('div');
     bar.className = 'mp-bar';

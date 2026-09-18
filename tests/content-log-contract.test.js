@@ -104,12 +104,24 @@ describe('content.js 任务状态守卫（1.6.18 第一批）', () => {
 
 describe('content.js 筛选自动补评（1.7.4）', () => {
   it('主轮结束仍有失败项时自动补评一轮（不递归、断点续筛不嵌套）', () => {
-    assert.match(js, /if \(!onlyPending && alive\(\)\) \{[\s\S]{0,400}results\.filter\(hasPendingScore\)\.length/);
-    assert.match(js, /自动补评：\$\{failedCount\} 位评分失败，再试一轮/);
+    assert.match(js, /if \(!onlyPending && alive\(\)\) \{[\s\S]{0,600}results\.filter\(hasPendingScore\)/);
+    assert.match(js, /自动补评：\$\{retryCount\} 位评分失败，再试一轮/);
     // 补评复用同一批次函数、只跑失败项、保持同一 epoch 守卫
-    assert.match(js, /scoreResultsBatch\(scoreConfig, weights, hc, keywords, \{ onlyPending: true, epoch \}\)/);
+    assert.match(js, /scoreResultsBatch\(scoreConfig, weights, hc, keywords, \{\s*onlyPending: true, epoch, skipTimeoutFailures: true\s*\}\)/);
     // 重试纠偏：解析类失败的重试附加 retryAfterParseError
     assert.match(js, /attempt > 0 && last && last\.parseError[\s\S]{0,80}retryAfterParseError: true/);
     assert.match(js, /retryAfterParseError: !!config\.retryAfterParseError/);
+  });
+
+  it('v3.4.1：请求超时类失败不进补评（主轮内已两次 150s，重复长跑只让整轮空等）', () => {
+    // 判据来自卡面结果上的 failureKind（composeFinalScore 透传）
+    assert.match(js, /function isTimeoutFailure\(item\) \{[\s\S]{0,160}failureKind === 'timeout'/);
+    assert.match(js, /const timeoutItems = failedItems\.filter\(isTimeoutFailure\);/);
+    assert.match(js, /const retryCount = failedItems\.length - timeoutItems\.length;/);
+    // worker 侧同样跳过，双保险（避免上层算漏时仍被 worker 捞起来跑）
+    assert.match(js, /if \(onlyPending && skipTimeoutFailures && isTimeoutFailure\(item\)\) continue;/);
+    // 全部失败都是超时时也要有交代，且指向「重评」入口
+    assert.match(js, /位因请求超时失败，已跳过[\s\S]{0,200}「重评」/);
+    assert.match(js, /位请求超时未出分，可点卡片「重评」重试/);
   });
 });

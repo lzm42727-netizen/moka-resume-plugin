@@ -7,8 +7,6 @@
  * - chrome API 全部 try/catch，任何单项失败不影响其它项。
  */
 
-/* eslint-env browser, chrome */
-
 const CHECKS = ['model', 'deploy', 'bridge', 'feishu', 'mokaTab', 'storage'];
 
 const cards = {};

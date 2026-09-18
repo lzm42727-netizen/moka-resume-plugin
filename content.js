@@ -2474,6 +2474,16 @@ function hasPendingScore(item) {
   return !item || !item.score || item.score.level === '错误';
 }
 
+/**
+ * v3.4.1：该候选人是否「因请求超时失败」。
+ * 超时在主轮内已由后台做过 150s → 5s 退避 → 150s 两次完整尝试（约 5 分钟），
+ * 同一份输入再进「自动补评」重复一轮大概率仍然超时，只会让整轮再空等 5 分钟；
+ * 因此补评轮跳过这类人，落卡后由用户点「重评」按需单独重试。
+ */
+function isTimeoutFailure(item) {
+  return !!(item && item.score && item.score.failureKind === 'timeout');
+}
+
 async function checkScreeningJobMismatch() {
   if (!isScreening || !activeScreeningJob) return false;
   const pageJobId = pageJobIdFromContext();
@@ -2563,6 +2573,7 @@ function scoreDiagnosticsText(meta, score) {
 async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
   const options = opts || {};
   const onlyPending = !!options.onlyPending;
+  const skipTimeoutFailures = !!options.skipTimeoutFailures;
   const epoch = options.epoch;
   const total = results.length;
   if (!screeningStartedAt) screeningStartedAt = Date.now();
@@ -2579,6 +2590,7 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
       if (index >= total) break;
       const item = results[index];
       if (onlyPending && !hasPendingScore(item)) continue;
+      if (onlyPending && skipTimeoutFailures && isTimeoutFailure(item)) continue;
 
       // 并发闸门：同一时刻在跑的候选人数受 effectiveConcurrency 约束（自适应降档时才真正生效）
       await acquireScoreSlot();
@@ -2589,6 +2601,24 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
         await enrichCandidate(item.app);
         if (hasAnyExperience(item.app) || item.app.__resumeText) enrichedExp++;
         item.profile = buildCandidateProfile(item.app);
+        // v3.4.1 输入体量诊断：附件简历文本/画像整体超上限时如实写日志（截断在 lib 侧完成），
+        // 否则「网关 150s 超时」会反复出现却看不出是输入体量问题
+        try {
+          const rawResumeLen = String(item.app.__resumeText || '').length;
+          if (rawResumeLen > MokaCandidateProfile.RESUME_TEXT_MAX_CHARS) {
+            pushPluginLog({
+              cat: 'warn',
+              text: `${item.app.name || '候选人'} 附件简历文本 ${rawResumeLen} 字，超过上限已截断至 `
+                + `${MokaCandidateProfile.RESUME_TEXT_MAX_CHARS} 字（防网关请求超时）`
+            });
+          }
+          if (item.profile.length >= MokaCandidateProfile.PROFILE_MAX_CHARS) {
+            pushPluginLog({
+              cat: 'warn',
+              text: `${item.app.name || '候选人'} 画像文本达上限 ${MokaCandidateProfile.PROFILE_MAX_CHARS} 字（多处超长），已截断`
+            });
+          }
+        } catch (e) { /* 诊断失败不影响评分 */ }
         item.hardLocal = evaluateHardConditions(item.app, hc, scoreConfig.jobType);
         item.hard = item.hardLocal;
         item.graduationRisk = MokaMatch.graduationRiskHint(item.app && item.app.educationInfo, {
@@ -2668,12 +2698,32 @@ async function scoreResultsBatch(scoreConfig, weights, hc, keywords, opts) {
 
   // 自动补评：主轮结束仍有评分失败的（多为模型偶发输出异常），自动整体再补一轮；
   // 只补一轮不递归，补评仍失败的落卡等手动「重评」。断点续筛（onlyPending）不再嵌套补评。
+  // v3.4.1：请求超时类不进补评——主轮内已连续两次 150s 完整尝试，重复长跑只是再空等 5 分钟。
   if (!onlyPending && alive()) {
-    const failedCount = results.filter(hasPendingScore).length;
-    if (failedCount > 0) {
-      pushPluginLog({ cat: 'screen', text: `自动补评：${failedCount} 位评分失败，再试一轮` });
-      publishResults(`有 ${failedCount} 位评分失败，自动补评一轮…`, undefined, { flush: true });
-      await scoreResultsBatch(scoreConfig, weights, hc, keywords, { onlyPending: true, epoch });
+    const failedItems = results.filter(hasPendingScore);
+    const timeoutItems = failedItems.filter(isTimeoutFailure);
+    const retryCount = failedItems.length - timeoutItems.length;
+    if (retryCount > 0) {
+      pushPluginLog({
+        cat: 'screen',
+        text: `自动补评：${retryCount} 位评分失败，再试一轮`
+          + (timeoutItems.length ? `（另有 ${timeoutItems.length} 位请求超时已跳过）` : '')
+      });
+      publishResults(`有 ${retryCount} 位评分失败，自动补评一轮…`, undefined, { flush: true });
+      await scoreResultsBatch(scoreConfig, weights, hc, keywords, {
+        onlyPending: true, epoch, skipTimeoutFailures: true
+      });
+    } else if (timeoutItems.length > 0) {
+      pushPluginLog({
+        cat: 'warn',
+        text: `自动补评：${timeoutItems.length} 位因请求超时失败，已跳过（同一份简历已连续两次 150s 超时，`
+          + '再自动跑一轮大概率仍超时）；如需重试请点失败卡片上的「重评」'
+      });
+      publishResults(
+        `有 ${timeoutItems.length} 位请求超时未出分，可点卡片「重评」重试`,
+        undefined,
+        { flush: true }
+      );
     }
   }
 
@@ -4143,6 +4193,7 @@ function setRowStage(appId, stageKey) {
   const item = findResult(appId);
   if (!item) return;
   item.stage = stageKey;
+  item.stageSince = Date.now(); // v3.4.1：卡片显示「已等待 X」，超时重试期间不再像卡死
   publishResults();
 }
 
@@ -4150,6 +4201,7 @@ function clearRowStage(appId) {
   const item = findResult(appId);
   if (!item) return;
   item.stage = null;
+  item.stageSince = 0;
   publishResults();
 }
 

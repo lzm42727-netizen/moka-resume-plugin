@@ -53,6 +53,7 @@ const mokaNamespaceGlobals = {
 // 共享全局作用域，eslint 单文件分析看不见跨文件声明——这里显式登记 v3.4.0 拆分后
 // 的跨模块符号（新增/移动符号时同步维护）。
 const popupSharedGlobals = {
+  LOCAL_DEFAULTS: 'writable',
   WEIGHT_KEYS: 'writable',
   activePresetJobLabel: 'writable',
   applySnapshot: 'writable',
@@ -138,7 +139,7 @@ module.exports = [
     }
   },
   {
-    files: ['content.js', 'inject.js', 'popup/popup.js', 'popup/popup-results.js', 'popup/popup-batch.js'],
+    files: ['content.js', 'inject.js', 'popup/popup.js', 'popup/popup-results.js', 'popup/popup-batch.js', 'popup/health.js'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'script',

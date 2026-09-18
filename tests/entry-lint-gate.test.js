@@ -13,7 +13,7 @@ function source(rel) {
 }
 
 describe('工程门禁：入口文件纳入 lint（P2-1，1.7.0）', () => {
-  const ENTRY_FILES = ['content.js', 'background.js', 'inject.js', 'popup/popup.js', 'popup/popup-results.js', 'popup/popup-batch.js'];
+  const ENTRY_FILES = ['content.js', 'background.js', 'inject.js', 'popup/popup.js', 'popup/popup-results.js', 'popup/popup-batch.js', 'popup/health.js'];
 
   it('package.json lint 覆盖四个入口文件', () => {
     const pkg = JSON.parse(source('package.json'));
@@ -39,5 +39,20 @@ describe('工程门禁：入口文件纳入 lint（P2-1，1.7.0）', () => {
     // 语法检查与正则单测都可能漏网，只有 no-undef 能系统性拦截。
     assert.doesNotMatch(content, /setMultiSelectOptions\(/);
     assert.doesNotMatch(content, /readMultiSelectValues\(/);
+  });
+
+  it('v3.4.1：健康检查页真正落入 lint 规则块（此前只被命令行点名、无规则生效）', () => {
+    const cfg = source('eslint.config.js');
+    // 规则块的 files 数组必须含 health.js，否则该文件只报 eslint-env 提示、no-undef 不生效
+    assert.match(
+      cfg,
+      /files: \[[^\]]*'popup\/health\.js'[^\]]*\]/,
+      'health.js 必须列在带 globals/rules 的 files 数组里'
+    );
+    // 依赖页面脚本注入的常量必须登记，否则 no-undef 会误报（LOCAL_DEFAULTS 来自 config.local.js）
+    assert.match(cfg, /LOCAL_DEFAULTS: 'writable'/);
+    // 旧的 /* eslint-env */ 写法在 flat config 下已失效，属历史残留
+    const health = source('popup/health.js');
+    assert.doesNotMatch(health, /\/\* eslint-env/);
   });
 });

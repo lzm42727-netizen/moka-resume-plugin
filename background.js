@@ -1220,7 +1220,13 @@ async function callLLM(settings, systemPrompt, userPrompt, opts = {}) {
           cat: 'err',
           text: `LLM 请求失败：请求超时（${Math.round(LLM_TIMEOUT_MS / 1000)}s，已重试 ${TIMEOUT_RETRY_MAX} 次）`
         });
-        throw error;
+        // 卡面上的失败原因要能自解释：带上「模型多久没响应 / 已重试几次」，
+        // 否则只显示「请求超时（150s）」看不出是模型慢还是自己卡了（保留原 name 供 classifyLlmError 判定）
+        const finalErr = new Error(
+          `请求超时（模型 ${Math.round(LLM_TIMEOUT_MS / 1000)}s 未响应，已重试 ${TIMEOUT_RETRY_MAX} 次）`
+        );
+        if (error && error.name) finalErr.name = error.name;
+        throw finalErr;
       }
       // 网络类错误也重试
       if (attempt < MAX_RETRIES && isRetriableNetworkError(error)) {

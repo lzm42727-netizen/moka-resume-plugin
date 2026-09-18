@@ -768,3 +768,32 @@ describe('健康检查页（v3.4.0）', () => {
     assert.ok(packSrc.includes("'popup/health.js'"));
   });
 });
+
+describe('评分阶段「已等待」计时（v3.4.1）', () => {
+  it('阶段卡片把 baseline 与起始时间外置到 data-*，并挂上统一计时器', () => {
+    // 整表随快照重建，所以阶段文案与起始时间必须先落 data-*，再由定时器统一改写
+    assert.match(js, /stage\.dataset\.base = base/);
+    assert.match(js, /stage\.dataset\.since = String\(view\.stageSince\)/);
+    assert.match(js, /function applyStageWaits\(\)/);
+    assert.match(js, /document\.querySelectorAll\('\.mp-stage\[data-since\]'\)/);
+    // 列表里没有阶段节点时自动停表，避免弹窗常开时空转
+    assert.match(js, /if \(!nodes\.length && stageTickTimer\) \{\s*clearInterval\(stageTickTimer\);/);
+  });
+
+  it('renderResults 两条出口都刷新计时（空列表也要停表）', () => {
+    // 定义处是 `function ensureStageTick() {`，不带分号，故这里只数「调用点」
+    const calls = js.match(/ensureStageTick\(\);/g) || [];
+    assert.ok(calls.length >= 2, '两个渲染出口都要调用，实际 ' + calls.length);
+    assert.match(js, /list\.appendChild\(empty\);\s*ensureStageTick\(\);\s*return;/);
+    assert.match(js, /visible\.forEach\(\(view\) => list\.appendChild\(createResultRow\(view\)\)\);/);
+  });
+
+  it('长时间等待给出可执行提示，而不是只显示「评分中」', () => {
+    assert.match(js, /已等待 '/);
+    // 90 秒后补 title：说明单次上限 150s、会自动重试、可手动重新评分
+    assert.match(js, /waited >= 90000/);
+    assert.match(js, /单次模型请求最长 150 秒，超时会自动重试一次/);
+    // 时长文本复用 lib 纯函数（可单测），不在页面里另写一份
+    assert.match(js, /MokaMatch\.formatWaitDuration\(/);
+  });
+});

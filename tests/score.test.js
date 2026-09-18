@@ -756,7 +756,17 @@ describe('评分失败的调用层分类（v1.8.6）', () => {
     assert.equal(scoreErrorResult('超时', 'timeout').parseError, true, '仍标记 parseError，卡片照旧显示错误');
   });
 
-  it('超时/过载/网络/配置类失败不在单卡内重试（交给末尾统一补评）', () => {
+  it('v3.4.1：composeFinalScore 把 failureKind 透传到卡面结果（超时类据此免进补评）', () => {
+    const failed = composeFinalScore(scoreErrorResult('请求超时（150s）', 'timeout'), [], []);
+    assert.equal(failed.level, '错误');
+    assert.equal(failed.failureKind, 'timeout');
+    // 无 failureKind（历史缓存 / 模型输出类失败）时不得凭空捏造字段
+    assert.equal('failureKind' in composeFinalScore(scoreErrorResult('模型返回解析失败'), [], []), false);
+    // 正常出分的结果不带该字段
+    assert.equal('failureKind' in composeFinalScore({ dimensions: {}, highlights: [] }, [], []), false);
+  });
+
+  it('超时/过载/网络/配置类失败不在单卡内重试（v3.4.1 起超时也不再进补评）', () => {
     for (const kind of ['timeout', 'overload', 'network', 'config']) {
       assert.equal(
         isRetryableScoreFailure(scoreErrorResult('x', kind)),
