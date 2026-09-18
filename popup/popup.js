@@ -4502,14 +4502,6 @@ async function confirmAssigneeForCurrentJob() {
     flashAssigneeStatusLine();
     return;
   }
-  if (adopted && adopted.ok && adopted.reason === 'name-conflict') {
-    // v3.2.1：写入守卫拒写（页面 id 与职位名不同源）——此前静默当成功，确认永远不变绿
-    lastAdoptNote = '✗ 刚刚未采纳：当前页面 id 下已绑定其它职位的记录（页面 id 与职位名不同源，'
-      + '通常是 Moka 页面没刷新）。请刷新 Moka 页面后重新打开「推荐给用人部门」弹窗，再点本按钮即可确认';
-    await renderAssigneeStatus();
-    flashAssigneeStatusLine();
-    return;
-  }
   if (adopted && adopted.ok && adopted.reason === 'no-record') {
     // v3.2.0：no-record 只剩「页面缺 pipelineId、无法落记录」一种情况——
     // 模板缺失已由默认合成模板兜住（免真发）

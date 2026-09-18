@@ -345,20 +345,19 @@ describe('batch wiring', () => {
     assert.match(content, /function rememberJobPipeline/);
     assert.match(content, /function readJobPipelineMap/);
     assert.match(content, /function persistAssignmentEntry/);
-    // v3.1.3：同一 pipelineId 下已有别的职位名章的存档时绝不覆盖（id 复用/SPA 局部刷新
-    // 会让两个职位短暂共享 pid，覆盖后批量推进就会推进到错误部门）
-    assert.match(content, /分配对象捕获已跳过：pipelineId/);
+    // v3.1.3→v3.2.2：名章冲突不再拒写（拒写会把污染期脏记录永久卡死干净页面，
+    // 实锤「确认不变绿」）——旧记录移到「pid#名章」别名键保留（按职位名的查档
+    // 扫描与键无关），新记录以当前页面为准占本位
+    assert.match(content, /分配对象记录按当前页面覆盖：pipelineId/);
+    assert.match(content, /const aliasKey = entry\.pipelineId \+ '#' \+ normalizeJobName\(existing\.jobName\);/);
+    assert.match(content, /captures\[aliasKey\] = existing;/);
     assert.match(content, /!jobNameMatches\(entry\.jobName, existing\.jobName\)/);
     // v3.2.0 免真发：无真实模板时合成默认模板建记录（真发捕获同名覆盖为真实偏好）
     assert.match(content, /const templateRaw = template \|\| MokaBatch\.buildDefaultTemplate\(ids, location\.origin\);/);
     assert.match(content, /if \(synthesized\) entry\.synthesizedTemplate = true;/);
-    // v3.2.1：落库被名章守卫拒写时必须如实上报（name-conflict），绝不静默当成功——
-    // 否则确认「成功」了记录没写进去，面板永远不变绿也不报错
+    // v3.2.1：落库结果通过 done(written) 如实回传调用方（adopt 据此决定成败）
     assert.match(content, /persistAssignmentEntry\(entry, \(written\) =>/);
-    assert.match(content, /reason: 'name-conflict', names: capped/);
-    assert.match(content, /if \(typeof done === 'function'\) done\(false\);/);
-    assert.match(js, /adopted\.reason === 'name-conflict'/);
-    assert.match(js, /✗ 刚刚未采纳：当前页面 id 下已绑定其它职位的记录/);
+    assert.match(content, /if \(typeof done === 'function'\) done\(true\);/);
     // 分配对象以「职位名」为锚点（URL title 与下拉框文案同源），
     // 彻底绕开 jobId/pipelineId 两套 id 空间的桥接错配
     assert.match(content, /function jobNameMatches/);

@@ -930,23 +930,23 @@ function captureAssignmentRequest(payload) {
 }
 
 /** 把分配存档写入 storage（按职位分桶 + 超限清理）。
- *  done(written)：落库是否真正写入（v3.2.1）——名章守卫拒写时 done(false)，
- *  调用方（adopt/捕获）必须据此向用户如实上报，绝不能当成功 */
+ *  done(written)：落库是否真正写入（v3.2.1），调用方据此如实上报 */
 function persistAssignmentEntry(entry, done) {
   readAssignmentStore((captures) => {
     const existing = captures[entry.pipelineId];
-    // v3.1.3：同一 pipelineId 下已挂着**别的职位**名章的存档时绝不覆盖——
-    // id 复用 / SPA 局部刷新会让两个职位短暂共享同一个 pid，此时覆盖会把
-    // A 职位的分配记录换成 B 职位的（批量推进就会推进到错误部门）。
-    // 以名字为准：请刷新 Moka 页面拿到干净 URL 后再捕获
-    if (existing && normalizeJobName(existing.jobName)
+    const conflict = existing && normalizeJobName(existing.jobName)
       && normalizeJobName(entry.jobName)
-      && !jobNameMatches(entry.jobName, existing.jobName)) {
-      pushPluginLog({ cat: 'warn', text: '分配对象捕获已跳过：pipelineId ' + entry.pipelineId
-        + ' 已绑定「' + existing.jobName + '」，与当前页面「' + entry.jobName
-        + '」不符（id 与职位名不同源）。请刷新 Moka 页面后重新打开推荐弹窗捕获' });
-      if (typeof done === 'function') done(false);
-      return;
+      && !jobNameMatches(entry.jobName, existing.jobName);
+    if (conflict) {
+      // v3.2.2：冲突不再拒写（v3.1.3 的拒写会把干净页面永久卡死——污染期留下的
+      // 脏记录在 storage 里，刷新也清不掉，确认永远失败，实锤）。以当前页面为准：
+      // 旧记录移到「pid#名章」别名键保留——按职位名的查档扫描与键无关，旧岗记录
+      // 仍可命中；新记录占本位，批量推进跟随用户当前正在操作的页面
+      const aliasKey = entry.pipelineId + '#' + normalizeJobName(existing.jobName);
+      captures[aliasKey] = existing;
+      pushPluginLog({ cat: 'warn', text: '分配对象记录按当前页面覆盖：pipelineId ' + entry.pipelineId
+        + ' 原「' + existing.jobName + '」（已移至别名键保留，按职位名仍可查到）→ 现写入「'
+        + entry.jobName + '」' });
     }
     captures[entry.pipelineId] = entry;
     // 每个职位一份；总数超限时丢弃最旧的职位记录
