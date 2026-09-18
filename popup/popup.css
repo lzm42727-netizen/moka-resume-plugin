@@ -2232,6 +2232,34 @@ select:focus {
   margin-top: 4px;
 }
 
+/* 字段下方的自助获取外链（内部网关 API Key / 飞书开放平台） */
+.field-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--primary);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.field-link:hover {
+  color: var(--primary-active);
+  border-bottom-color: var(--primary-active);
+}
+
+.field-link-icon {
+  flex: 0 0 auto;
+  transition: transform 0.15s ease;
+}
+
+.field-link:hover .field-link-icon {
+  transform: translate(0.5px, -0.5px);
+}
+
 .font-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
@@ -2396,41 +2424,6 @@ select:focus {
 .bridge-status-bar.is-connected .bridge-status-dot {
   background: #16a34a;
   box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.2);
-}
-
-/* 飞书自建应用凭据输入框组 */
-.bridge-credentials-box {
-  margin-top: 10px;
-  padding: 10px 12px;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-}
-
-.bridge-cred-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 4px;
-}
-
-.bridge-cred-title {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: #1e293b;
-}
-
-.bridge-cred-desc {
-  font-size: 10.5px;
-  color: #64748b;
-  line-height: 1.45;
-  margin-bottom: 8px;
-}
-
-.bridge-cred-desc a.link-text {
-  color: #2563eb;
-  text-decoration: underline;
-  text-underline-offset: 2px;
 }
 
 /* 启动指引折叠 */

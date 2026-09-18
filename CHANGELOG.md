@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.6.2 - 2026-09-18
+
+- **设置页两处「去哪拿」直接点得动**（用户需求：在插件里就能跳到申请页）。凭据字段只告诉你要填什么，却不告诉你去哪拿，配置时得靠记忆或另开页面找入口。现在两条外链就地放在对应字段下方，点开即到：
+  - **API Key 下方** → `https://model-router-dashboard.meitu.com/api-keys`（公司内网 model router 控制台），文案「还没有 Key？去内部网关获取」
+  - **飞书 App ID / App Secret 下方** → `https://open.feishu.cn/app?lang=zh-CN`（开放平台应用列表，可创建/查看自建应用），文案「还没有 App ID / Secret？去飞书开放平台获取」
+  - 两条链接按插件既有语汇实现（新增 `.field-link`：11px 蓝字走 `var(--primary)` 主色变量 + hover 加深并显示下划线 + 右上小箭头图标轻微位移动效），**不引入按钮/卡片等新形制**，不铺底色
+  - 均为 `target="_blank" rel="noopener noreferrer"`，新标签打开、不夺走侧边栏、不泄露 referrer；纯链接无需任何新权限（`https://open.feishu.cn/*` 本就在 host_permissions 内，`chrome.tabs` 亦已具备）
+  - **部署态仍可见**：取 Key 链接落在 API Key 字段组内，而部署模式隐藏的是 `#conn-manual-fields`，所以团队部署（只填 API Key 的场景）下不会被一起藏掉
+- **清理无消费者的旧凭据样式**：`.bridge-credentials-box` / `.bridge-cred-header` / `.bridge-cred-title` / `.bridge-cred-desc` / `.bridge-cred-desc a.link-text` 五条规则在全仓（含被 gitignore 的文件）已无任何 HTML 消费者——飞书凭据 UI 重做时遗留，属死样式。一并删除，不做「留着以后可能用」的囤积
+- 测试 592 → 598：新增「设置页自助获取链接」6 例（两条链接的地址/文案/位置、部署态可见性、**外链一律带 noopener 的通用门禁**、`.field-link` 单一定义、死样式防回潮）
+
 ## 3.6.1 - 2026-09-18
 
 - **健康检查的版面重做**（用户反馈「布局有点太丑且不是很跟整个插件调性一致」）。原设计每项一张卡、整块铺绿/黄/红底 + 实心圆角徽标——那是看板式语汇，插件的既有语言是「扁平、白底、细线、状态点 + 描边小标签」，两者不搭。现改为：

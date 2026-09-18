@@ -240,7 +240,7 @@
 <body>
   <div class="wrap">
     <header class="hero">
-      <div class="badge">Chrome 插件 · v3.6.1</div>
+      <div class="badge">Chrome 插件 · v3.6.2</div>
       <h1>Moka 智能简历筛选助手</h1>
       <p>在 Moka 候选人列表页自动拉取简历、核对硬性门槛，并用 AI 评估经历匹配与推进档位。本页说明如何安装、日常使用，以及出错时如何排查。</p>
     </header>
@@ -318,6 +318,9 @@
         <li>需要填的只有 <b>一项</b>：<b>API Key</b>（你的密钥）。接口协议 / 提供商 / Endpoint / 模型名称都已由公司内网 model router 统一预置，页面上以一条只读的「连接信息已预置」摘要显示，无需理会。</li>
         <li>点 <b>💾 保存并测试</b>，保存后会自动测一次连接，结果直接显示在按钮下方。</li>
       </ol>
+      <div class="callout ok">
+        <b>取凭据不用另找地址：</b>设置页在对应字段下方直接给了入口——<b>API Key</b> 下方是「还没有 Key？去内部网关获取」（内网 model router 控制台，可自助申请 Key）；<b>飞书 App ID / App Secret</b> 下方是「还没有 App ID / Secret？去飞书开放平台获取」（创建或查看自建应用，凭据在该应用的「凭证与基础信息」页）。两处点开都是<strong>新标签</strong>打开，侧边栏不受影响。
+      </div>
       <div class="callout info">
         <b>关于预置的连接信息：</b>接口协议 / API 提供商 / Endpoint / 模型名称四项由本地私有配置 <code>config.local.js</code>（不入库）<b>锁定为内网 model router 的值</b>——设置页不再把它们显示成可填字段，而是收成一条只读摘要，后台也会强制覆盖，所以既不显示也改不动、更不会误改。确需更换请找维护同学。
       </div>

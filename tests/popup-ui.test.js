@@ -673,7 +673,9 @@ describe('v1.8.5 设置页新增并发数 / JSON 模式', () => {
     assert.match(html, /<input type="number" id="score-concurrency" min="1" max="8" step="1"/);
     assert.match(html, /<input type="checkbox" id="force-json-mode"> 强制 JSON 输出（推荐）/);
     // 控件位置：仍在「连接与模型」卡片内；并发 / JSON 自 1.10.0 起收进「高级」折叠区
-    assert.match(html, /id="model-name"[\s\S]{0,2200}id="score-concurrency"[\s\S]{0,600}id="force-json-mode"/);
+    // 上限原为 2200，v3.6.2 在中间插入了「还没有 Key？去内部网关获取」外链（+约 100 字符），
+    // 但断言意图是「同卡片、且在高级折叠区之前」，故放宽到 2800 而非回退 UI
+    assert.match(html, /id="model-name"[\s\S]{0,2800}id="score-concurrency"[\s\S]{0,600}id="force-json-mode"/);
   });
 
   it('readSettingsForm 落库 forceJsonMode / scoreConcurrency 并做边界夹取', () => {
@@ -852,5 +854,62 @@ describe('评分阶段「已等待」计时（v3.4.1）', () => {
     assert.match(js, /单次模型请求最长 150 秒，超时会自动重试一次/);
     // 时长文本复用 lib 纯函数（可单测），不在页面里另写一份
     assert.match(js, /MokaMatch\.formatWaitDuration\(/);
+  });
+});
+
+describe('设置页自助获取链接（v3.6.2）', () => {
+  it('API Key 下方给出内部网关取 Key 入口', () => {
+    assert.match(
+      html,
+      /id="api-key-portal-link" href="https:\/\/model-router-dashboard\.meitu\.com\/api-keys" target="_blank" rel="noopener noreferrer"/
+    );
+    assert.match(html, /还没有 Key？去内部网关获取/);
+    // 位置：紧跟 API Key 输入框（在「高级」折叠区之前），与 🔒 提示同组
+    // 区间放宽到 1400：中间夹着「显示/隐藏」按钮的两枚 SVG
+    assert.match(html, /id="api-key"[\s\S]{0,1400}id="api-key-portal-link"[\s\S]{0,900}id="conn-adv-group"/);
+  });
+
+  it('部署态仍可见：取 Key 链接不在会被隐藏的 #conn-manual-fields 里', () => {
+    // 部署模式靠 hidden 藏掉 #conn-manual-fields / #local-deploy-summary，
+    // 链接若落进那个容器，团队部署下就点不到了（正是最需要取 Key 的场景）
+    const manualStart = html.indexOf('id="conn-manual-fields"');
+    const apiKeyLabel = html.indexOf('<label for="api-key">');
+    assert.ok(manualStart > -1 && apiKeyLabel > manualStart, '结构锚点应存在且顺序正确');
+    assert.doesNotMatch(html.slice(manualStart, apiKeyLabel), /api-key-portal-link/);
+  });
+
+  it('飞书 App ID / App Secret 下方给出开放平台入口', () => {
+    assert.match(
+      html,
+      /id="feishu-portal-link" href="https:\/\/open\.feishu\.cn\/app\?lang=zh-CN" target="_blank" rel="noopener noreferrer"/
+    );
+    assert.match(html, /还没有 App ID \/ Secret？去飞书开放平台获取/);
+    // 位置：App ID → App Secret → 链接 → 接收人，且仍在本卡片内
+    assert.match(html, /id="feishu-app-id"[\s\S]{0,900}id="feishu-app-secret"[\s\S]{0,900}id="feishu-portal-link"[\s\S]{0,900}id="feishu-receiver"/);
+  });
+
+  it('外链一律新标签打开且带 noopener（防标签劫持）', () => {
+    const anchors = html.match(/<a\b[^>]*href="https?:\/\/[^"]+"[^>]*>/g) || [];
+    assert.ok(anchors.length >= 2, 'popup.html 应有 2 条自助外链，实际 ' + anchors.length);
+    for (const tag of anchors) {
+      assert.match(tag, /target="_blank"/, `外链应新标签打开：${tag}`);
+      assert.match(tag, /rel="noopener noreferrer"/, `外链应带 noopener：${tag}`);
+    }
+    // 不允许 javascript: 伪协议混进来
+    assert.doesNotMatch(html, /href="javascript:/);
+  });
+
+  it('链接样式与插件调性一致：走主色变量，单一 .field-link 定义，不铺色', () => {
+    // 用 var(--primary) 而不是硬编码色值：设置页输入框 hover、按钮、标签页用的都是这套主色
+    assert.match(css, /\.field-link \{[\s\S]{0,320}color: var\(--primary\);/);
+    assert.match(css, /\.field-link:hover \{[\s\S]{0,140}color: var\(--primary-active\);/);
+    // 只定义一次，两处链接共用（防止各写各的样式漂移）
+    assert.equal((css.match(/\.field-link \{/g) || []).length, 1);
+  });
+
+  it('清掉无消费者的旧凭据样式（v3.6.2 死样式清理，防回潮）', () => {
+    // .bridge-credentials-box / .bridge-cred-title 等 5 条规则已无任何 HTML 消费者
+    assert.doesNotMatch(css, /\.bridge-cred/);
+    assert.doesNotMatch(html, /class="bridge-cred/);
   });
 });
