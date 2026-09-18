@@ -2,9 +2,9 @@
  * 健康检查（v3.6.0）：原独立页 popup/health.html + health.js 并入弹窗「健康检查」标签页。
  *
  * 设计约定：
- * - 只读诊断，不改任何设置；红/黄/绿三级卡片（沿用看板的红黄绿分级习惯）；
- * - 每条结论都带「怎么办」，不给裸报错；
- * - 探测函数只返回 { level, body }，渲染统一走 renderHealthCard —— 好测、探测与 DOM 解耦；
+ * - 只读诊断，不改任何设置；红/黄/绿三级只体现在 7px 状态点与描边小标签上（不整行铺色）；
+ * - 每条结论都带「怎么办」，并在展示时拆成独立一行（`splitFixText`）；
+ * - 探测函数只返回 { level, body }，渲染统一走 renderHealthRow —— 好测、探测与 DOM 解耦；
  * - chrome API 全部 try/catch，任何单项失败不影响其它项；
  * - 入口是 popup.js 的 switchTab('health') → renderHealthCheck()；缺 DOM 容器时静默跳过
  *   （popup.html 重构漏元素时，其它标签页照常工作，与 safeEl 的容错口径一致）。
@@ -28,8 +28,8 @@ const HEALTH_BADGE = { ok: '正常', warn: '注意', bad: '异常' };
 
 /** 最近一次结果：key → { level, body }，供顶部汇总行与「复制结果」使用 */
 const healthResults = {};
-/** key → 卡片 DOM（预建后原地更新，保证卡序稳定 = HEALTH_CHECKS 顺序） */
-const healthCards = {};
+/** key → 清单行 DOM（预建后原地更新，保证行序稳定 = HEALTH_CHECKS 顺序） */
+const healthRows = {};
 /** 并发令牌：连点「重新检查」时，旧一轮的迟到结果不再回填 */
 let healthRunToken = 0;
 
@@ -238,32 +238,53 @@ async function checkStorage() {
 
 // ---- 渲染 ----
 
-function renderHealthCard(key, level, body) {
+/**
+ * 把「怎么办：…」从结论里拆到独立一行——它是用户要执行的动作，不该埋在描述里。
+ * 探测函数仍只产出单一 body 文本（好测、好复制），展示侧负责拆行。
+ */
+function splitFixText(body) {
+  const text = String(body || '');
+  const marker = '\n怎么办：';
+  const at = text.lastIndexOf(marker);
+  if (at === -1) return { detail: text, fix: '' };
+  return { detail: text.slice(0, at), fix: '怎么办：' + text.slice(at + marker.length) };
+}
+
+function renderHealthRow(key, level, body) {
   healthResults[key] = { level: level || '', body: body || '' };
-  const box = healthEl('health-results');
-  if (!box) return; // 缺容器就只记录结论（复制结果 / 汇总仍可用）
-  let card = healthCards[key];
-  if (!card) {
-    card = document.createElement('div');
+  const list = healthEl('health-list');
+  if (!list) return; // 缺容器就只记录结论（复制结果 / 汇总仍可用）
+  let row = healthRows[key];
+  if (!row) {
+    row = document.createElement('div');
+    row.className = 'health-row';
     const head = document.createElement('div');
-    head.className = 'health-card-head';
+    head.className = 'health-row-head';
+    const dot = document.createElement('span');
+    dot.className = 'health-row-dot';
     const name = document.createElement('span');
-    name.className = 'health-card-name';
-    const badge = document.createElement('span');
-    badge.className = 'health-card-badge';
-    head.append(name, badge);
-    const text = document.createElement('div');
-    text.className = 'health-card-body';
-    card.append(head, text);
-    healthCards[key] = card;
-    box.appendChild(card);
+    name.className = 'health-row-name';
+    const tag = document.createElement('span');
+    tag.className = 'health-row-tag';
+    head.append(dot, name, tag);
+    const detail = document.createElement('div');
+    detail.className = 'health-row-body';
+    const fix = document.createElement('div');
+    fix.className = 'health-row-fix hidden';
+    row.append(head, detail, fix);
+    healthRows[key] = row;
+    list.appendChild(row);
   }
-  card.classList.remove('pending', 'is-ok', 'is-warn', 'is-bad');
-  card.classList.add(level ? 'is-' + level : 'pending');
+  row.classList.remove('is-pending', 'is-ok', 'is-warn', 'is-bad');
+  row.classList.add(level ? 'is-' + level : 'is-pending');
   // 全部走 textContent：体检文案含用户填的 Endpoint / 模型名，不进 innerHTML
-  card.querySelector('.health-card-name').textContent = HEALTH_CHECK_TITLES[key] || key;
-  card.querySelector('.health-card-badge').textContent = level ? (HEALTH_BADGE[level] || level) : '检查中';
-  card.querySelector('.health-card-body').textContent = body || '';
+  row.querySelector('.health-row-name').textContent = HEALTH_CHECK_TITLES[key] || key;
+  row.querySelector('.health-row-tag').textContent = level ? (HEALTH_BADGE[level] || level) : '检查中';
+  const split = splitFixText(body);
+  row.querySelector('.health-row-body').textContent = split.detail;
+  const fixEl = row.querySelector('.health-row-fix');
+  fixEl.textContent = split.fix;
+  fixEl.classList.toggle('hidden', !split.fix);
   updateHealthSummary();
 }
 
@@ -286,15 +307,16 @@ function updateHealthSummary() {
     verdict = '正在检查…';
   } else if (counts.bad) {
     level = 'bad';
-    verdict = '有必须处理的问题，按卡片里的「怎么办」逐条修。';
+    verdict = '按下面每项结尾的动作清单逐条处理。';
   } else if (counts.warn) {
     level = 'warn';
-    verdict = '功能可用，黄色项建议顺手修掉。';
+    verdict = '黄色项不影响使用，顺手修掉更稳。';
   }
   const box = healthEl('health-verdict');
   if (!box) return;
-  box.className = 'health-verdict is-' + level;
-  box.textContent = (parts.join(' · ') || '尚未检查') + '｜' + verdict;
+  box.className = 'health-summary is-' + level;
+  const text = box.querySelector('.health-summary-text');
+  if (text) text.textContent = (parts.join(' · ') || '尚未检查') + '｜' + verdict;
 }
 
 function healthVersionText() {
@@ -305,7 +327,7 @@ function healthVersionText() {
   }
 }
 
-/** 体检报告纯文本：卡片上的原话，直接粘给同事 / 开发者即可 */
+/** 体检报告纯文本：清单行上的原话，直接粘给同事 / 开发者即可 */
 function healthTextReport() {
   const rows = ['【Moka 插件健康检查】扩展 ' + healthVersionText()
     + ' · ' + new Date().toLocaleString('zh-CN')];
@@ -324,9 +346,12 @@ async function renderHealthCheck() {
   const ver = healthEl('health-version');
   if (ver) ver.textContent = healthVersionText();
   const note = healthEl('health-copy-note');
-  if (note) note.textContent = '';
-  // 先把六张卡复位成「检查中」：顺序即 HEALTH_CHECKS 顺序，逐项返回时卡序不抖动
-  HEALTH_CHECKS.forEach((key) => renderHealthCard(key, '', ''));
+  if (note) {
+    note.textContent = '';
+    note.className = 'health-note';
+  }
+  // 先把六行复位成「检查中」：顺序即 HEALTH_CHECKS 顺序，逐项返回时行序不抖动
+  HEALTH_CHECKS.forEach((key) => renderHealthRow(key, '', ''));
 
   const settings = await readHealthSettings();
   if (token !== healthRunToken) return;
@@ -347,7 +372,7 @@ async function renderHealthCheck() {
       res = { level: 'bad', body: '探测异常：' + ((e && e.message) || e) };
     }
     if (token !== healthRunToken) return; // 已有更新的一轮在跑，迟到结果不回填
-    renderHealthCard(key, res && res.level, res && res.body);
+    renderHealthRow(key, res && res.level, res && res.body);
   }));
   if (token !== healthRunToken) return;
   updateHealthSummary();
@@ -355,14 +380,16 @@ async function renderHealthCheck() {
 
 async function copyHealthReport() {
   const note = healthEl('health-copy-note');
-  const flash = (message) => {
-    if (note) note.textContent = ' · ' + message;
+  const flash = (message, ok) => {
+    if (!note) return;
+    note.textContent = ' · ' + message;
+    note.className = 'health-note ' + (ok ? 'is-ok' : 'is-bad');
   };
   try {
     await navigator.clipboard.writeText(healthTextReport());
-    flash('体检结果已复制');
+    flash('已复制体检结果', true);
   } catch (e) {
-    flash('复制失败：' + ((e && e.message) || '未知错误'));
+    flash('复制失败：' + ((e && e.message) || '未知错误'), false);
   }
 }
 

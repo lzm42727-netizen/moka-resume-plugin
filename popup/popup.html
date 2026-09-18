@@ -518,14 +518,13 @@
             <section class="panel panel-last">
                 <h3 class="panel-title">
                     <span class="panel-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.5h2.8l1.4-4 2 7.5 1.4-3.5H14"/></svg></span>健康检查
-                    <span class="panel-title-paren">（<button type="button" id="health-rerun" class="btn-link">重新检查</button> · <button type="button" id="health-copy" class="btn-link">复制结果</button>）</span>
+                    <span class="panel-title-paren">（<button type="button" id="health-rerun" class="btn-link">重新检查</button> · <button type="button" id="health-copy" class="btn-link">复制结果</button><span id="health-copy-note" class="health-note"></span>）</span>
                 </h3>
-                <div class="cond-hint cond-hint-flush" id="health-meta" title="结论基于已保存的设置；刚改完还没保存，请先到「设置」页点「保存并测试连接」">
-                    扩展版本 <span id="health-version">…</span> · 检查时间 <span id="health-checked-at">…</span><span id="health-copy-note"></span>
+                <div id="health-verdict" class="health-summary is-pending" title="结论基于已保存的设置；刚改完还没保存，请先到「设置」页点「保存并测试连接」">
+                    <span class="health-summary-dot"></span><span class="health-summary-text">尚未检查</span>
                 </div>
-                <div id="health-verdict" class="health-verdict">尚未检查</div>
-                <div id="health-results" class="health-results"></div>
-                <div class="cond-hint">只读体检，不改任何设置；每项结论都附「怎么办」</div>
+                <div id="health-list" class="health-list"></div>
+                <div class="health-foot">扩展版本 <span id="health-version">…</span> · 检查时间 <span id="health-checked-at">…</span> · 只读体检，不改任何设置</div>
             </section>
         </div>
 

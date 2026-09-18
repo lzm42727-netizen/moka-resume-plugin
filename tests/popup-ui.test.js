@@ -758,7 +758,7 @@ describe('健康检查（v3.6.0：并入弹窗标签页）', () => {
     // typeof 守卫：模块单独缺失时只让本页停在「尚未检查」，不把标签切换一起带崩
     assert.match(js, /if \(tabName === 'health' && typeof renderHealthCheck === 'function'\) renderHealthCheck\(\);/);
     // 容器与控件 id 齐备，且 popup-health.js 排在 popup.js 之后加载
-    for (const id of ['health-results', 'health-verdict', 'health-rerun', 'health-copy', 'health-version', 'health-checked-at']) {
+    for (const id of ['health-list', 'health-verdict', 'health-rerun', 'health-copy', 'health-version', 'health-checked-at', 'health-copy-note']) {
       assert.ok(html.includes(`id="${id}"`), `popup.html 应有 #${id}`);
     }
     assert.match(html, /<script src="popup\.js"><\/script>\s*<!--[\s\S]*?-->\s*<script src="popup-health\.js"><\/script>/);
@@ -768,10 +768,10 @@ describe('健康检查（v3.6.0：并入弹窗标签页）', () => {
     for (const fn of ['checkModel', 'checkDeploy', 'checkBridge', 'checkFeishu', 'checkMokaTab', 'checkStorage']) {
       assert.match(healthJs, new RegExp('async function ' + fn + '\\('), fn + ' 存在');
     }
-    // 探测只返回 { level, body }，渲染统一走 renderHealthCard（好测、探测与 DOM 解耦）
+    // 探测只返回 { level, body }，渲染统一走 renderHealthRow（好测、探测与 DOM 解耦）
     assert.match(healthJs, /const HEALTH_CHECKS = \['model', 'deploy', 'bridge', 'feishu', 'mokaTab', 'storage'\]/);
     assert.match(healthJs, /\/\/ ---- 六项探测：只返回结论，不碰 DOM ----/);
-    assert.match(healthJs, /function renderHealthCard\(key, level, body\)/);
+    assert.match(healthJs, /function renderHealthRow\(key, level, body\)/);
     assert.match(healthJs, /怎么办：/);
     // Bridge 状态复用后台既有消息
     assert.match(healthJs, /getFeishuBridgeStatus/);
@@ -784,14 +784,37 @@ describe('健康检查（v3.6.0：并入弹窗标签页）', () => {
     assert.match(healthJs, /const deployed = Object\.keys\(localDefaults\(\)\)\.length > 0|Object\.keys\(localDefaults\(\)\)\.length > 0/);
   });
 
-  it('红黄绿分级 + 顶部汇总，并支持一键复制体检结果', () => {
-    assert.match(css, /\.health-card\.is-ok \{/);
-    assert.match(css, /\.health-card\.is-warn \{/);
-    assert.match(css, /\.health-card\.is-bad \{/);
-    assert.match(css, /\.health-verdict\.is-bad \{/);
+  it('视觉与插件调性一致：汇总条同「本地服务状态条」，明细是一条细线分隔的清单', () => {
+    // 汇总条＝部署/本地服务状态条同款（中性底 + 7px 状态点），不整块铺色
+    assert.match(css, /\.health-summary \{[\s\S]{0,260}background: #f8fafc/);
+    assert.match(css, /\.health-summary-dot \{[\s\S]{0,120}border-radius: 50%/);
+    assert.match(css, /\.health-summary\.is-bad \.health-summary-dot \{[\s\S]{0,80}background: var\(--error\)/);
+    // 明细：一张描边容器 + 细线分隔行
+    assert.match(css, /\.health-list \{[\s\S]{0,160}border-radius: var\(--radius\)/);
+    assert.match(css, /\.health-row \{[\s\S]{0,120}border-top: 1px solid var\(--border\)/);
+    assert.match(css, /\.health-row:first-child \{\s*border-top: none;\s*\}/);
+    // 级差用状态点 + 描边小标签（沿用 badge-recommend 的描边小标签形制），不用铺满整行的大色块
+    assert.match(css, /\.health-row-tag \{[\s\S]{0,260}border-radius: var\(--radius-sm\)/);
+    assert.match(css, /\.health-row\.is-warn \.health-row-tag \{[\s\S]{0,140}background: #fff7e6/);
+    assert.match(css, /\.health-row\.is-bad \.health-row-name \{[\s\S]{0,60}color: #cf1322/);
+  });
+
+  it('「怎么办」在展示时拆成独立一行（探测侧仍只产出一段 body）', () => {
+    assert.match(healthJs, /function splitFixText\(body\)/);
+    assert.match(healthJs, /const marker = '\\n怎么办：'/);
+    // 探测函数里不许出现拆行逻辑，拆行只发生在渲染侧
+    assert.match(healthJs, /const split = splitFixText\(body\);/);
+    assert.match(healthJs, /const fixEl = row\.querySelector\('\.health-row-fix'\);/);
+    assert.match(healthJs, /fixEl\.textContent = split\.fix;/);
+    assert.match(healthJs, /fixEl\.classList\.toggle\('hidden', !split\.fix\);/);
+  });
+
+  it('支持一键复制体检结果，并把回显放在按钮旁边', () => {
+    assert.match(html, /id="health-copy"[^>]*>复制结果<\/button><span id="health-copy-note"/);
+    assert.match(css, /\.health-note\.is-ok \{/);
+    assert.match(healthJs, /navigator\.clipboard\.writeText\(healthTextReport\(\)\)/);
     assert.match(healthJs, /function updateHealthSummary\(\)/);
     assert.match(healthJs, /项异常/);
-    assert.match(healthJs, /navigator\.clipboard\.writeText\(healthTextReport\(\)\)/);
     // 连点「重新检查」时旧一轮的迟到结果不得回填
     assert.match(healthJs, /if \(token !== healthRunToken\) return;/);
   });

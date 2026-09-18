@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const SOURCE = fs.readFileSync(path.join(__dirname, '../popup/popup-health.js'), 'utf8');
+const POPUP_CSS = fs.readFileSync(path.join(__dirname, '../popup/popup.css'), 'utf8');
 
 const CARD_TITLES = [
   '评分模型配置',
@@ -32,6 +33,11 @@ function makeEl(tag, id) {
       },
       remove: (...cs) => {
         el.className = el.className.split(/\s+/).filter((x) => x && !cs.includes(x)).join(' ');
+      },
+      toggle: (c, force) => {
+        const on = force === undefined ? !el.classList.contains(c) : !!force;
+        if (on) el.classList.add(c);
+        else el.classList.remove(c);
       },
       contains: (c) => el.className.split(/\s+/).includes(c)
     },
@@ -76,10 +82,18 @@ function findIn(root, sel) {
  * opts.mokaTabs      → chrome.tabs.query 结果
  */
 function buildContext(opts) {
-  const ids = ['health-results', 'health-verdict', 'health-rerun', 'health-copy',
-    'health-version', 'health-checked-at', 'health-copy-note'];
   const dom = {};
-  ids.forEach((id) => { dom[id] = makeEl('div', id); });
+  // 与 popup.html 一致：汇总条内含状态点 + 文本两个子节点，其余 id 平铺
+  ['health-list', 'health-rerun', 'health-copy', 'health-version', 'health-checked-at', 'health-copy-note']
+    .forEach((id) => { dom[id] = makeEl('div', id); });
+  dom['health-verdict'] = makeEl('div', 'health-verdict');
+  dom['health-verdict'].className = 'health-summary is-pending';
+  const summaryDot = makeEl('span');
+  summaryDot.className = 'health-summary-dot';
+  const summaryText = makeEl('span');
+  summaryText.className = 'health-summary-text';
+  summaryText.textContent = '尚未检查';
+  dom['health-verdict'].append(summaryDot, summaryText);
 
   const store = { mokaSettings: opts.settings || {} };
   const copied = { text: null };
@@ -127,10 +141,19 @@ function buildContext(opts) {
 
   vm.createContext(ctx);
   new vm.Script(SOURCE).runInContext(ctx);
-  return { ctx, dom, copied, timers, cards: () => dom['health-results'].children };
+  const rows = () => dom['health-list'].children;
+  return {
+    ctx,
+    dom,
+    copied,
+    timers,
+    rows,
+    /** 汇总条文案（在 .health-summary-text 上，不在容器上） */
+    summary: () => dom['health-verdict'].querySelector('.health-summary-text').textContent
+  };
 }
 
-const cardLevels = (cards) => cards.map((c) => c.className.replace('health-card', '').trim());
+const rowLevels = (rows) => rows.map((r) => r.className.replace('health-row', '').trim());
 
 /** 让沙箱里的微任务跑完（探测函数登记完才谈得上触发它的定时器） */
 const flush = () => new Promise((r) => setImmediate(r));
@@ -147,92 +170,109 @@ const ALL_OK_SETTINGS = {
 const ALL_OK_LOCAL = { apiProtocol: 'openai', apiProvider: '自建 / 中转网关', apiEndpoint: 'https://gw/v1', modelName: 'm' };
 
 describe('健康检查模块行为（v3.6.0，迷你 DOM 沙箱）', () => {
-  it('六项体检按固定顺序建卡，标题与占位态取自同一份文案表', async () => {
-    const { ctx, dom, cards } = buildContext({ settings: ALL_OK_SETTINGS, local: ALL_OK_LOCAL });
+  it('六项体检按固定顺序成行，标题与占位态取自同一份文案表', async () => {
+    const { ctx, rows, summary } = buildContext({ settings: ALL_OK_SETTINGS, local: ALL_OK_LOCAL });
     await ctx.renderHealthCheck();
-    assert.equal(cards().length, 6);
+    assert.equal(rows().length, 6);
     assert.deepEqual(
-      cards().map((c) => c.querySelector('.health-card-name').textContent),
+      rows().map((r) => r.querySelector('.health-row-name').textContent),
       CARD_TITLES
     );
-    // 全绿：每张卡都是 is-ok + 徽标「正常」，没有残留 pending
-    assert.deepEqual(cardLevels(cards()), ['is-ok', 'is-ok', 'is-ok', 'is-ok', 'is-ok', 'is-ok']);
-    assert.deepEqual(cards().map((c) => c.querySelector('.health-card-badge').textContent),
+    // 全绿：每行都是 is-ok + 标签「正常」，没有残留 is-pending
+    assert.deepEqual(rowLevels(rows()), ['is-ok', 'is-ok', 'is-ok', 'is-ok', 'is-ok', 'is-ok']);
+    assert.deepEqual(rows().map((r) => r.querySelector('.health-row-tag').textContent),
       ['正常', '正常', '正常', '正常', '正常', '正常']);
-    assert.match(dom['health-verdict'].textContent, /^✅ 6 项通过｜一切正常/);
+    assert.match(summary(), /^✅ 6 项通过｜一切正常/);
   });
 
-  it('红黄绿分级落到卡片与顶部汇总条', async () => {
-    const { ctx, dom, cards } = buildContext({
+  it('红黄绿分级落在状态点与小标签上；汇总条随最严重级别变色', async () => {
+    const { ctx, dom, rows, summary } = buildContext({
       settings: { apiKey: '', feishuAppId: 'a', feishuReceiver: 'r' }, // Key 空→红；飞书缺 Secret→红
       bridge: { connected: false }, // Bridge 未连→红
       mokaTabs: [] // 无 Moka 页面→红
     });
     await ctx.renderHealthCheck();
     // 顺序固定：model(红) deploy(黄·无 config.local) bridge(红) feishu(红) mokaTab(红) storage(绿)
-    assert.deepEqual(cardLevels(cards()),
+    assert.deepEqual(rowLevels(rows()),
       ['is-bad', 'is-warn', 'is-bad', 'is-bad', 'is-bad', 'is-ok']);
-    assert.match(dom['health-verdict'].textContent, /✅ 1 项通过/);
-    assert.match(dom['health-verdict'].textContent, /⚠️ 1 项注意/);
-    assert.match(dom['health-verdict'].textContent, /❌ 4 项异常/);
-    assert.match(dom['health-verdict'].textContent, /按卡片里的「怎么办」逐条修/);
+    assert.match(summary(), /✅ 1 项通过/);
+    assert.match(summary(), /⚠️ 1 项注意/);
+    assert.match(summary(), /❌ 4 项异常/);
+    assert.match(summary(), /按下面每项结尾的动作清单逐条处理/);
     assert.ok(dom['health-verdict'].classList.contains('is-bad'), '汇总条随最严重级别变色');
-    assert.match(cards()[0].querySelector('.health-card-body').textContent, /API Key 未填写[\s\S]*怎么办：/);
+    assert.ok(dom['health-verdict'].classList.contains('health-summary'));
+    // 分级只体现在状态点与小标签上，行底不铺色（CSS 里不出现整行背景）
+    assert.match(POPUP_CSS, /\.health-row\.is-bad \.health-row-dot \{[\s\S]{0,60}background: var\(--error\)/);
+    assert.doesNotMatch(POPUP_CSS, /\.health-row\.is-(ok|warn|bad) \{[\s\S]{0,40}background:/);
+  });
+
+  it('「怎么办」拆成独立一行：描述行只讲现状，动作单占一行', async () => {
+    const { ctx, rows } = buildContext({ settings: { apiKey: '' } });
+    await ctx.renderHealthCheck();
+    const detail = rows()[0].querySelector('.health-row-body').textContent;
+    const fix = rows()[0].querySelector('.health-row-fix');
+    assert.match(detail, /API Key 未填写/);
+    assert.doesNotMatch(detail, /怎么办/);
+    assert.match(fix.textContent, /^怎么办：/);
+    assert.ok(!fix.classList.contains('hidden'));
+    // 全绿项没有动作行，用 hidden 收起
+    assert.ok(rows()[5].querySelector('.health-row-fix').classList.contains('hidden'));
   });
 
   it('部署态下 Endpoint / 模型名取自 config.local.js，不再误报「为空」', async () => {
-    const { ctx, dom, cards } = buildContext({
+    const { ctx, rows, summary } = buildContext({
       settings: { apiKey: 'k', feishuAppId: 'cli_x', feishuAppSecret: 's', feishuReceiver: 'me@x.com' }, // storage 里没有 Endpoint / 模型名
       local: { apiProtocol: 'openai', apiEndpoint: 'https://model-router.meitu.com/v1', modelName: 'GLM-5.3-Flash-MT' }
     });
     await ctx.renderHealthCheck();
-    assert.ok(cards()[0].classList.contains('is-ok'), '模型项应为绿（Endpoint / 模型名由部署态提供）');
-    assert.match(cards()[0].querySelector('.health-card-body').textContent, /model-router\.meitu\.com/);
-    assert.ok(cards()[1].classList.contains('is-ok'), '部署态项应为绿');
-    assert.equal(cards()[0].querySelector('.health-card-badge').textContent, '正常');
-    assert.match(dom['health-verdict'].textContent, /^✅ 6 项通过/);
+    assert.ok(rows()[0].classList.contains('is-ok'), '模型项应为绿（Endpoint / 模型名由部署态提供）');
+    assert.match(rows()[0].querySelector('.health-row-body').textContent, /model-router\.meitu\.com/);
+    assert.ok(rows()[1].classList.contains('is-ok'), '部署态项应为绿');
+    assert.equal(rows()[0].querySelector('.health-row-tag').textContent, '正常');
+    assert.match(summary(), /^✅ 6 项通过/);
   });
 
   it('「检查中」期间汇总条如实说在检查，结论不提前给', async () => {
-    const { ctx, dom } = buildContext({});
+    const { ctx, dom, summary } = buildContext({});
     // 不 await：探测函数全是 async，复位那一刻汇总条应为 pending
     const pending = ctx.renderHealthCheck();
-    assert.match(dom['health-verdict'].textContent, /⏳ 6 项检查中｜正在检查…/);
+    assert.match(summary(), /⏳ 6 项检查中｜正在检查…/);
     assert.ok(dom['health-verdict'].classList.contains('is-pending'));
     await pending;
-    assert.doesNotMatch(dom['health-verdict'].textContent, /检查中/);
+    assert.doesNotMatch(summary(), /检查中/);
   });
 
-  it('连点「重新检查」只重置卡面、不重建卡片；上一轮迟到的结论不回填', async () => {
-    const { ctx, dom, cards, timers } = buildContext({ bridge: ['silent', { connected: true }] });
+  it('连点「重新检查」只重置行内容、不重建行；上一轮迟到的结论不回填', async () => {
+    const { ctx, rows, summary, timers } = buildContext({ bridge: ['silent', { connected: true }] });
     const first = ctx.renderHealthCheck(); // 第一轮：Bridge 回调不回，结论悬空
     await flush(); // 等第一轮把探测登记完（它的 3 秒定时器此刻入队）
     await ctx.renderHealthCheck(); // 第二轮：正常返回
-    const secondVerdict = dom['health-verdict'].textContent;
-    assert.ok(cards()[2].classList.contains('is-ok'), '第二轮 Bridge 应为绿');
-    assert.equal(cards().length, 6, '重跑不得重复建卡');
+    const secondSummary = summary();
+    assert.ok(rows()[2].classList.contains('is-ok'), '第二轮 Bridge 应为绿');
+    assert.equal(rows().length, 6, '重跑不得重复建行');
 
     timers[0](); // 触发第一轮那个 3 秒超时回调（真实世界里会晚于第二轮到达）
     await flush();
-    assert.equal(cards().length, 6);
-    assert.ok(cards()[2].classList.contains('is-ok'), '迟到结论不得覆盖新结论');
-    assert.doesNotMatch(cards()[2].querySelector('.health-card-body').textContent, /3 秒未响应/);
-    assert.equal(dom['health-verdict'].textContent, secondVerdict);
+    assert.equal(rows().length, 6);
+    assert.ok(rows()[2].classList.contains('is-ok'), '迟到结论不得覆盖新结论');
+    assert.doesNotMatch(rows()[2].querySelector('.health-row-body').textContent, /3 秒未响应/);
+    assert.equal(summary(), secondSummary);
     await first;
   });
 
   it('Bridge 后台 3 秒不回时给「重新检查」指引（超时分支仍可用）', async () => {
-    const { ctx, dom, cards, timers } = buildContext({ bridge: ['silent'] });
+    const { ctx, rows, summary, timers } = buildContext({ bridge: ['silent'] });
     const run = ctx.renderHealthCheck();
     await flush(); // 等探测登记完，定时器才在 timers 里
     timers[0](); // 手动触发超时回调
     await run;
-    assert.ok(cards()[2].classList.contains('is-bad'));
-    assert.match(cards()[2].querySelector('.health-card-body').textContent, /3 秒未响应[\s\S]*重新检查/);
-    assert.match(dom['health-verdict'].textContent, /2 项异常/);
+    assert.ok(rows()[2].classList.contains('is-bad'));
+    assert.match(rows()[2].querySelector('.health-row-body').textContent, /3 秒未响应/);
+    assert.match(rows()[2].querySelector('.health-row-fix').textContent, /重新检查/);
+    assert.match(summary(), /2 项异常/);
   });
 
-  it('「复制结果」把卡片原话拼成纯文本并回显提示', async () => {
+  it('「复制结果」把清单原话（含「怎么办」）拼成纯文本并回显提示', async () => {
     const { ctx, dom, copied } = buildContext({ settings: ALL_OK_SETTINGS, local: ALL_OK_LOCAL });
     await ctx.renderHealthCheck();
     assert.equal(typeof dom['health-copy'].listeners.click, 'function');
@@ -241,7 +281,8 @@ describe('健康检查模块行为（v3.6.0，迷你 DOM 沙箱）', () => {
     assert.match(copied.text, /^【Moka 插件健康检查】扩展 3\.6\.0/);
     CARD_TITLES.forEach((t) => assert.ok(copied.text.includes(t), '报告应含 ' + t));
     assert.match(copied.text, /\[正常\] 评分模型配置/);
-    assert.match(dom['health-copy-note'].textContent, /体检结果已复制/);
+    assert.match(dom['health-copy-note'].textContent, /已复制体检结果/);
+    assert.ok(dom['health-copy-note'].classList.contains('is-ok'), '成功提示走绿色');
     // 「重新检查」按钮同样接了监听
     assert.equal(typeof dom['health-rerun'].listeners.click, 'function');
   });
