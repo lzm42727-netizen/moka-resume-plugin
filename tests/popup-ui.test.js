@@ -596,6 +596,14 @@ describe('about tab copy', () => {
     assert.doesNotMatch(html, /权重自定义/);
     assert.doesNotMatch(html, /选择职位和权重/);
   });
+
+  it('主要功能清单必须与核心能力同步（3.1.1）：飞书协同与批量推进不能从「关于」里消失', () => {
+    // 「关于」页内容曾停在飞书协同上线之前——版本号新了、功能介绍还是旧的。
+    // 版本号本身动态取自 manifest 无需门禁；核心能力条目用断言守护
+    assert.match(html, /简历推荐对象/);
+    assert.match(html, /一键批量推进/);
+    assert.match(html, /飞书机器人协同/);
+  });
 });
 
 describe('切岗/恢复稳健性（1.6.18/1.6.19）', () => {
