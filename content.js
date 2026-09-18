@@ -1500,12 +1500,19 @@ function init() {
       // 只回 anchored 的话，标签邻域识别失败会被误判成「弹窗没开」，旧记录永远没人质疑
       const scraped = scrapeRecommendChipNamesFromDom();
       if (request.readOnly) {
+        // v3.0.9：只读比对不得因「数量门」丢弃实刮结果——记录 1 人、弹窗选 4 人时
+        // 旧逻辑会整组拒掉并让面板误报「未检测到弹窗」。现在把过门的名字（countMatched）
+        // 与实际看到的名字（seenNames）都带回，由面板决定怎么展示。
         const count = Number(request.count) || 0;
+        const gated = count ? pickValidAssigneeNames(scraped.anchored, scraped.pageWide, count) : [];
+        const seenRaw = (Array.isArray(scraped.anchored) && scraped.anchored.length)
+          ? scraped.anchored
+          : (Array.isArray(scraped.pageWide) ? scraped.pageWide : []);
         sendResponse({
           ok: true,
-          names: count
-            ? pickValidAssigneeNames(scraped.anchored, scraped.pageWide, count)
-            : (Array.isArray(scraped.anchored) ? scraped.anchored : []).slice(0, 5),
+          names: gated,
+          seenNames: seenRaw.slice(0, 10),
+          countMatched: !!count && gated.length === count,
           debug: { labels: scraped.labels, anchored: scraped.anchored, pageWide: scraped.pageWide }
         });
         return false;

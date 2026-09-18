@@ -344,6 +344,11 @@ describe('batch wiring', () => {
     assert.match(js, /action: 'scrapeAssigneeNames', readOnly: true/);
     assert.match(js, /popupNames/);
     assert.match(js, /与已记录的（' \+ storedNames\.join\('、'\) \+ '）不一致/);
+    // v3.0.9 只读比对不受「数量门」拒报：人数不一致（记录 1 人/弹窗 4 人）时，
+    // 必须把实刮到的 seenNames 带回显示不一致，而不是误报「未检测到打开的弹窗」
+    assert.match(content, /seenNames: seenRaw\.slice\(0, 10\)/);
+    assert.match(content, /countMatched: !!count && gated\.length === count/);
+    assert.match(js, /cmp\.seenNames/);
     // popup：弹窗没开时不倒诊断杂项，一句干净指引 + 强调「确认后关弹窗也不丢」
     assert.match(js, /function summarizeScrapeDebug\(debug\)/);
     assert.match(js, /推荐弹窗当前未打开，读不到页面上的姓名/);

@@ -4218,8 +4218,14 @@ async function fetchAssigneeContextWithLiveScrape(jobId) {
     const known = Array.isArray(ctx.assigneeNames) ? ctx.assigneeNames.filter(Boolean) : [];
     if (known.length === ctx.assigneeCount) {
       const cmp = await sendToMoka({ action: 'scrapeAssigneeNames', readOnly: true, count: ctx.assigneeCount });
-      const popupNames = (cmp && cmp.ok && Array.isArray(cmp.names)) ? cmp.names.filter(Boolean) : [];
-      return { ctx, liveNames: false, stale: false, popupNames };
+      const gated = (cmp && cmp.ok && Array.isArray(cmp.names)) ? cmp.names.filter(Boolean) : [];
+      if (gated.length === ctx.assigneeCount) {
+        return { ctx, liveNames: false, stale: false, popupNames: gated };
+      }
+      // v3.0.9：数量不一致（如已记录 1 人、弹窗选 4 人）也要把「弹窗当前看到的」带回去——
+      // 旧逻辑整组拒掉后只会误报「未检测到打开的弹窗」，用户对人数不一致毫无感知
+      const seen = (cmp && cmp.ok && Array.isArray(cmp.seenNames)) ? cmp.seenNames.filter(Boolean) : [];
+      return { ctx, liveNames: false, stale: false, popupNames: seen };
     }
   }
   const known = Array.isArray(ctx.assigneeNames) ? ctx.assigneeNames.filter(Boolean) : [];
