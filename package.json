@@ -13,6 +13,7 @@
     "format:check": "prettier --check scripts tests lib/contracts.js content",
     "format": "prettier --write scripts tests lib/contracts.js content",
     "pack": "node scripts/pack.js",
+    "pack:full": "node scripts/pack.js --full",
     "bridge": "node feishu-bridge/server.js",
     "bridge:bg": "./启动飞书机器人.command",
     "bridge:stop": "./停止飞书机器人.command",

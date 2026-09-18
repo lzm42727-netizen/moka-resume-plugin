@@ -1806,7 +1806,7 @@ function updateFeishuBridgeStatus(callback) {
         // 探测失败后的指引窗口期内给出明确的「为什么 + 怎么办」，避免看起来像点了没反应
         const guidanceActive = Date.now() < bridgeGuidanceUntil;
         statusEl.textContent = guidanceActive
-          ? '⚠️ 本地服务未启动：请先双击项目里的「启动飞书机器人.command」'
+          ? '⚠️ 本地服务未启动：在项目文件夹终端执行 bash 安装开机自启.command'
           : '⚪ 本地服务未运行';
         statusEl.style.color = guidanceActive ? '#d97706' : '#64748b';
         barEl?.classList.remove('is-connected');

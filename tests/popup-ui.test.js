@@ -736,7 +736,14 @@ describe('v3.0.2 「立即连接」探测失败必须给出可见指引', () => 
 
   it('探测失败后状态行给出「未启动 + 启动方法」指引且按钮可再试', () => {
     assert.match(js, /bridgeGuidanceUntil/, '指引窗口期标记存在');
-    assert.match(js, /本地服务未启动：请先双击项目里的「启动飞书机器人\.command」/, '失败指引写明启动方法');
+    // 3.6.3 起指引改走终端命令：macOS 会拦「下载后双击的未签名脚本」（用户实际反馈），
+    // 终端直跑同一份文件不经过 LaunchServices 判定，所以不再教双击
+    assert.match(
+      js,
+      /本地服务未启动：在项目文件夹终端执行 bash 安装开机自启\.command/,
+      '失败指引写明启动方法（终端命令）'
+    );
+    assert.doesNotMatch(js, /请先双击项目里的/, '不得再教「双击」这条被 macOS 拦的路');
     assert.match(js, /handleProbeFailure/, '探测失败走统一处理');
     assert.match(js, /未启动 \(再试\)/, '按钮提示可再试');
   });

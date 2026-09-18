@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.6.3 - 2026-09-18
+
+- **补齐「本地 Bridge 怎么装」这条路**（用户反馈：`启动飞书机器人.command` 被 macOS 判定拦下；且 Bridge 要给同事一起用）。查下来根子不在文件本身，而在**这一步一直没有正规分发渠道**：
+  - `npm run pack` 的发布包只有 27 个插件运行时文件，**不含 `feishu-bridge/`、也不含那 4 个 `.command`** → 同事只能靠手工搬整个仓库文件夹；
+  - 插件内**所有**指引都教「双击 `启动飞书机器人.command`」，而浏览器下载/邮件传来的未签名脚本带 `com.apple.quarantine`，Finder 双击必然弹「Apple 无法验证」或「来自身份不明的开发者」。
+- **新增完整包**：`npm run pack:full` → `dist/moka-resume-plugin-vX.Y.Z-full.zip`，内容＝插件全部运行时文件 + `feishu-bridge/`（`server.js` / `package.json` / `package-lock.json` / `config.example.json`）+ 4 个 `.command` + `README.md` / `使用说明.html`。同事一次下载齐活：同一个文件夹既是插件目录，也是 Bridge 安装目录。
+  - **白名单列举式打包**（不做排除法）：`feishu-bridge/config.json`（含明文 App Secret）、`bridge.log`、`server.pid`、`node_modules` 由黑名单门禁拦着，进包即构建失败；
+  - `.command` 用 `zip -X` 打包，**执行位在 zip 往返后保留**（实测解压后仍是 `-rwxr-xr-x`），否则解压出来根本跑不起来。
+- **安装主路径改成终端一条命令**：`bash 安装开机自启.command`。**终端执行不去问 Finder/LaunchServices，同一份文件不会被 Gatekeeper 拦**（本机 macOS 26.3 实测：给 `.command` 打上 quarantine 后，`spctl --assess` 报 `rejected / no usable signature`，但从终端直接执行与 `bash xxx.command` 均正常跑通；顺带验证 ad-hoc 签名 `codesign --sign -` 救不回来，要过 Gatekeeper 只能 Developer ID + 公证）。`安装开机自启.command` 本就自带「查 Node → 缺依赖自动 `npm install` → 注册 LaunchAgent → 启动」全流程，所以这条路径**零开发成本**。
+- **插件内指引一律不再教双击**：Bridge 状态行（`popup.js`）、健康检查两处「怎么办」（`popup-health.js`）、飞书卡片脚注（`lib/feishu.js`）、设置页「本地服务与常见说明」（`popup.html`）全部改为终端命令；测试同步加「不得再出现『请先双击项目里的』」防回潮。
+- **使用说明新增 §9c「飞书 Bridge 安装（可选）」**（含目录锚点）：先讲清取舍——**不装也能收到汇总卡片**，只有「在飞书点卡片按钮直驱 Moka 页面批量推进」需要它；再给完整包 + 一条命令 + **每人自建应用 6 步图文**（创建应用 → 「凭证与基础信息」拿 App ID/Secret → 添加机器人能力 → 权限管理开通 `im:message` 或 `im:message:send_as_bot` → 「版本管理与发布」创建版本并把自己加进「可用范围」→ 填进设置页）；附**报错对照表**（`230006` 未开机器人能力 / `230013` 不在应用可用范围 / `230027` 缺发消息权限，均为飞书官方错误码口径）与「双击被拦的两种放行办法」（右键打开 / `xattr -dr com.apple.quarantine`）。§2 安装步骤同步指向 `-full.zip`。
+- 顺带确认并写进文档：Bridge 收到设置页同步的凭据后会**自动持久化到 `config.json`（0600）**，同事在设置页填一次即可，不需要手改文件。
+- 测试 598 → 602：`tests/pack.test.js` 由 1 例扩到 5 例（完整包内容与「精简包不含 Bridge」互为反例、4 个 `.command` 实际存在且带执行位、黑名单正则反向自检防门禁空转）；`popup-ui` 状态行指引用例改为断言终端命令 + 禁「双击」。
+
 ## 3.6.2 - 2026-09-18
 
 - **设置页两处「去哪拿」直接点得动**（用户需求：在插件里就能跳到申请页）。凭据字段只告诉你要填什么，却不告诉你去哪拿，配置时得靠记忆或另开页面找入口。现在两条外链就地放在对应字段下方，点开即到：

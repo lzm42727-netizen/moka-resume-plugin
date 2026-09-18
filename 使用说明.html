@@ -240,7 +240,7 @@
 <body>
   <div class="wrap">
     <header class="hero">
-      <div class="badge">Chrome 插件 · v3.6.2</div>
+      <div class="badge">Chrome 插件 · v3.6.3</div>
       <h1>Moka 智能简历筛选助手</h1>
       <p>在 Moka 候选人列表页自动拉取简历、核对硬性门槛，并用 AI 评估经历匹配与推进档位。本页说明如何安装、日常使用，以及出错时如何排查。</p>
     </header>
@@ -260,6 +260,7 @@
         <li><a href="#tips">重要使用习惯</a></li>
         <li><a href="#errors">出错后如何处理</a></li>
         <li><a href="#health">健康检查（一键体检）</a></li>
+        <li><a href="#bridge">飞书 Bridge 安装（可选）</a></li>
         <li><a href="#privacy">隐私说明</a></li>
       </ol>
     </nav>
@@ -287,7 +288,7 @@
       <ol class="steps">
         <li>
           <strong>拿到插件文件夹</strong><br/>
-          到 GitHub / GitLab 登录后下载最新的<strong>压缩包（zip）</strong>并解压，得到 <code>moka-resume-plugin</code> 文件夹（本地路径一般为 <code class="mono">/Users/你的用户名/.../moka-resume-plugin</code>）。<strong>建议固定解压到同一个位置</strong>，以后升级都覆盖到同一处。
+          下载最新的压缩包并解压，得到 <code>moka-resume-plugin</code> 文件夹（本地路径一般为 <code class="mono">/Users/你的用户名/.../moka-resume-plugin</code>）。<b>推荐直接下载带 <code>-full</code> 的完整包</b>——它里面既有插件本身，也含飞书本地服务（Bridge）的安装脚本；<b>只用插件、不需要「在飞书上点一下批量推进」的话</b>，下精简包就够（见 <a href="#bridge">9c. 飞书 Bridge 安装（可选）</a>）。<strong>建议固定解压到同一个位置</strong>，以后升级都覆盖到同一处。
         </li>
         <li>
           <strong>打开扩展管理页</strong><br/>
@@ -615,6 +616,89 @@
       <p>换设置、重启本地服务、开关 Moka 页面之后，点标题里的<b>「重新检查」</b>再体检一次；点<b>「复制结果」</b>可把六项结论按原话复制成纯文本，反馈问题时直接粘贴，比截图清楚。</p>
       <div class="callout">
         <b>结论基于「已保存的设置」</b>——刚在设置页改完还没点「保存并测试连接」的，先保存再体检。
+      </div>
+    </section>
+
+    <section id="bridge">
+      <h2>9c. 飞书 Bridge 安装（可选）：让卡片按钮能一键批量推进</h2>
+      <p>飞书协同分两层，<b>装与不装的差别只在第二层</b>：</p>
+      <ul>
+        <li><b>不装也能用</b>——整轮筛选完成后，汇总卡片照常私聊推给你（这条由插件直接调飞书接口，与本机无关）。</li>
+        <li><b>装了才有</b>——在飞书里点卡片上的 <b>【🚀 一键批量推进】</b>，直接在你已打开的 Moka 页面执行，完成后自动刷新并把「推荐给谁 + 结果」回推。<b>这一步依赖一个只跑在你自己电脑上的本地服务（Bridge）</b>。</li>
+      </ul>
+      <p>所以：<b>只想要「结果推到飞书」就不用装</b>；想要「在飞书上点一下就把人推进去」，按下面做一次，之后一直有效（开机自启）。</p>
+
+      <h3>第一步：下载完整包</h3>
+      <ol class="steps">
+        <li>下载文件名里带 <code>-full</code> 的压缩包（<code>moka-resume-plugin-vX.Y.Z-full.zip</code>）并解压。<b>它既是插件目录，也是 Bridge 的安装目录</b>——一次下载，两件事都在同一个文件夹里完成，不用再单独找脚本。</li>
+        <li>已装过插件的：把完整包解压<b>覆盖</b>到原来那个文件夹（Chrome 认的是文件夹路径，换目录会被当成全新插件、配置清空）。</li>
+      </ol>
+      <div class="callout info">
+        <b>压缩包传不过去怎么办：</b>邮件与企业 IM 常会拦「内含可执行脚本」的压缩包，或直接判成垃圾邮件。<b>别反复重发同一封邮件</b>（越重发越像垃圾），改走<b>内网共享盘 / 仓库附件</b>分发。
+      </div>
+
+      <h3>第二步：一条命令安装（推荐）</h3>
+      <p>打开「终端」（聚焦搜索输入 <b>终端</b>），先把终端切到项目文件夹：输入 <code>cd </code>（<b>末尾留一个空格</b>）→ 把访达里的 <b>moka-resume-plugin 文件夹拖进终端窗口</b>（路径会自动补上）→ 回车。然后粘贴这一行并回车：</p>
+      <p><code>bash 安装开机自启.command</code></p>
+      <p>它会自动做四件事：检查 Node.js → 缺依赖就补装（首次约半分钟）→ 注册 macOS 开机自启（崩溃、重启自动拉起）→ 启动服务。看到 <code>✅ 安装成功</code> 就成了，按任意键关掉终端窗口不影响运行。</p>
+      <div class="callout warn">
+        <b>为什么不用双击？</b>双击会弹「Apple 无法验证 / 无法打开，因为来自身份不明的开发者」——这是 macOS 对所有「从网上下载的、未签名的脚本」一视同仁，<b>不是文件有毒</b>。终端执行的是<b>同一份文件、同一段逻辑</b>，不经过 Finder 那道判定，所以最省事。仍想双击的，见本节末尾的两种放行办法。
+      </div>
+
+      <h3>第三步：每人建一个自己的飞书自建应用</h3>
+      <p>机器人是「以你的应用身份」私聊你，所以凭据<b>每人一套</b>（免费，约 5 分钟）。侧栏设置页的 <b>API Key</b> 与 <b>飞书 App ID / App Secret</b> 下方都放了直接入口，点开就是对应后台。</p>
+      <ol class="steps">
+        <li><b>创建应用</b>：进入 <a href="https://open.feishu.cn/app" target="_blank" rel="noopener noreferrer">飞书开放平台 · 开发者后台</a> →「创建企业自建应用」，填名称与图标。<b>建议名称里带上自己的名字</b>（如 <code>简历筛选助手-你的名字</code>），多人一起用时好区分。</li>
+        <li><b>拿凭据</b>：进入应用 → 左侧「凭证与基础信息」→ 复制 <b>App ID</b> 与 <b>App Secret</b>（Secret 只显示一次，丢了只能重置）。</li>
+        <li><b>开机器人能力</b>：左侧「添加应用能力」→ 添加 <b>机器人</b>。不开这个，发消息会报 <code>230006</code>。</li>
+        <li><b>加权限</b>：左侧「权限管理」→ 搜索并开通下面<b>任一条</b>即可（都开也行）：
+          <ul>
+            <li><b>获取与发送单聊、群组消息</b>（<code>im:message</code>）</li>
+            <li><b>以应用的身份发消息</b>（<code>im:message:send_as_bot</code>）</li>
+          </ul>
+        </li>
+        <li><b>发布版本，并把自己加进「可用范围」</b>：左侧「版本管理与发布」→「创建版本」→ 在「<b>可用范围</b>」处点「编辑」，<b>把你本人（或所在部门）加进去</b> → 保存 → 申请发布。企业自建应用一般需要管理员审核后才生效，可以让管理员帮忙放行。</li>
+        <li><b>填进插件</b>：回到侧栏「设置」→「飞书智能助手」卡片 → 填 App ID / App Secret / 默认个人接收人（你的企业邮箱）。<b>填完会自动保存并同步给本地服务</b>（落到 <code>feishu-bridge/config.json</code>，权限 0600，只有你自己能读），不需要手工改文件。</li>
+      </ol>
+
+      <h3>第四步：验一下</h3>
+      <ul>
+        <li>设置页点 <b>📨 发送测试卡片</b>——飞书能收到，说明应用这半边通了。</li>
+        <li>切到侧栏「<b>健康检查</b>」页看两行：<b>飞书自建应用凭据</b>应为绿、<b>本地 Bridge 服务</b>应为绿。两行都绿，下一轮筛选结束点卡片按钮就会真的执行。</li>
+      </ul>
+
+      <h3>发不出去时先对这三个错</h3>
+      <table>
+        <tr><th>报错码</th><th>意思</th><th>怎么办</th></tr>
+        <tr><td><code>230006</code></td><td>应用没开机器人能力</td><td>「添加应用能力」→ 机器人；改完要重新发布版本</td></tr>
+        <tr><td><code>230013</code></td><td>你的账号不在应用「可用范围」内</td><td>「版本管理与发布」→ 创建版本 → 编辑可用范围 → 加上你自己 → 重新发布</td></tr>
+        <tr><td><code>230027</code></td><td>缺少发消息权限</td><td>补开 <code>im:message</code> 或 <code>im:message:send_as_bot</code>，再重新发布</td></tr>
+      </table>
+      <div class="callout bad">
+        <b>230013 最容易被漏掉</b>——权限全开对、App ID / Secret 也填对了，只要你的账号不在「可用范围」里，机器人在你这儿就是发不出去，看起来像「配置无效」。按上一行处理即可。
+      </div>
+
+      <h3>要是双击被 macOS 拦了</h3>
+      <p>两种放行办法，任选一种（一次性，之后不再拦）：</p>
+      <ol class="steps">
+        <li><b>右键 →「打开」</b>：在弹出的警告里再点一次「打开」——这是 macOS 留给「我确定要运行」的通道。</li>
+        <li><b>一条命令清掉整个文件夹的隔离标记</b>：终端里执行 <code>xattr -dr com.apple.quarantine "你的项目文件夹路径"</code>（路径可把文件夹直接拖进终端自动填写）。</li>
+      </ol>
+      <div class="callout info">
+        <b>为什么不干脆给脚本签名？</b>要让「下载后双击就能开」，需要 Apple 开发者账号（每年 688 元）并走公证流程。内部小工具不值得——上面任一种办法只花几秒。
+      </div>
+
+      <h3>启动 / 停止 / 卸载 / 看日志</h3>
+      <table>
+        <tr><th>要做的事</th><th>在项目文件夹的终端里执行</th></tr>
+        <tr><td>安装（含开机自启）</td><td><code>bash 安装开机自启.command</code></td></tr>
+        <tr><td>临时停止</td><td><code>bash 停止飞书机器人.command</code></td></tr>
+        <tr><td>再启动</td><td><code>bash 启动飞书机器人.command</code></td></tr>
+        <tr><td>取消开机自启</td><td><code>bash 取消开机自启.command</code></td></tr>
+      </table>
+      <p>日志在 <code>feishu-bridge/bridge.log</code>（每行带时间戳，超 2MB 自动归档一代）。排查「点了没反应」先看它的开头：有没有「未安装 SDK」（说明依赖没装上，回到第二步重跑那行命令），有没有「🚀 飞书官方长连接已建立」。</p>
+      <div class="callout ok">
+        <b>多人一起用没有冲突。</b>Bridge 只监听你自己电脑的 <code>127.0.0.1:18888</code>，每人装一份、各连各的，不需要任何服务器，也不用协调端口。
       </div>
     </section>
 

@@ -137,13 +137,13 @@ async function checkBridge() {
           return done({
             level: 'warn',
             body: '你主动断开了本地 Bridge。\n'
-              + '怎么办：「设置」页点「🔄 立即连接」，或双击「启动飞书机器人.command」。'
+              + '怎么办：「设置」页点「🔄 立即连接」，或在该文件夹终端执行 bash 启动飞书机器人.command。'
           });
         }
         return done({
           level: 'bad',
           body: 'ws://127.0.0.1:18888 未连接——飞书卡片按钮会无响应（整轮汇总推送不受影响）。\n'
-            + '怎么办：双击「启动飞书机器人.command」；首次部署先 cd feishu-bridge && npm install。'
+            + '怎么办：在项目文件夹终端执行 bash 安装开机自启.command（自动补依赖 + 开机自启）；若 macOS 提示「无法验证开发者」，走终端这条就不会被拦。'
         });
       });
     } catch (e) {
