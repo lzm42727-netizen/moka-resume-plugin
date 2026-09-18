@@ -16,8 +16,7 @@ const REQUIRED = [
   'popup/popup.js',
   'popup/popup-results.js',
   'popup/popup-batch.js',
-  'popup/health.html',
-  'popup/health.js',
+  'popup/popup-health.js',
   'popup/popup.css',
   'icons/icon48.png',
   'icons/icon128.png'

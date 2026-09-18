@@ -21,6 +21,9 @@ function switchTab(tabName) {
   if (tabName === 'screening') renderAssigneeStatus();
   // 打开设置页时同步一次运行日志（漏掉的后台广播在这里补上）
   if (tabName === 'settings') reloadPluginLog();
+  // 打开健康检查页即体检一遍（v3.6.0：原独立页并入弹窗标签，态随时可变，每次进来重跑）
+  // typeof 守卫：该模块单独缺失时只让本页停在「尚未检查」，不把标签切换一起带崩
+  if (tabName === 'health' && typeof renderHealthCheck === 'function') renderHealthCheck();
 }
 
 document.querySelectorAll('.tab-btn').forEach((btn) => {

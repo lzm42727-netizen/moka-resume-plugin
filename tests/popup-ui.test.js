@@ -387,8 +387,9 @@ describe('screening tab flat sections and gate two-column grid', () => {
   });
 
   it('replaces emoji section icons with monoline SVG icons', () => {
+    // 9 个分区标题（含飞书协同）+ v3.6.0 并入弹窗的「健康检查」面板
     const iconCount = (html.match(/<span class="panel-icon"><svg/g) || []).length;
-    assert.equal(iconCount, 9, '9 个分区标题（含飞书协同）都应使用单色线性 SVG 图标');
+    assert.equal(iconCount, 10, '10 个分区标题（含飞书协同、健康检查）都应使用单色线性 SVG 图标');
     assert.doesNotMatch(html, /panel-icon">[^<]/, 'panel-icon 里不应再残留 emoji 文本');
   });
 
@@ -605,6 +606,8 @@ describe('about tab copy', () => {
     assert.match(html, /简历推荐对象/);
     assert.match(html, /一键批量推进/);
     assert.match(html, /飞书机器人协同/);
+    // v3.6.0：健康检查成为标签栏常驻能力，「关于」页也要写到
+    assert.match(html, /标签栏「健康检查」一键体检/);
   });
 });
 
@@ -738,34 +741,65 @@ describe('v3.0.2 「立即连接」探测失败必须给出可见指引', () => 
 });
 
 
-describe('健康检查页（v3.4.0）', () => {
-  const fs2 = fs;
-  const path2 = path;
-  const healthHtml = fs2.readFileSync(path2.join(__dirname, '../popup/health.html'), 'utf8');
-  const healthJs = fs2.readFileSync(path2.join(__dirname, '../popup/health.js'), 'utf8');
-  const packSrc = fs2.readFileSync(path2.join(__dirname, '../scripts/pack.js'), 'utf8');
+describe('健康检查（v3.6.0：并入弹窗标签页）', () => {
+  const healthJs = fs.readFileSync(path.join(__dirname, '../popup/popup-health.js'), 'utf8');
+  const packSrc = fs.readFileSync(path.join(__dirname, '../scripts/pack.js'), 'utf8');
 
-  it('popup 标签栏有健康检查入口，新标签打开 health.html', () => {
-    assert.match(html, /class="health-entry"/);
-    assert.match(html, /href="health\.html"/);
+  it('标签栏第 5 个按钮就是健康检查，不再新开网页', () => {
+    assert.match(html, /<button class="tab-btn" data-tab="health"/);
+    assert.match(html, /<div class="tab-content" id="health-tab">/);
+    // 旧的独立页入口必须彻底消失，否则又会出现「要另开一个网页」的路径
+    assert.doesNotMatch(html, /class="health-entry"/);
+    assert.doesNotMatch(html, /href="health\.html"/);
+    assert.doesNotMatch(css, /\.health-entry/);
   });
 
-  it('健康检查页覆盖六项检查且每项给「怎么办」级指引', () => {
-    assert.match(healthHtml, /健康检查/);
-    assert.match(healthHtml, /health\.js/);
-    // 六项检查函数齐全
-    for (const fn of ['checkModel', 'checkDeploy', 'checkBridge', 'checkFeishu', 'checkMokaTab', 'checkStorage']) {
-      assert.match(healthJs, new RegExp('function ' + fn + '\\('), fn + ' 存在');
+  it('切到健康检查页即触发体检（与其余标签同一套 switchTab）', () => {
+    // typeof 守卫：模块单独缺失时只让本页停在「尚未检查」，不把标签切换一起带崩
+    assert.match(js, /if \(tabName === 'health' && typeof renderHealthCheck === 'function'\) renderHealthCheck\(\);/);
+    // 容器与控件 id 齐备，且 popup-health.js 排在 popup.js 之后加载
+    for (const id of ['health-results', 'health-verdict', 'health-rerun', 'health-copy', 'health-version', 'health-checked-at']) {
+      assert.ok(html.includes(`id="${id}"`), `popup.html 应有 #${id}`);
     }
-    // 检查结论带指引，不给裸报错
+    assert.match(html, /<script src="popup\.js"><\/script>\s*<!--[\s\S]*?-->\s*<script src="popup-health\.js"><\/script>/);
+  });
+
+  it('六项检查齐全，且每项结论都带「怎么办」级指引', () => {
+    for (const fn of ['checkModel', 'checkDeploy', 'checkBridge', 'checkFeishu', 'checkMokaTab', 'checkStorage']) {
+      assert.match(healthJs, new RegExp('async function ' + fn + '\\('), fn + ' 存在');
+    }
+    // 探测只返回 { level, body }，渲染统一走 renderHealthCard（好测、探测与 DOM 解耦）
+    assert.match(healthJs, /const HEALTH_CHECKS = \['model', 'deploy', 'bridge', 'feishu', 'mokaTab', 'storage'\]/);
+    assert.match(healthJs, /\/\/ ---- 六项探测：只返回结论，不碰 DOM ----/);
+    assert.match(healthJs, /function renderHealthCard\(key, level, body\)/);
     assert.match(healthJs, /怎么办：/);
     // Bridge 状态复用后台既有消息
     assert.match(healthJs, /getFeishuBridgeStatus/);
   });
 
-  it('健康检查页纳入打包清单', () => {
-    assert.ok(packSrc.includes("'popup/health.html'"));
-    assert.ok(packSrc.includes("'popup/health.js'"));
+  it('部署态下不误报「Endpoint / 模型名为空」', () => {
+    // 部署环境的 Endpoint / 模型名在 config.local.js 里，不在 storage——读设置时必须合并锁定项
+    assert.match(healthJs, /function localDefaults\(\)/);
+    assert.match(healthJs, /return \{ \.\.\.local, \.\.\.\(res\.mokaSettings \|\| \{\}\) \};/);
+    assert.match(healthJs, /const deployed = Object\.keys\(localDefaults\(\)\)\.length > 0|Object\.keys\(localDefaults\(\)\)\.length > 0/);
+  });
+
+  it('红黄绿分级 + 顶部汇总，并支持一键复制体检结果', () => {
+    assert.match(css, /\.health-card\.is-ok \{/);
+    assert.match(css, /\.health-card\.is-warn \{/);
+    assert.match(css, /\.health-card\.is-bad \{/);
+    assert.match(css, /\.health-verdict\.is-bad \{/);
+    assert.match(healthJs, /function updateHealthSummary\(\)/);
+    assert.match(healthJs, /项异常/);
+    assert.match(healthJs, /navigator\.clipboard\.writeText\(healthTextReport\(\)\)/);
+    // 连点「重新检查」时旧一轮的迟到结果不得回填
+    assert.match(healthJs, /if \(token !== healthRunToken\) return;/);
+  });
+
+  it('纳入打包清单（独立页两个文件已下线）', () => {
+    assert.ok(packSrc.includes("'popup/popup-health.js'"));
+    assert.ok(!packSrc.includes("'popup/health.js'"));
+    assert.ok(!packSrc.includes("'popup/health.html'"));
   });
 });
 

@@ -2794,20 +2794,90 @@ select:focus {
 
 
 
-/* 健康检查入口（v3.4.0）：标签栏右侧常驻小链接，新标签打开 health.html */
-.tabs .health-entry {
-  flex: 0 0 auto;
+/* 健康检查（v3.6.0）：并入弹窗「健康检查」标签页，卡面沿用看板红黄绿分级习惯 */
+.health-verdict {
+  margin: 8px 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-muted);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.health-verdict.is-ok {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: #389e0d;
+}
+.health-verdict.is-warn {
+  border-color: #ffd591;
+  background: #fff7e6;
+  color: #d46b08;
+}
+.health-verdict.is-bad {
+  border-color: var(--error-border);
+  background: var(--error-bg);
+  color: #cf1322;
+}
+
+.health-card {
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: var(--bg-panel);
+}
+.health-card.pending {
+  opacity: 0.65;
+}
+.health-card.is-ok {
+  border-left-color: var(--success);
+  background: var(--success-bg);
+}
+.health-card.is-warn {
+  border-left-color: var(--tip);
+  background: #fff7e6;
+}
+.health-card.is-bad {
+  border-left-color: var(--error);
+  background: var(--error-bg);
+}
+.health-card-head {
   display: flex;
   align-items: center;
-  padding: 0 10px;
+  gap: 6px;
+}
+.health-card-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.health-card-badge {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 0 7px;
+  border-radius: 999px;
   font-size: 11px;
   font-weight: 500;
-  color: var(--text-secondary);
-  text-decoration: none;
-  border-left: 1px solid var(--border);
-  white-space: nowrap;
+  color: #fff;
+  background: var(--text-muted);
 }
-.tabs .health-entry:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
+.health-card.is-ok .health-card-badge {
+  background: var(--success);
+}
+.health-card.is-warn .health-card-badge {
+  background: var(--tip);
+}
+.health-card.is-bad .health-card-badge {
+  background: var(--error);
+}
+.health-card-body {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-line;
+  word-break: break-word;
 }

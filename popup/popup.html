@@ -14,8 +14,8 @@
             <button class="tab-btn" data-tab="results">结果</button>
             <button class="tab-btn" data-tab="settings">设置</button>
             <button class="tab-btn" data-tab="about">关于</button>
-            <a class="health-entry" href="health.html" target="_blank" rel="noopener"
-               title="配置 / 本地服务 / 飞书凭据 / 页面连接 一站式体检">🩺 健康检查</a>
+            <button class="tab-btn" data-tab="health"
+                    title="配置 / 本地服务 / 飞书凭据 / 页面连接 一站式体检（只读，不改设置）">健康检查</button>
         </div>
 
         <!-- 筛选标签页 -->
@@ -490,6 +490,7 @@
                         <li>本岗「简历推荐对象」前置确认，确认后一键批量推进到用人部门</li>
                         <li>飞书机器人协同：整轮汇总卡片推送，飞书卡片上直接一键批量推进</li>
                         <li>本岗校准与历史偏好会进入下一轮评分</li>
+                        <li>标签栏「健康检查」一键体检：模型配置 / 本地服务 / 飞书凭据 / 页面连接 / 本地存储，只读不改设置</li>
                     </ul>
 
                     <h4>如何使用</h4>
@@ -509,6 +510,22 @@
                         <li>自定义 Endpoint 首次使用时，Chrome 会申请访问该域名</li>
                     </ul>
                 </div>
+            </section>
+        </div>
+
+        <!-- 健康检查标签页（v3.6.0）：原独立页 health.html 并入弹窗，与其它标签同一套导航 -->
+        <div class="tab-content" id="health-tab">
+            <section class="panel panel-last">
+                <h3 class="panel-title">
+                    <span class="panel-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.5h2.8l1.4-4 2 7.5 1.4-3.5H14"/></svg></span>健康检查
+                    <span class="panel-title-paren">（<button type="button" id="health-rerun" class="btn-link">重新检查</button> · <button type="button" id="health-copy" class="btn-link">复制结果</button>）</span>
+                </h3>
+                <div class="cond-hint cond-hint-flush" id="health-meta" title="结论基于已保存的设置；刚改完还没保存，请先到「设置」页点「保存并测试连接」">
+                    扩展版本 <span id="health-version">…</span> · 检查时间 <span id="health-checked-at">…</span><span id="health-copy-note"></span>
+                </div>
+                <div id="health-verdict" class="health-verdict">尚未检查</div>
+                <div id="health-results" class="health-results"></div>
+                <div class="cond-hint">只读体检，不改任何设置；每项结论都附「怎么办」</div>
             </section>
         </div>
 
@@ -547,5 +564,7 @@
     <script src="popup-results.js"></script>
     <script src="popup-batch.js"></script>
     <script src="popup.js"></script>
+    <!-- 健康检查排在 popup.js 之后：无加载期依赖，也不打断 popup 三文件的线性拼接锚点 -->
+    <script src="popup-health.js"></script>
 </body>
 </html>
