@@ -4212,6 +4212,15 @@ async function fetchAssigneeContextWithLiveScrape(jobId) {
   let ctx = await sendToMoka({ action: 'getAssigneeForJob', jobId, jobLabel });
   if (!ctx || !ctx.ok) return { ctx, liveNames: false, stale: false };
   if (!ctx.isPageJob) return { ctx, liveNames: false, stale: false };
+  // v3.1.4：本岗尚未记录时也要响应「重新读取」——弹窗开着就把看到的人名带回展示。
+  // 此前 ready=false 走到下面 known.length===count(0===0) 直接 early-return，
+  // 指引却让用户「回这里点重新读取识别姓名」——新岗永远识别不到，承诺了走不通的路
+  if (!ctx.ready) {
+    const cmp = await sendToMoka({ action: 'scrapeAssigneeNames', readOnly: true });
+    const seen = (cmp && cmp.ok && Array.isArray(cmp.seenNames)) ? cmp.seenNames.filter(Boolean) : [];
+    if (seen.length) return { ctx, liveNames: false, stale: false, popupNames: seen };
+    return { ctx, liveNames: false, stale: false };
+  }
   // 已有完整姓名时也做只读比对：发现「弹窗当前人选 ≠ 已存记录」立即提示，
   // 绝不静默沿用旧记录（旧记录可能已被跨职位操作污染）
   if (ctx.ready) {
@@ -4291,9 +4300,20 @@ async function renderAssigneeStatusInner(viaButton) {
     return;
   }
   if (!ctx.ready) {
+    // v3.1.4：文案必须诚实——推进模板只能来自真实点一次「推荐并进入用人部门筛选」，
+    // 「选好人不用真发」只对已有记录的岗位成立（改人选走「重新读取+确认」）
+    const seen = Array.isArray(popupNames) ? popupNames.filter(Boolean) : [];
     el.textContent = ctx.isPageJob
-      ? '本岗尚未记录简历推荐对象。两步即可：① 在本职位的简历列表页勾选候选人，点「推荐给用人部门」打开弹窗——选好人就行，不用真发出去；② 回这里点「重新读取」，识别到姓名后点「确认本岗简历推荐对象」即可永久记住'
-      : '该职位尚未记录简历推荐对象：请在 Moka 打开该职位的候选人列表，勾选候选人并点「推荐给用人部门」打开弹窗（选好人即可，不用真发出去），再回本页点「重新读取」';
+      ? (seen.length
+          ? '弹窗当前选了 ' + seen.length + ' 人（' + seen.join('、') + '）。本岗还没有推进模板：'
+            + '请在弹窗里真点一次「推荐并进入用人部门筛选」（首次必须真发，插件借此记录推进模板与推荐对象）；'
+            + '完成后本岗即有记录，此后再改人选就无需真发——选好人不发，回这里点「重新读取」+「确认本岗简历推荐对象」即可更新'
+          : '本岗尚未记录简历推荐对象。首次记录两步：① 在本职位的简历列表页勾选候选人，点「推荐给用人部门」打开弹窗，'
+            + '真点一次「推荐并进入用人部门筛选」（首次必须真发——插件借此记录推进模板与推荐对象）；'
+            + '② 完成后本岗即有记录。此后再改人选就无需真发：选好人不发，回这里点「重新读取」，'
+            + '识别到姓名后点「确认本岗简历推荐对象」即可更新，关掉弹窗也不会丢')
+      : '该职位尚未记录简历推荐对象：请在 Moka 打开该职位的候选人列表，勾选候选人并点「推荐给用人部门」打开弹窗，'
+        + '真点一次「推荐并进入用人部门筛选」完成首次记录，再回本页点「重新读取」';
     el.style.color = '#fa8c16';
     return;
   }
@@ -4482,9 +4502,12 @@ async function confirmAssigneeForCurrentJob() {
     return;
   }
   if (adopted && adopted.ok && adopted.reason === 'no-record') {
-    lastAdoptNote = '✗ 刚刚未采纳：本岗记录缺失或职位识别失败（弹窗姓名已读到：'
-      + (adopted.names || []).join('、') + '）。请在本职位的 Moka 列表页点「重新读取」，'
-      + '确认下方能显示「已记录」后，再开弹窗点本按钮';
+    // v3.1.4：诚实归因——no-record 的真实含义是「本岗还没有推进模板」，
+    // 模板只能来自真实点一次「推荐并进入用人部门筛选」，旧文案（重新读取→确认）是死循环
+    lastAdoptNote = '✗ 刚刚未采纳：本岗还没有推进模板（弹窗姓名已读到：'
+      + (adopted.names || []).join('、') + '）。模板只能来自真实点一次「推荐并进入用人部门筛选」——'
+      + '请在打开的弹窗里真点一次推荐完成首次记录（会真实发出推荐）；'
+      + '此后再改人选就只需「重新读取 + 确认」，无需再真发';
     await renderAssigneeStatus();
     flashAssigneeStatusLine();
     return;

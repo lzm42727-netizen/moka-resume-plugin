@@ -195,9 +195,13 @@ describe('batch wiring', () => {
     assert.match(css, /#assignee-status\.flash/);
     assert.match(js, /refresh-assignee'\)\?\.addEventListener\('click', \(\) => renderAssigneeStatus\(true\)\)/);
     assert.match(js, /if \(viaButton\) flashAssigneeStatusLine\(\);/);
-    // 未记录时的指引必须点出 Moka 的实际入口「推荐给用人部门」+ 两步顺序（弹窗没开就读不到人名）
-    assert.match(js, /点「推荐给用人部门」打开弹窗——选好人就行，不用真发出去/);
-    assert.match(js, /② 回这里点「重新读取」/);
+    // 未记录时的指引必须诚实（v3.1.4）：推进模板只能来自真实点一次「推荐并进入用人部门筛选」，
+    // 「选好人不用真发」只对已有记录的岗位成立；旧文案承诺了走不通的路（新岗重新读取永远识别不到）
+    assert.match(js, /真点一次「推荐并进入用人部门筛选」（首次必须真发/);
+    assert.match(js, /② 完成后本岗即有记录。此后再改人选就无需真发/);
+    // v3.1.4：本岗未记录时「重新读取」也要把弹窗姓名带回展示（新岗死路修复）
+    assert.match(js, /const cmp = await sendToMoka\(\{ action: 'scrapeAssigneeNames', readOnly: true \}\);/);
+    assert.match(js, /弹窗当前选了 ' \+ seen\.length \+ ' 人（' \+ seen\.join\('、'\) \+ '）。本岗还没有推进模板/);
     // 主动点「重新读取」却没比对到页面（弹窗没开）时必须点破，否则像按钮坏了
     assert.match(js, /renderAssigneeStatusInner\(viaButton\)/);
     assert.match(js, /本次未检测到打开的「推荐给用人部门」弹窗/);
@@ -382,7 +386,7 @@ describe('batch wiring', () => {
     // popup：弹窗没开时不倒诊断杂项，一句干净指引 + 强调「确认后关弹窗也不丢」
     assert.match(js, /function summarizeScrapeDebug\(debug\)/);
     assert.match(js, /推荐弹窗当前未打开，读不到页面上的姓名/);
-    assert.match(js, /识别到姓名后点「确认本岗简历推荐对象」即可永久记住，关掉弹窗也不会丢/);
+    assert.match(js, /识别到姓名后点「确认本岗简历推荐对象」即可更新，关掉弹窗也不会丢/);
     assert.match(js, /内容脚本版本过旧：请到 chrome:\/\/extensions 重新加载插件/);
     // content：收割 id→姓名 并随 getBatchAssignContext 一并返回
     assert.match(content, /function harvestMemberNames/);
@@ -428,7 +432,9 @@ describe('batch wiring', () => {
     // popup：失败分支逐一显式提示，绝不静默清空 lastAdoptNote、绝不误盖「已确认」章
     assert.match(js, /adopted\.reason === 'no-record'/);
     assert.match(js, /adopted\.reason === 'error'/);
-    assert.match(js, /✗ 刚刚未采纳：本岗记录缺失或职位识别失败/);
+    // v3.1.4：no-record 诚实归因——真实含义是「本岗还没有推进模板」，旧文案是死循环
+    assert.match(js, /✗ 刚刚未采纳：本岗还没有推进模板/);
+    assert.match(js, /模板只能来自真实点一次「推荐并进入用人部门筛选」/);
     assert.match(js, /✗ 刚刚未采纳：页面识别异常/);
     assert.match(js, /✗ 刚刚未采纳（未知返回：/);
     assert.ok(!/已确认本岗简历推荐对象，开筛后批量推进将直接使用/.test(js));
