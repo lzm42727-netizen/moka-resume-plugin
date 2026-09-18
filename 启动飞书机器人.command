@@ -4,6 +4,25 @@ cd "$DIR"
 
 PID_FILE="$DIR/feishu-bridge/server.pid"
 LOG_FILE="$DIR/feishu-bridge/bridge.log"
+LABEL="com.meitu.moka-feishu-bridge"
+PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+
+# LaunchAgent 托管中：交给 launchd 重启（崩溃自拉起保持生效）
+if [ -f "$PLIST" ]; then
+  echo "========================================================"
+  echo "🟢 Bridge 由 macOS LaunchAgent 托管，正在通过 launchd 重启..."
+  echo "========================================================"
+  launchctl kickstart -k "gui/$(id -u)/${LABEL}" 2>/dev/null
+  sleep 2
+  if launchctl print "gui/$(id -u)/${LABEL}" >/dev/null 2>&1; then
+    echo "✅ 已通过 launchd 重启（开机自启与崩溃自拉起保持有效）。"
+    echo "💡 查看日志：feishu-bridge/bridge.log（每行带时间戳）"
+  else
+    echo "❌ launchd 重启失败，请检查 $PLIST 或重新双击「安装开机自启.command」"
+  fi
+  sleep 2
+  exit 0
+fi
 
 # 检测 node 路径
 NODE_BIN="$(which node)"

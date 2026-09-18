@@ -14,6 +14,19 @@ const http = require('http');
 const readline = require('readline');
 const crypto = require('crypto');
 
+// ---- 日志时间戳（v3.0.7）：bridge.log 每行带时间，「点击无响应」时能对出当时 Bridge 的状态 ----
+const BRIDGE_LOG_TIME = () => {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+};
+const __origLog = console.log.bind(console);
+const __origWarn = console.warn.bind(console);
+const __origError = console.error.bind(console);
+console.log = (...args) => __origLog(`[${BRIDGE_LOG_TIME()}]`, ...args);
+console.warn = (...args) => __origWarn(`[${BRIDGE_LOG_TIME()}]`, ...args);
+console.error = (...args) => __origError(`[${BRIDGE_LOG_TIME()}]`, ...args);
+
 // 引入项目的公共飞书协议解析库
 const feishuLibPath = path.resolve(__dirname, '../lib/feishu.js');
 let MokaFeishu = null;
@@ -453,6 +466,7 @@ async function initFeishuLarkWs() {
                 minScore,
                 mokaUrl: actionVal.mokaUrl || ''
               });
+              console.log(`[Bridge] 插件已响应: ${JSON.stringify({ ok: !!res.ok, count: res.count || 0, refreshed: !!res.refreshed, error: res.error || undefined })}`);
             } catch (err) {
               console.warn(`[Bridge] ⚠️ 插件未在期限内响应（${err.message}），回执按失败处理`);
               res = { ok: false, error: err.message };
@@ -475,19 +489,25 @@ async function initFeishuLarkWs() {
                     data: { content: JSON.stringify(replyCard.card || replyCard), msg_type: 'interactive' }
                   });
                   replied = true;
+                  console.log('[Bridge] ✅ 回执已回复原卡片所在会话');
                 } catch (e) {
                   console.warn('[Bridge] 回执卡回复原会话失败，改发点击者私聊:', e.message);
                 }
               }
               if (!replied && senderOpenId && replyCard) {
-                await larkClient.im.message.create({
-                  params: { receive_id_type: 'open_id' },
-                  data: {
-                    receive_id: senderOpenId,
-                    msg_type: 'interactive',
-                    content: JSON.stringify(replyCard.card || replyCard)
-                  }
-                }).catch(() => {});
+                try {
+                  await larkClient.im.message.create({
+                    params: { receive_id_type: 'open_id' },
+                    data: {
+                      receive_id: senderOpenId,
+                      msg_type: 'interactive',
+                      content: JSON.stringify(replyCard.card || replyCard)
+                    }
+                  });
+                  console.log('[Bridge] ✅ 回执已私聊发送给点击者');
+                } catch (e) {
+                  console.warn('[Bridge] ⚠️ 回执私聊兜底也失败:', e.message);
+                }
               }
             }
 

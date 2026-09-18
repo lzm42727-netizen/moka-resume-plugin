@@ -159,6 +159,22 @@ describe('飞书 Bridge 加固契约（2.0.1）', () => {
     assert.match(server, /插件未在期限内响应/, '下发超时必须落日志可诊断');
   });
 
+  it('v3.0.7 bridge.log 时间戳与链路埋点、LaunchAgent 开机自启脚本就位', () => {
+    const server = source('feishu-bridge/server.js');
+    assert.match(server, /BRIDGE_LOG_TIME/, '日志时间戳包装器存在');
+    assert.match(server, /插件已响应: \$\{JSON\.stringify/, '下发响应必须落日志');
+    assert.match(server, /回执已回复原卡片所在会话/, '回执去向落日志');
+    assert.match(server, /回执已私聊发送给点击者/, '私聊兜底成功也要落日志');
+    const install = source('安装开机自启.command');
+    assert.match(install, /com\.meitu\.moka-feishu-bridge/, 'LaunchAgent label');
+    assert.match(install, /<key>KeepAlive<\/key><true\/>/, '崩溃自动拉起');
+    assert.match(install, /<key>RunAtLoad<\/key><true\/>/, '开机自启');
+    assert.match(install, /npm install/, '首次安装自动补装 SDK 依赖');
+    const uninstall = source('取消开机自启.command');
+    assert.match(uninstall, /launchctl bootout/, '卸载走 bootout');
+    assert.match(uninstall, /rm -f "\$PLIST"/, '删除 plist 配置');
+  });
+
   it('v3.0.0 单链路推送：只发绑定的机器人私聊，目标库/Webhook 分流已删且不得回潮', () => {
     const bg = source('background.js');
     assert.match(bg, /async function dispatchFeishuCard\(/, '集中单链路发送');

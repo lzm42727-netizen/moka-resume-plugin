@@ -177,7 +177,7 @@ Chrome 插件：在 Moka 候选人列表页批量拉取简历，核对硬性门�
 - Chrome 116+
 - 可用的 LLM API Key（OpenAI、Claude 或 OpenAI 兼容服务）
 - Moka 账号，并在 `https://app.mokahr.com` 的**候选人列表**页使用
-- （可选）飞书协同：自建飞书应用（App ID / App Secret）+ 本地 Bridge（Node 18+）
+- （可选）飞书协同：自建飞书应用（App ID / App Secret）+ 本地 Bridge（Node 18+）；双击 `安装开机自启.command` 可将 Bridge 注册为 macOS LaunchAgent（开机自启 + 崩溃自动拉起），用 `取消开机自启.command` 移除
 
 开发时：Node 22+，`npm ci && npm run check`。发版 zip：`npm run pack`（产物在 `dist/`）。
 
