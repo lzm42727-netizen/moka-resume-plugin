@@ -358,6 +358,11 @@ describe('batch wiring', () => {
     assert.match(content, /seenNames: seenRaw\.slice\(0, 10\)/);
     assert.match(content, /countMatched: !!count && gated\.length === count/);
     assert.match(js, /cmp\.seenNames/);
+    // v3.1.2：seenNames 只在「推荐到」标签在场（弹窗确实开着）时才回——弹窗没开时
+    // pageWide 是全页扫「文本 ×」，会把列表页筛选条件芯片（本科 ×、硕士 ×）与导航文本
+    // （总览、专家模式）一起收进来，面板据此误报「弹窗当前选了 10 人（总览…）」
+    assert.match(content, /const popupOpen = Number\(scraped\.labels\) > 0;/);
+    assert.match(content, /const seenRaw = !popupOpen/);
     // v3.1.0 刮取出口归一：标签邻域会把「推荐到」芯片容器整串收进来（「陈晓庆万树吴彦霖李琼」），
     // 拼接串必须在出口去掉，否则人数虚高、面板把 4 个人显示成一坨、比对永远不一致
     assert.match(content, /function dedupeSeenChipNames\(list\)/);

@@ -1521,9 +1521,17 @@ function init() {
         // 与实际看到的名字（seenNames）都带回，由面板决定怎么展示。
         const count = Number(request.count) || 0;
         const gated = count ? pickValidAssigneeNames(scraped.anchored, scraped.pageWide, count) : [];
-        const seenRaw = (Array.isArray(scraped.anchored) && scraped.anchored.length)
-          ? scraped.anchored
-          : (Array.isArray(scraped.pageWide) ? scraped.pageWide : []);
+        // v3.1.2：seenNames 只在「推荐到」标签在场（弹窗确实开着）时才回——
+        // 标签不在场时 pageWide 是全页扫「文本 ×」，会把列表页的筛选条件芯片
+        // （本科 ×、硕士 ×）与导航文本一起收进来，面板据此误报
+        // 「弹窗当前选了 10 人（总览、专家模式…）」。labels=0 ⇒ 弹窗没开 ⇒
+        // 没有可比对的页面人选，回空让面板走正常展示
+        const popupOpen = Number(scraped.labels) > 0;
+        const seenRaw = !popupOpen
+          ? []
+          : ((Array.isArray(scraped.anchored) && scraped.anchored.length)
+            ? scraped.anchored
+            : (Array.isArray(scraped.pageWide) ? scraped.pageWide : []));
         sendResponse({
           ok: true,
           names: gated,
