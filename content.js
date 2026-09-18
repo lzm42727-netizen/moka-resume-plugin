@@ -761,7 +761,12 @@ function mergeLiveScrapedAssigneeNames(scraped) {
     if (pipelineId) {
       readAssignmentStore((captures) => {
         const entry = captures[String(pipelineId)];
-        if (entry) {
+        // v3.1.3：名章与当前页面职位不符的存档不更新（同 persistAssignmentEntry 守卫）——
+        // 弹窗属于页面当前职位，不能把它的姓名写进别的职位的记录
+        const entryName = normalizeJobName(entry && entry.jobName);
+        const pageName = normalizeJobName(pageJobName());
+        const sameJob = !entryName || !pageName || jobNameMatches(entryName, pageName);
+        if (entry && sameJob) {
           entry.assigneeNames = names;
           try {
             chrome.storage.local.set({ [ASSIGNMENT_CAPTURE_KEY]: { captures } });
@@ -909,6 +914,19 @@ function captureAssignmentRequest(payload) {
 /** 把分配存档写入 storage（按职位分桶 + 超限清理） */
 function persistAssignmentEntry(entry) {
   readAssignmentStore((captures) => {
+    const existing = captures[entry.pipelineId];
+    // v3.1.3：同一 pipelineId 下已挂着**别的职位**名章的存档时绝不覆盖——
+    // id 复用 / SPA 局部刷新会让两个职位短暂共享同一个 pid，此时覆盖会把
+    // A 职位的分配记录换成 B 职位的（批量推进就会推进到错误部门）。
+    // 以名字为准：请刷新 Moka 页面拿到干净 URL 后再捕获
+    if (existing && normalizeJobName(existing.jobName)
+      && normalizeJobName(entry.jobName)
+      && !jobNameMatches(entry.jobName, existing.jobName)) {
+      pushPluginLog({ cat: 'warn', text: '分配对象捕获已跳过：pipelineId ' + entry.pipelineId
+        + ' 已绑定「' + existing.jobName + '」，与当前页面「' + entry.jobName
+        + '」不符（id 与职位名不同源）。请刷新 Moka 页面后重新打开推荐弹窗捕获' });
+      return;
+    }
     captures[entry.pipelineId] = entry;
     // 每个职位一份；总数超限时丢弃最旧的职位记录
     const keys = Object.keys(captures)
@@ -1044,8 +1062,17 @@ function getAssigneeForJob(jobId, jobLabel) {
         });
         let entry = exact || fuzzy;
         const fuzzyMatched = !exact && !!fuzzy;
-        // ② 映射/页面 pipeline 兜底（缺职位名章的旧记录走这里）
-        if (!entry && mappedPid) entry = captures[String(mappedPid)];
+        // ② 映射/页面 pipeline 兜底（缺职位名章的旧记录走这里）。
+        //    v3.1.3：兜底只认「无职位名章」或「名章与查询职位一致」的记录——
+        //    名章明确写着别的职位的（id 复用 / SPA 局部刷新会让 pid 与页面名短暂不同源）
+        //    绝不能当本岗的返回。实锤：查「广告投放运营实习生」兜底捞回了 id 相同、
+        //    名章为「海外SEO运营实习生」的已确认记录（表单侧有身份不符拒填保护，
+        //    推荐对象侧此前没有）。拒绝后面板如实显示「本岗尚未记录」，引导重新捕获
+        if (!entry && mappedPid) {
+          const cand = captures[String(mappedPid)];
+          const candName = cand ? normalizeJobName(cand.jobName) : '';
+          if (cand && (!candName || candName === ln || jobNameMatches(label, cand.jobName))) entry = cand;
+        }
         const pid = entry ? String(entry.pipelineId || mappedPid || '') : String(mappedPid || '');
         // 自愈：命中页面自身 pipeline 下缺职位名章的旧记录（round15 之前的存档），
         // 当场补章——同源（页面 pipeline + 页面名）才写，绝不猜

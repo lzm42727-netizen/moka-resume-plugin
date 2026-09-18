@@ -308,6 +308,10 @@ describe('batch wiring', () => {
     assert.match(content, /function rememberJobPipeline/);
     assert.match(content, /function readJobPipelineMap/);
     assert.match(content, /function persistAssignmentEntry/);
+    // v3.1.3：同一 pipelineId 下已有别的职位名章的存档时绝不覆盖（id 复用/SPA 局部刷新
+    // 会让两个职位短暂共享 pid，覆盖后批量推进就会推进到错误部门）
+    assert.match(content, /分配对象捕获已跳过：pipelineId/);
+    assert.match(content, /!jobNameMatches\(entry\.jobName, existing\.jobName\)/);
     // 分配对象以「职位名」为锚点（URL title 与下拉框文案同源），
     // 彻底绕开 jobId/pipelineId 两套 id 空间的桥接错配
     assert.match(content, /function jobNameMatches/);
@@ -325,6 +329,13 @@ describe('batch wiring', () => {
     assert.match(content, /let entry = exact \|\| fuzzy;/);
     assert.match(content, /const fuzzyMatched = !exact && !!fuzzy;/);
     assert.match(content, /fuzzyMatched,/);
+    // v3.1.3：id 兜底只认「无名章」或「名章与查询职位一致」的记录——名章写着别的职位的
+    // （id 复用/SPA 局部刷新）绝不能当本岗的返回（实锤：查「广告投放运营实习生」捞回了
+    // 「海外SEO运营实习生」的已确认记录）
+    assert.match(content, /const candName = cand \? normalizeJobName\(cand\.jobName\) : '';/);
+    assert.match(content, /if \(cand && \(!candName \|\| candName === ln \|\| jobNameMatches\(label, cand\.jobName\)\)\) entry = cand;/);
+    // v3.1.3：实时刮取回写同样要过名章比对（弹窗属于页面当前职位）
+    assert.match(content, /const sameJob = !entryName \|\| !pageName \|\| jobNameMatches\(entryName, pageName\);/);
     // v3.0.8 popup：跨岗不继承旧职位名（label 未知时宁可占位，不拿旧岗名查档）
     assert.match(js, /const safeLabel = label \|\| \(sameJob \? activePresetJobLabel : ''\)/);
     assert.match(js, /const text = label \|\| jobLabelFallback\(key\)/);
