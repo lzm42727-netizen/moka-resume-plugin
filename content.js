@@ -516,10 +516,13 @@ function chipNamesPageWide() {
 function scrapeRecommendChipNamesFromDom() {
   const anchored = chipNamesByLabelWalk();
   const pageWide = chipNamesPageWide();
+  // v3.1.0：在刮取出口就去掉拼接串——标签邻域会把「推荐到」芯片的容器整串收进来
+  // （如「陈晓庆万树吴彦霖李琼」），下游所有消费方（数量门采信、与已记录比对、面板展示）
+  // 都会被它污染：名字多一个、人数对不上，显示永远不一致。出口归一，一处解决。
   return {
     labels: anchored.labels,
-    anchored: anchored.names,
-    pageWide
+    anchored: dedupeSeenChipNames(anchored.names),
+    pageWide: dedupeSeenChipNames(pageWide)
   };
 }
 
@@ -529,6 +532,19 @@ function pickValidAssigneeNames(anchored, pageWide, count) {
   const first = validAssigneeNames(anchored, count);
   if (first.length) return first;
   return validAssigneeNames(pageWide, count);
+}
+
+/** 刮取结果归一（v3.1.0）：① 精确重复；② 拼接串——标签邻域会把「推荐到」芯片的
+ *  容器整串收进来（如「陈晓庆万树吴彦霖李琼」），它包含其它真实姓名，会让
+ *  人数虚高、「弹窗当前 vs 已记录」永远比对不一致、面板上还把 4 个人显示成一坨。
+ *  长度 ≥6 且包含其它已见姓名的判为拼接串丢弃（中文姓名 2~3 字，不会误伤） */
+function dedupeSeenChipNames(list) {
+  const arr = [];
+  (Array.isArray(list) ? list : []).forEach((n) => {
+    const s = String(n || '').trim();
+    if (s && arr.indexOf(s) === -1) arr.push(s);
+  });
+  return arr.filter((x) => !(x.length >= 6 && arr.some((y) => y !== x && x.indexOf(y) !== -1)));
 }
 
 /** 单人分配时姓名↔id 可唯一对应，把绑定种进成员映射，供后续「采纳姓名」反查 */

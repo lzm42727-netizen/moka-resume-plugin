@@ -4329,8 +4329,12 @@ async function renderAssigneeStatusInner(viaButton) {
   // 杜绝「记录里是 A、弹窗选的是 B」却毫无感知
   if (Array.isArray(popupNames) && popupNames.length) {
     const storedNames = Array.isArray(ctx.assigneeNames) ? ctx.assigneeNames.filter(Boolean) : [];
-    const same = storedNames.length === popupNames.length
-      && storedNames.every((n, i) => n === popupNames[i]);
+    // v3.1.0：按「集合」比对而非按顺序——同一组人只是先后顺序不同（fiber 采信顺序 vs
+    // 芯片 DOM 顺序）时，旧逻辑会判成「不一致」，刚确认成功又立刻冒出橙色提示，像没生效
+    const sortedStored = storedNames.slice().sort();
+    const sortedPopup = popupNames.slice().sort();
+    const same = sortedStored.length === sortedPopup.length
+      && sortedStored.every((n, i) => n === sortedPopup[i]);
     if (!same) {
       el.textContent = recorded + '。弹窗当前选了 ' + popupNames.length + ' 人（'
         + popupNames.join('、') + '）'
@@ -4362,6 +4366,17 @@ async function renderAssigneeStatusInner(viaButton) {
   }
 }
 
+/** 状态行闪一下（v3.1.0）：读取/确认都很快、文案可能没变化，不给视觉反馈
+ *  用户会以为按钮没反应。统一入口，避免多处复制动画代码 */
+function flashAssigneeStatusLine() {
+  const el = document.getElementById('assignee-status');
+  if (!el) return;
+  el.classList.remove('flash');
+  void el.offsetWidth; // 强制回流，连续点击也能重启动画
+  el.classList.add('flash');
+  setTimeout(() => el.classList.remove('flash'), 1100);
+}
+
 /** 配置页简历推荐对象状态渲染：先跑状态，再把最近一次「确认」的结果说明置顶显示
  *  （成功确认时 lastAdoptNote 清空，绿色状态行本身就是结果，不叠加冗余说明）。
  *  viaButton=true（用户点了「重新读取」）时让状态行闪一下——读取太快且文案没变化时，
@@ -4373,12 +4388,7 @@ async function renderAssigneeStatus(viaButton) {
     el.textContent = lastAdoptNote + '\n' + el.textContent;
     el.style.whiteSpace = 'pre-line';
   }
-  if (viaButton && el) {
-    el.classList.remove('flash');
-    void el.offsetWidth; // 强制回流，连续点击也能重启动画
-    el.classList.add('flash');
-    setTimeout(() => el.classList.remove('flash'), 1100);
-  }
+  if (viaButton) flashAssigneeStatusLine();
 }
 
 /** 把确认时间写进本岗存档（不影响表单其它字段） */
@@ -4413,8 +4423,10 @@ async function stampAssigneeConfirmed(jobId) {
  * 2) 有姓名但解析不到 id → 面板常驻提示两条路：弹窗点一次确认 / 点开下拉框让
  *    插件记录成员 id。
  * 3) 无姓名（弹窗没开）→ 常驻提示先开弹窗，不盖章不静默。
- * 4) 其余一切失败（记录缺失/识别异常/未知返回/连不上）→ 常驻 ✗ + 警告 toast，
+ * 4) 其余一切失败（记录缺失/识别异常/未知返回/连不上）→ 常驻 ✗ 状态行（原地显示 + 闪一下），
  *    绝不静默清空、绝不误盖「已确认」章。
+ * 5) 所有结果一律写回「简历推荐对象」状态行本身（成功=原地变绿，失败=原地变橙 + ✗），
+ *    不再发底部浮动 toast：同一句话出现两处、位置还不是用户看的地方（v3.1.0）。
  */
 async function confirmAssigneeForCurrentJob() {
   const jobId = currentJobId() || effectiveJobId();
@@ -4427,13 +4439,14 @@ async function confirmAssigneeForCurrentJob() {
     if (probe.ready) {
       await stampAssigneeConfirmed(jobId);
       lastAdoptNote = '';
-      showDockToast('已确认本岗简历推荐对象（该职位已记录的简历推荐对象，开筛后批量推进按此执行）', 'ok');
     } else {
       lastAdoptNote = '✗ 该职位尚未记录简历推荐对象：请在 Moka 打开该职位的候选人列表，'
         + '勾选候选人并点「推荐给用人部门」打开弹窗（选好人即可），回本页点「重新读取」后再点确认';
-      showDockToast('该职位尚未记录简历推荐对象', 'warn');
     }
-    renderAssigneeStatus();
+    // v3.1.0：结果一律写在状态行上（原地变绿/变橙 + 闪一下）。底部浮动 toast 与上方状态行
+    // 说的是同一句话，用户看到的是「位置不对」的两条重复信息，且 toast 常在滚动区外看不见
+    await renderAssigneeStatus();
+    flashAssigneeStatusLine();
     return;
   }
   let adopted = null;
@@ -4445,8 +4458,8 @@ async function confirmAssigneeForCurrentJob() {
     // 成功后不叠加置顶说明：绿色状态行「✓ 已确认本岗简历推荐对象：姓名，记录于 …」
     // 本身就是结果，避免同一句话重复两遍
     lastAdoptNote = '';
-    showDockToast('本岗简历推荐对象已更新并确认为：' + adopted.names.join('、'), 'ok');
-    renderAssigneeStatus();
+    await renderAssigneeStatus();
+    flashAssigneeStatusLine();
     return;
   }
   if (adopted && adopted.ok && Array.isArray(adopted.names) && adopted.names.length
@@ -4457,29 +4470,30 @@ async function confirmAssigneeForCurrentJob() {
     lastAdoptNote = '✗ 刚刚未采纳（' + detail + '）。两条路任选其一：'
       + '① 在该弹窗点一次「推荐并进入用人部门筛选」完成确认，插件自动记录后回来再点一次本按钮；'
       + '② 在弹窗里点开「推荐到」的选择框展开成员列表（插件会自动记录成员 id），再回来点一次本按钮';
-    showDockToast('无法采纳：' + detail + '，面板上有两种解决办法', 'warn');
-    renderAssigneeStatus();
+    await renderAssigneeStatus();
+    flashAssigneeStatusLine();
     return;
   }
   if (adopted && adopted.ok && adopted.reason === 'no-names') {
     lastAdoptNote = '✗ 刚刚未采纳：没读到弹窗姓名（弹窗未打开或已关闭）。'
       + '请先打开「推荐给用人部门」弹窗，点「重新读取」看到姓名后再点本按钮';
-    renderAssigneeStatus();
+    await renderAssigneeStatus();
+    flashAssigneeStatusLine();
     return;
   }
   if (adopted && adopted.ok && adopted.reason === 'no-record') {
     lastAdoptNote = '✗ 刚刚未采纳：本岗记录缺失或职位识别失败（弹窗姓名已读到：'
       + (adopted.names || []).join('、') + '）。请在本职位的 Moka 列表页点「重新读取」，'
       + '确认下方能显示「已记录」后，再开弹窗点本按钮';
-    showDockToast('无法采纳：本岗记录缺失或职位识别失败', 'warn');
-    renderAssigneeStatus();
+    await renderAssigneeStatus();
+    flashAssigneeStatusLine();
     return;
   }
   if (adopted && adopted.ok && adopted.reason === 'error') {
     lastAdoptNote = '✗ 刚刚未采纳：页面识别异常（' + (adopted.error || '未知')
       + '）。请到 chrome://extensions 重载插件并刷新 Moka 页面后重试';
-    showDockToast('无法采纳：页面识别异常', 'warn');
-    renderAssigneeStatus();
+    await renderAssigneeStatus();
+    flashAssigneeStatusLine();
     return;
   }
   if (adopted && adopted.ok && adopted.adopted !== true) {
@@ -4487,13 +4501,13 @@ async function confirmAssigneeForCurrentJob() {
     let detail = '';
     try { detail = JSON.stringify(adopted).slice(0, 140); } catch (e) { detail = String(adopted); }
     lastAdoptNote = '✗ 刚刚未采纳（未知返回：' + detail + '）';
-    showDockToast('无法采纳：未知返回', 'warn');
-    renderAssigneeStatus();
+    await renderAssigneeStatus();
+    flashAssigneeStatusLine();
     return;
   }
   lastAdoptNote = '✗ 刚刚未采纳：无法连接 Moka 页面（内容脚本可能未更新，请重载扩展并刷新 Moka）';
-  showDockToast('无法采纳：无法连接 Moka 页面', 'warn');
-  renderAssigneeStatus();
+  await renderAssigneeStatus();
+  flashAssigneeStatusLine();
 }
 
 async function openBatchPanel() {

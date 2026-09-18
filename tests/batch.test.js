@@ -194,7 +194,7 @@ describe('batch wiring', () => {
     // 点「重新读取」必须有视觉反馈（读取很快、文案没变化时会像没反应），且与自动刷新区分开
     assert.match(css, /#assignee-status\.flash/);
     assert.match(js, /refresh-assignee'\)\?\.addEventListener\('click', \(\) => renderAssigneeStatus\(true\)\)/);
-    assert.match(js, /if \(viaButton && el\)/);
+    assert.match(js, /if \(viaButton\) flashAssigneeStatusLine\(\);/);
     // 未记录时的指引必须点出 Moka 的实际入口「推荐给用人部门」+ 两步顺序（弹窗没开就读不到人名）
     assert.match(js, /点「推荐给用人部门」打开弹窗——选好人就行，不用真发出去/);
     assert.match(js, /② 回这里点「重新读取」/);
@@ -277,7 +277,12 @@ describe('batch wiring', () => {
     assert.match(content, /function bindSingleAssigneeName/);
     assert.match(content, /action === 'adoptScrapedAssignees'/);
     assert.match(js, /action: 'adoptScrapedAssignees'/);
-    assert.match(js, /本岗简历推荐对象已更新并确认为：/);
+    // v3.1.0：确认结果一律回写状态行本身（原地变绿/变橙 + 闪一下），不再发底部浮动 toast——
+    // 「已更新并确认为：…」出现在面板底部，与上方状态行说的是同一句话，用户看到的是位置不对的重复信息
+    assert.match(js, /function flashAssigneeStatusLine\(\)/);
+    assert.match(js, /flashAssigneeStatusLine\(\);/);
+    assert.ok(!/本岗简历推荐对象已更新并确认为：/.test(js));
+    assert.ok(!/showDockToast\('已确认本岗简历推荐对象/.test(js));
     // 采纳结果常驻面板置顶（toast 只有 3 秒，用户会以为「点了没反应」）
     assert.match(js, /let lastAdoptNote/);
     assert.match(js, /el\.textContent = lastAdoptNote \+ '\\n' \+ el\.textContent/);
@@ -344,11 +349,20 @@ describe('batch wiring', () => {
     assert.match(js, /action: 'scrapeAssigneeNames', readOnly: true/);
     assert.match(js, /popupNames/);
     assert.match(js, /与已记录的（' \+ storedNames\.join\('、'\) \+ '）不一致/);
+    // v3.1.0：同一组人只是顺序不同（fiber 顺序 vs 芯片 DOM 顺序）不得判成「不一致」——
+    // 否则刚确认成功就又冒橙色提示，像没生效
+    assert.match(js, /const sortedStored = storedNames\.slice\(\)\.sort\(\)/);
+    assert.match(js, /const sortedPopup = popupNames\.slice\(\)\.sort\(\)/);
     // v3.0.9 只读比对不受「数量门」拒报：人数不一致（记录 1 人/弹窗 4 人）时，
     // 必须把实刮到的 seenNames 带回显示不一致，而不是误报「未检测到打开的弹窗」
     assert.match(content, /seenNames: seenRaw\.slice\(0, 10\)/);
     assert.match(content, /countMatched: !!count && gated\.length === count/);
     assert.match(js, /cmp\.seenNames/);
+    // v3.1.0 刮取出口归一：标签邻域会把「推荐到」芯片容器整串收进来（「陈晓庆万树吴彦霖李琼」），
+    // 拼接串必须在出口去掉，否则人数虚高、面板把 4 个人显示成一坨、比对永远不一致
+    assert.match(content, /function dedupeSeenChipNames\(list\)/);
+    assert.match(content, /anchored: dedupeSeenChipNames\(anchored\.names\)/);
+    assert.match(content, /pageWide: dedupeSeenChipNames\(pageWide\)/);
     // popup：弹窗没开时不倒诊断杂项，一句干净指引 + 强调「确认后关弹窗也不丢」
     assert.match(js, /function summarizeScrapeDebug\(debug\)/);
     assert.match(js, /推荐弹窗当前未打开，读不到页面上的姓名/);
