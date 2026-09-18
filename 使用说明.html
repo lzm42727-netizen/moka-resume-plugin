@@ -240,7 +240,7 @@
 <body>
   <div class="wrap">
     <header class="hero">
-      <div class="badge">Chrome 插件 · v3.6.3</div>
+      <div class="badge">Chrome 插件 · v3.6.4</div>
       <h1>Moka 智能简历筛选助手</h1>
       <p>在 Moka 候选人列表页自动拉取简历、核对硬性门槛，并用 AI 评估经历匹配与推进档位。本页说明如何安装、日常使用，以及出错时如何排查。</p>
     </header>
@@ -303,6 +303,15 @@
           升级时：下载最新 zip → 解压<strong>覆盖</strong>上次那个文件夹 → 在扩展卡片上点「重新加载」→ <strong>刷新 Moka 页面</strong>（否则旧的 content script 仍在跑）。
         </li>
       </ol>
+      <div class="callout info">
+        <b>固定下载入口</b>（永远指向最新版，<b>收藏一次就不用再问版本号</b>）：<br/>
+        <b>内网 · 美图 GitLab</b>（需先登录内网 GitLab，浏览器能打开本页面即已登录）：<br/>
+        · 完整包（推荐，含 Bridge 安装脚本）：<a href="https://git.meitu.com/meituhr/moka-resume-plugin/-/releases/permalink/latest/downloads/moka-resume-plugin-latest-full.zip" target="_blank" rel="noopener noreferrer">moka-resume-plugin-latest-full.zip</a><br/>
+        · 精简包（只要插件本体）：<a href="https://git.meitu.com/meituhr/moka-resume-plugin/-/releases/permalink/latest/downloads/moka-resume-plugin-latest.zip" target="_blank" rel="noopener noreferrer">moka-resume-plugin-latest.zip</a><br/>
+        <b>外网 · GitHub</b>：<br/>
+        · 完整包：<a href="https://github.com/lzm42727-netizen/moka-resume-plugin/releases/latest/download/moka-resume-plugin-latest-full.zip" target="_blank" rel="noopener noreferrer">moka-resume-plugin-latest-full.zip</a><br/>
+        · 精简包：<a href="https://github.com/lzm42727-netizen/moka-resume-plugin/releases/latest/download/moka-resume-plugin-latest.zip" target="_blank" rel="noopener noreferrer">moka-resume-plugin-latest.zip</a>
+      </div>
       <div class="callout warn">
         <b>注意：</b>需要 Chrome 116 及以上。本版改为侧栏，加载后请重新加载扩展并刷新 Moka。更新权限后（如新增域名权限），Chrome 可能弹出授权提示，请点允许，否则自定义 API / OSS 简历抓取可能失败。
       </div>
@@ -630,7 +639,7 @@
 
       <h3>第一步：下载完整包</h3>
       <ol class="steps">
-        <li>下载文件名里带 <code>-full</code> 的压缩包（<code>moka-resume-plugin-vX.Y.Z-full.zip</code>）并解压。<b>它既是插件目录，也是 Bridge 的安装目录</b>——一次下载，两件事都在同一个文件夹里完成，不用再单独找脚本。</li>
+        <li>下载文件名里带 <code>-full</code> 的压缩包并解压。<b>它既是插件目录，也是 Bridge 的安装目录</b>——一次下载，两件事都在同一个文件夹里完成，不用再单独找脚本。固定入口（永远是最新版）：<a href="https://git.meitu.com/meituhr/moka-resume-plugin/-/releases/permalink/latest/downloads/moka-resume-plugin-latest-full.zip" target="_blank" rel="noopener noreferrer">内网 · moka-resume-plugin-latest-full.zip</a>；外网见 <a href="#install">2. 安装与加载</a>。</li>
         <li>已装过插件的：把完整包解压<b>覆盖</b>到原来那个文件夹（Chrome 认的是文件夹路径，换目录会被当成全新插件、配置清空）。</li>
       </ol>
       <div class="callout info">

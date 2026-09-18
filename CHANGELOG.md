@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.6.4 - 2026-09-18
+
+- **把固定下载入口写进同事真正会看的那份文档**。v3.6.3 把「怎么装」讲清了，但下载入口仍是一句「到 github/gitlab 下载最新压缩包」——同事每次都得问版本号，也容易在仓库里翻到旧附件。
+  - `使用说明.html` 的 §2「安装与加载」新增**固定下载入口**块：内网（美图 GitLab）与外网（GitHub）各两条直链，**四个链接都不含版本号，永远指向最新版**，收藏一次即可；§9c「第一步：下载完整包」同步改为直接给内网固定链接。
+  - `插件介绍.html` 的「下载并加载插件文件夹」与「以后代码更新了怎么升级」两处，从「到 github/gitlab 登录下载」改为给出同样的固定入口，两份文档口径一致。
+- **内网 GitLab 侧也补上固定入口**（此前只有 GitHub 有）。Release 说明改为双出口，内网那段排在前面——同事在内网，GitHub 未必通畅。
+  - 新增 `scripts/gitlab-release.js`：GitLab Release 的上传与挂附件全部脚本化，每版挂 4 条 link（带版本号存档 2 条 + `direct_asset_path` 固定 2 条），固定链接落成 `/-/releases/permalink/latest/downloads/<固定名>`。
+  - 踩坑记录：GitLab 对 `link_type=package` 会拿 `direct_asset_path` 当「包内 filepath」校验而直接 400，固定链接必须用 `link_type=other`；同一条 upload URL 也不能被两条 link 复用（报 `Url has already been taken`），所以固定链接各自独立上传一份。
+  - 幂等：只清本脚本管的 4 个 link 名再重建；仓库已有 Release 则改说明不重建。无 `GITLAB_TOKEN` 时打印跳过并退出 0，本地开发不会因此发版失败。
+- 测试 619 通过（新增 `tests/gitlab-release.test.js`，并给 `release-notes` 补「无基址不造链接」「permalink 不含版本号」「内网排前」等断言）。本次改动不涉及插件运行时逻辑。
+
 ## 3.6.3 - 2026-09-18
 
 - **补齐「本地 Bridge 怎么装」这条路**（用户反馈：`启动飞书机器人.command` 被 macOS 判定拦下；且 Bridge 要给同事一起用）。查下来根子不在文件本身，而在**这一步一直没有正规分发渠道**：

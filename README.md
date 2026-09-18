@@ -17,9 +17,13 @@ Chrome 插件：在 Moka 候选人列表页批量拉取简历，核对硬性门�
 - **简历推荐对象确认章** — 「确认本岗简历推荐对象」拍板的名单快照随存档保存：批量推进一律以确认名单为准，页面手动操作不得静默替换；飞书回执标注名单来源（确认于 … / 未补章提示）
 - **本地存储配置** — API Key 只保存在浏览器本地；本岗配置点保存或开筛时落盘；设置页内直接给出**内部网关取 Key** 与**飞书开放平台**的入口，不用另找地址
 
-## 🆕 当前版本要点（v3.6.3）
+## 🆕 当前版本要点（v3.6.4）
 
-- **v3.6.3（当前）**：**把「怎么装本地 Bridge」这条路补上**——此前本地 Bridge 一直没有正规分发渠道：`npm run pack` 的发布包里只有 27 个插件运行时文件，**不含 `feishu-bridge/`、也不含那 4 个 `.command`**，同事只能靠手工搬整个仓库文件夹；而且插件内所有指引都教「**双击** `启动飞书机器人.command`」，而**下载来的未签名脚本被 macOS 判为「无法验证的开发者」而拦下**（用户实际反馈）。本次三件事：
+- **v3.6.4（当前）**：**把固定下载入口放到同事真正会看的地方**。v3.6.3 讲清了「怎么装」，但下载入口还是那句「到 github/gitlab 下载最新压缩包」——同事每次都得问版本号，也容易在仓库里翻到旧附件。本次两件事：
+  - **两份文档都给出「固定下载入口」**：`使用说明.html` §2「安装与加载」新增入口块、§9c「第一步：下载完整包」改为直接给内网链接；`插件介绍.html` 的「下载并加载插件文件夹」与「以后代码更新了怎么升级」两处同步改为固定入口。**四个链接都不含版本号，永远指向最新版，收藏一次即可**
+  - **内网 GitLab 侧也补上固定入口**（此前只有 GitHub 有——而同事在内网，GitHub 未必通畅）：Release 说明改为**双出口**、内网段排在前；新增 `scripts/gitlab-release.js` 把 GitLab Release 的上传与挂附件脚本化，每版挂 4 条 link（带版本号存档 2 条 + `direct_asset_path` 固定 2 条），固定链接落成 `/-/releases/permalink/latest/downloads/<固定名>`。踩坑：GitLab 对 `link_type=package` 会拿 `direct_asset_path` 当「包内 filepath」校验而**直接 400**，固定链接必须用 `link_type=other`；同一条 upload URL 也不能被两条 link 复用（`Url has already been taken`），故固定链接各自独立上传一份
+  - 本次不涉及插件运行时逻辑，侧栏行为与 v3.6.3 完全一致
+- **v3.6.3**：**把「怎么装本地 Bridge」这条路补上**——此前本地 Bridge 一直没有正规分发渠道：`npm run pack` 的发布包里只有 27 个插件运行时文件，**不含 `feishu-bridge/`、也不含那 4 个 `.command`**，同事只能靠手工搬整个仓库文件夹；而且插件内所有指引都教「**双击** `启动飞书机器人.command`」，而**下载来的未签名脚本被 macOS 判为「无法验证的开发者」而拦下**（用户实际反馈）。本次三件事：
   - **新增完整包** `npm run pack:full` → `dist/moka-resume-plugin-vX.Y.Z-full.zip`：插件 + `feishu-bridge/`（server.js / package.json / package-lock.json / config.example.json）+ 4 个 `.command` + README / 使用说明。**白名单列举式打包**，`config.json`（含明文 App Secret）、`bridge.log`、`server.pid`、`node_modules` 有黑名单门禁拦着，绝不进包；实测 `.command` 的执行位在 zip 往返后保留
   - **安装主路径改成终端一条命令** `bash 安装开机自启.command`——终端执行不去问 Finder/LaunchServices，**同一份文件不被 Gatekeeper 拦**；`安装开机自启.command` 本身就自带「查 Node → 补依赖 → 注册 LaunchAgent → 启动」全流程，所以零开发成本。插件内的指引（状态行 / 健康检查「怎么办」 / 飞书卡片脚注 / 设置页说明区）**一律不再教双击**
   - **使用说明新增 §9c「飞书 Bridge 安装（可选）」**：先讲清「不装也能收卡片，只是点按钮不推进」；再给完整包 + 一条命令 + **每人自建应用的 6 步图文**（创建应用 → 拿 App ID/Secret → 开机器人能力 → 加权限 `im:message` 或 `im:message:send_as_bot` → 发布版本并把自己加进「可用范围」→ 填进插件）；附**报错对照表**（230006 未开机器人能力 / 230013 不在可用范围 / 230027 缺权限）与「双击被拦的两种放行办法」
@@ -226,6 +230,13 @@ bash 取消开机自启.command   # 移除开机自启
 git clone https://github.com/lzm42727-netizen/moka-resume-plugin.git
 cd moka-resume-plugin
 ```
+
+不想用 git 的，直接用**固定下载入口**（永远指向最新版，收藏一次即可，不用每次问版本号）：
+
+- **内网（美图 GitLab，需先登录）**：[完整包](https://git.meitu.com/meituhr/moka-resume-plugin/-/releases/permalink/latest/downloads/moka-resume-plugin-latest-full.zip) · [精简包](https://git.meitu.com/meituhr/moka-resume-plugin/-/releases/permalink/latest/downloads/moka-resume-plugin-latest.zip)
+- **外网（GitHub）**：[完整包](https://github.com/lzm42727-netizen/moka-resume-plugin/releases/latest/download/moka-resume-plugin-latest-full.zip) · [精简包](https://github.com/lzm42727-netizen/moka-resume-plugin/releases/latest/download/moka-resume-plugin-latest.zip)
+
+**要用「在飞书上点卡片一键批量推进」就下完整包**（`-full`），它同时是插件目录和本地 Bridge 的安装目录。
 
 ### 2. 在 Chrome 中加载
 
