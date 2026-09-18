@@ -45,7 +45,9 @@ fi
 
 # ---------- 生成说明 ----------
 NOTES="$(mktemp -t moka-release-notes-XXXXXX).md"
-node scripts/release-notes.js "$VERSION" > "$NOTES"
+GH_BASE="$(git remote get-url origin 2>/dev/null | sed -E 's#^git@([^:]+):#https://\1/#; s#\.git$##')"
+GL_BASE="$(git remote get-url gitlab 2>/dev/null | sed -E 's#^git@([^:]+):#https://\1/#; s#\.git$##')"
+node scripts/release-notes.js "$VERSION" "$GH_BASE" "$GL_BASE" > "$NOTES"
 echo "📝 Release 说明已生成（$(wc -c < "$NOTES" | tr -d ' ') 字符）"
 
 # ---------- 固定名副本 ----------
@@ -75,58 +77,9 @@ else
 fi
 
 # ---------- GitLab（内网）----------
-TOKEN="${GITLAB_TOKEN:-}"
-if [ -z "$TOKEN" ] && [ -f "$DIR/.env.local" ]; then
-  TOKEN="$(grep -E '^GITLAB_TOKEN=' "$DIR/.env.local" | head -1 | cut -d= -f2- | tr -d '"'"'"' ')"
-fi
-if [ -z "$TOKEN" ]; then
-  echo "⏭  跳过 GitLab（未设置 GITLAB_TOKEN）"
-  echo "   内网发布所需：GitLab → 头像 → 偏好设置 → 访问令牌（Access Tokens）→ 勾选 api 权限 → 生成；"
-  echo "   然后 export GITLAB_TOKEN=xxx 再跑一次本脚本（已存在会走更新分支，不会重复建）。"
-else
-  HOST="https://git.meitu.com"
-  PROJECT="meituhr%2Fmoka-resume-plugin"   # URL 编码的 namespace/project
-  API="$HOST/api/v4"
-  echo "⬆️  上传附件到 GitLab…"
-  # GitLab 的 Release 不能直接挂二进制，必须先把文件上传到项目再挂 asset link
-  export HOST
-  upload() {
-    curl -sS --header "PRIVATE-TOKEN: $TOKEN" --form "file=@$1" "$API/projects/$PROJECT/uploads" \
-      | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.full_path){console.error("上传失败:",s);process.exit(1)}process.stdout.write(process.env.HOST+j.full_path)})'
-  }
-  FULL_URL="$(upload "$FULL")" || { echo "❌ 完整包上传失败"; exit 1; }
-  SLIM_URL="$(upload "$SLIM")" || { echo "❌ 精简包上传失败"; exit 1; }
-
-  DESC="$(node -e 'const s=require("fs").readFileSync(process.argv[1],"utf8");process.stdout.write(s.slice(0,100000))' "$NOTES")"
-  PAYLOAD="$(node -e '
-    const [name, desc, fullUrl, slimUrl] = process.argv.slice(1);
-    console.log(JSON.stringify({
-      name,
-      tag_name: name,
-      description: desc,
-      assets: { links: [
-        { name: "完整包（推荐，含本地 Bridge）", url: fullUrl, link_type: "package" },
-        { name: "精简包（只要插件）", url: slimUrl, link_type: "package" }
-      ] }
-    }));
-  ' "$TAG" "$DESC" "$FULL_URL" "$SLIM_URL")"
-
-  CODE="$(curl -sS -o /tmp/gitlab-release-resp.json -w '%{http_code}' \
-    --request POST --header "PRIVATE-TOKEN: $TOKEN" --header 'Content-Type: application/json' \
-    --data "$PAYLOAD" "$API/projects/$PROJECT/releases")"
-  if [ "$CODE" = "201" ]; then
-    echo "✅ GitLab Release 已创建：$HOST/meituhr/moka-resume-plugin/-/releases/$TAG"
-  elif [ "$CODE" = "409" ]; then
-    echo "ℹ️  GitLab 上已存在该 Release（409），改为更新"
-    curl -sS -o /tmp/gitlab-release-resp.json --request PUT \
-      --header "PRIVATE-TOKEN: $TOKEN" --header 'Content-Type: application/json' \
-      --data "$PAYLOAD" "$API/projects/$PROJECT/releases/$TAG" >/dev/null
-    echo "✅ GitLab Release 已更新：$HOST/meituhr/moka-resume-plugin/-/releases/$TAG"
-  else
-    echo "❌ GitLab 创建失败（HTTP $CODE）：$(cat /tmp/gitlab-release-resp.json)"
-    exit 1
-  fi
-fi
+# 上传 + 挂附件 + 固定链接（permalink）都归 scripts/gitlab-release.js；
+# 无 GITLAB_TOKEN 时它自己打印「跳过」并以 0 退出，不会让本脚本失败。
+node scripts/gitlab-release.js "$VERSION" --notes "$NOTES"
 
 rm -rf "$ALIAS_DIR"
 echo "完成。"

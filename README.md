@@ -209,7 +209,14 @@ bash 取消开机自启.command   # 移除开机自启
 - **不装 Bridge 也能用**：整轮汇总卡片照常私聊推送；只有「在飞书点卡片按钮直驱 Moka 页面批量推进」这一步需要它
 
 开发时：Node 22+，`npm ci && npm run check`。发版：`npm run pack`（精简包，只有 Chrome 要加载的运行时文件）、`npm run pack:full`（完整包，额外含 `feishu-bridge/` 与 4 个 `.command`，**发给同事用这个**）。产物在 `dist/`。
-做成可下载的 Release：`npm run release <版本号>`——说明自动从 CHANGELOG 抽，并额外上传固定名附件（`moka-resume-plugin-latest[-full].zip`），使 `releases/latest/download/…` 成为**永久有效的固定下载入口**（同事存一次链接即可）。GitLab 侧需 `GITLAB_TOKEN`（api 权限，可写进 `.env.local`，已 gitignore）。
+做成可下载的 Release：`npm run release <版本号>`——说明自动从 CHANGELOG 抽，并额外上传固定名附件，让两处**永久有效的固定下载入口**都能用（同事存一次链接即可，不用每次问版本号）：
+
+| 出口 | 固定链接形态 | 靠什么生效 |
+|---|---|---|
+| 内网 GitLab | `…/-/releases/permalink/latest/downloads/moka-resume-plugin-latest[-full].zip` | `assets.link` 的 `direct_asset_path`（GitLab 永久链接） |
+| 外网 GitHub | `…/releases/latest/download/moka-resume-plugin-latest[-full].zip` | 最新 Release 下挂着同名附件 |
+
+两套都要**每个版本都挂**，否则 permalink 会找不到目标而 404。GitLab 侧需 `GITLAB_TOKEN`（api 权限，可写进 `.env.local`，已 gitignore）；没配 token 时该步自动跳过，不会让发版失败。
 
 ## 🚀 安装步骤
 
