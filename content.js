@@ -635,7 +635,9 @@ function logAdoptTrace(outcome, detail) {
  *  ② 标签邻域 + MAIN world 刮到的姓名并集，走成员映射反查兜底。
  *  改写本岗记录的分配对象（模板 url/headers/resumeType 沿用）。改写后批量
  *  推进重放与确认的姓名严格一致。
- *  返回 { ok, adopted, reason?, names, ids?, missing?, ambiguous? } */
+ *  v3.2.0：本岗没有真实捕获的模板时，用默认模板合成记录（免真发）；
+ *  真发一次会用同名覆盖成该岗真实偏好（resumeType/抄送等）。
+ *  返回 { ok, adopted, reason?, names, ids?, missing?, ambiguous?, synthesizedTemplate? } */
 function adoptScrapedAssignees() {
   return Promise.all([
     loadAssignmentForCurrentPipeline(),
@@ -714,29 +716,34 @@ function adoptScrapedAssignees() {
       };
     }
     const pipelineId = currentPipelineId();
-    if (!pipelineId || !template) {
-      logAdoptTrace('未采纳', '原因=no-record；pipelineId=' + (pipelineId || '空')
-        + '；template=' + (template ? '有' : '无') + '；names=' + capped.join('/'));
+    if (!pipelineId) {
+      logAdoptTrace('未采纳', '原因=no-pipeline；names=' + capped.join('/'));
       return { ok: true, adopted: false, reason: 'no-record', names: capped };
     }
+    // v3.2.0：没有真实捕获的模板时合成默认模板（免真发即可建记录）。
+    // 默认字段来自 v1.6.3 观测；用户真发一次会用同名覆盖成该岗真实偏好
+    const synthesized = !template;
+    const templateRaw = template || MokaBatch.buildDefaultTemplate(ids, location.origin);
     const entry = {
-      template,
+      template: templateRaw,
       assigneeIds: ids,
       assigneeNames: capped.slice(),
       pipelineId: String(pipelineId),
       jobName: normalizeJobName(pageJobName()),
       savedAt: Date.now()
     };
+    if (synthesized) entry.synthesizedTemplate = true;
     if (entry.jobName) rememberJobPipeline(entry.pipelineId, entry.jobName);
-    capturedAssignment = template;
+    capturedAssignment = templateRaw;
     capturedAssignmentPipelineId = String(pipelineId);
     capturedAssignmentSavedAt = entry.savedAt;
     lastAssigneeIds = ids;
     lastAssigneeNames = capped.slice();
     persistAssignmentEntry(entry);
     logAdoptTrace('已采纳', 'names=' + capped.join('/') + '；ids=' + ids.join('/')
-      + '；pipelineId=' + pipelineId + '；来源=' + (pairNames.length ? 'fiber对' : '姓名反查'));
-    return { ok: true, adopted: true, names: capped, ids };
+      + '；pipelineId=' + pipelineId + '；来源=' + (pairNames.length ? 'fiber对' : '姓名反查')
+      + '；模板=' + (synthesized ? '默认合成（未真发）' : '真实捕获'));
+    return { ok: true, adopted: true, names: capped, ids, synthesizedTemplate: synthesized };
   }).catch((err) => {
     // 采纳过程本身抛错也要留痕：流水 + 明确错误信息（弹窗侧绝不静默）
     logAdoptTrace('异常', (err && err.stack) ? String(err.stack).split('\n').slice(0, 2).join(' | ')

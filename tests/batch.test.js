@@ -4,9 +4,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {
   BATCH_ASSIGN_LIMIT,
+  ASSIGN_ENDPOINT_PATH,
   extractAssigneeIds,
   sanitizeIdList,
   buildBatchAssignmentBody,
+  buildDefaultTemplate,
   sanitizeCapturedHeaders,
   evaluateAssignmentResponse
 } = require('../lib/batch.js');
@@ -34,6 +36,36 @@ describe('extractAssigneeIds', () => {
     assert.deepEqual(extractAssigneeIds('not json'), []);
     assert.deepEqual(extractAssigneeIds(''), []);
     assert.deepEqual(extractAssigneeIds('{"assigneeIds":"x"}'), []);
+  });
+});
+
+describe('buildDefaultTemplate（v3.2.0 免真发）', () => {
+  it('synthesizes a replayable template: default fields + given assignee ids', () => {
+    const tpl = buildDefaultTemplate([6397518, 8981545, 'x', -1], 'https://app.mokahr.com');
+    assert.equal(tpl.url, 'https://app.mokahr.com' + ASSIGN_ENDPOINT_PATH);
+    assert.equal(tpl.headers['Content-Type'], 'application/json');
+    const body = JSON.parse(tpl.body);
+    assert.deepEqual(body, {
+      applicationIds: [],
+      assigneeIds: [6397518, 8981545],
+      resumeType: 'all',
+      carbonCopyUserIds: [],
+      viewExamUserIds: []
+    });
+  });
+
+  it('output works as a replay template via buildBatchAssignmentBody', () => {
+    const tpl = buildDefaultTemplate([6397518]);
+    const built = buildBatchAssignmentBody(tpl.body, [839908318], [6397518]);
+    assert.equal(built.ok, true);
+    assert.deepEqual(built.body.applicationIds, [839908318]);
+    assert.deepEqual(built.body.assigneeIds, [6397518]);
+    assert.equal(built.body.resumeType, 'all');
+  });
+
+  it('falls back to a relative endpoint when origin is empty', () => {
+    const tpl = buildDefaultTemplate([1]);
+    assert.equal(tpl.url, ASSIGN_ENDPOINT_PATH);
   });
 });
 
@@ -195,13 +227,14 @@ describe('batch wiring', () => {
     assert.match(css, /#assignee-status\.flash/);
     assert.match(js, /refresh-assignee'\)\?\.addEventListener\('click', \(\) => renderAssigneeStatus\(true\)\)/);
     assert.match(js, /if \(viaButton\) flashAssigneeStatusLine\(\);/);
-    // 未记录时的指引必须诚实（v3.1.4）：推进模板只能来自真实点一次「推荐并进入用人部门筛选」，
-    // 「选好人不用真发」只对已有记录的岗位成立；旧文案承诺了走不通的路（新岗重新读取永远识别不到）
-    assert.match(js, /真点一次「推荐并进入用人部门筛选」（首次必须真发/);
-    assert.match(js, /② 完成后本岗即有记录。此后再改人选就无需真发/);
+    // 未记录时的指引（v3.2.0 免真发）：选好人→点确认即可（确认时无模板会合成默认模板），
+    // 真发一次保留为校准简历类型/抄送偏好的手段；此前指引承诺了走不通的路（新岗重新读取永远识别不到）
+    assert.match(js, /点下方「确认本岗简历推荐对象」即可采纳并永久记住（无需真发）/);
+    assert.match(js, /选好人就行，不用真发出去/);
+    assert.match(js, /如需指定简历类型 \/ 抄送偏好，在弹窗里真发一次即可校准/);
     // v3.1.4：本岗未记录时「重新读取」也要把弹窗姓名带回展示（新岗死路修复）
     assert.match(js, /const cmp = await sendToMoka\(\{ action: 'scrapeAssigneeNames', readOnly: true \}\);/);
-    assert.match(js, /弹窗当前选了 ' \+ seen\.length \+ ' 人（' \+ seen\.join\('、'\) \+ '）。本岗还没有推进模板/);
+    assert.match(js, /弹窗当前选了 ' \+ seen\.length \+ ' 人（' \+ seen\.join\('、'\) \+ '）。/);
     // 主动点「重新读取」却没比对到页面（弹窗没开）时必须点破，否则像按钮坏了
     assert.match(js, /renderAssigneeStatusInner\(viaButton\)/);
     assert.match(js, /本次未检测到打开的「推荐给用人部门」弹窗/);
@@ -316,6 +349,9 @@ describe('batch wiring', () => {
     // 会让两个职位短暂共享 pid，覆盖后批量推进就会推进到错误部门）
     assert.match(content, /分配对象捕获已跳过：pipelineId/);
     assert.match(content, /!jobNameMatches\(entry\.jobName, existing\.jobName\)/);
+    // v3.2.0 免真发：无真实模板时合成默认模板建记录（真发捕获同名覆盖为真实偏好）
+    assert.match(content, /const templateRaw = template \|\| MokaBatch\.buildDefaultTemplate\(ids, location\.origin\);/);
+    assert.match(content, /if \(synthesized\) entry\.synthesizedTemplate = true;/);
     // 分配对象以「职位名」为锚点（URL title 与下拉框文案同源），
     // 彻底绕开 jobId/pipelineId 两套 id 空间的桥接错配
     assert.match(content, /function jobNameMatches/);
@@ -386,7 +422,7 @@ describe('batch wiring', () => {
     // popup：弹窗没开时不倒诊断杂项，一句干净指引 + 强调「确认后关弹窗也不丢」
     assert.match(js, /function summarizeScrapeDebug\(debug\)/);
     assert.match(js, /推荐弹窗当前未打开，读不到页面上的姓名/);
-    assert.match(js, /识别到姓名后点「确认本岗简历推荐对象」即可更新，关掉弹窗也不会丢/);
+    assert.match(js, /② 回这里点「确认本岗简历推荐对象」即可采纳并永久记住，关掉弹窗也不会丢/);
     assert.match(js, /内容脚本版本过旧：请到 chrome:\/\/extensions 重新加载插件/);
     // content：收割 id→姓名 并随 getBatchAssignContext 一并返回
     assert.match(content, /function harvestMemberNames/);
@@ -432,9 +468,8 @@ describe('batch wiring', () => {
     // popup：失败分支逐一显式提示，绝不静默清空 lastAdoptNote、绝不误盖「已确认」章
     assert.match(js, /adopted\.reason === 'no-record'/);
     assert.match(js, /adopted\.reason === 'error'/);
-    // v3.1.4：no-record 诚实归因——真实含义是「本岗还没有推进模板」，旧文案是死循环
-    assert.match(js, /✗ 刚刚未采纳：本岗还没有推进模板/);
-    assert.match(js, /模板只能来自真实点一次「推荐并进入用人部门筛选」/);
+    // v3.2.0：no-record 只剩「页面缺 pipelineId」一种（模板缺失已由默认合成模板兜住，免真发）
+    assert.match(js, /✗ 刚刚未采纳：无法定位当前职位（页面缺少 pipelineId，无法落记录）/);
     assert.match(js, /✗ 刚刚未采纳：页面识别异常/);
     assert.match(js, /✗ 刚刚未采纳（未知返回：/);
     assert.ok(!/已确认本岗简历推荐对象，开筛后批量推进将直接使用/.test(js));
