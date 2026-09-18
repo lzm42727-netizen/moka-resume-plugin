@@ -734,16 +734,27 @@ function adoptScrapedAssignees() {
     };
     if (synthesized) entry.synthesizedTemplate = true;
     if (entry.jobName) rememberJobPipeline(entry.pipelineId, entry.jobName);
-    capturedAssignment = templateRaw;
-    capturedAssignmentPipelineId = String(pipelineId);
-    capturedAssignmentSavedAt = entry.savedAt;
-    lastAssigneeIds = ids;
-    lastAssigneeNames = capped.slice();
-    persistAssignmentEntry(entry);
-    logAdoptTrace('已采纳', 'names=' + capped.join('/') + '；ids=' + ids.join('/')
-      + '；pipelineId=' + pipelineId + '；来源=' + (pairNames.length ? 'fiber对' : '姓名反查')
-      + '；模板=' + (synthesized ? '默认合成（未真发）' : '真实捕获'));
-    return { ok: true, adopted: true, names: capped, ids, synthesizedTemplate: synthesized };
+    // v3.2.1：落库可能被名章守卫拒绝（页面 id 与职位名不同源）——必须如实上报，
+    // 否则确认「成功」了记录却没写进去，面板永远不变绿也不报错（实锤）
+    return new Promise((resolve) => {
+      persistAssignmentEntry(entry, (written) => {
+        if (!written) {
+          logAdoptTrace('未采纳', '原因=name-conflict；pipelineId=' + pipelineId
+            + '；names=' + capped.join('/'));
+          resolve({ ok: true, adopted: false, reason: 'name-conflict', names: capped });
+          return;
+        }
+        capturedAssignment = templateRaw;
+        capturedAssignmentPipelineId = String(pipelineId);
+        capturedAssignmentSavedAt = entry.savedAt;
+        lastAssigneeIds = ids;
+        lastAssigneeNames = capped.slice();
+        logAdoptTrace('已采纳', 'names=' + capped.join('/') + '；ids=' + ids.join('/')
+          + '；pipelineId=' + pipelineId + '；来源=' + (pairNames.length ? 'fiber对' : '姓名反查')
+          + '；模板=' + (synthesized ? '默认合成（未真发）' : '真实捕获'));
+        resolve({ ok: true, adopted: true, names: capped, ids, synthesizedTemplate: synthesized });
+      });
+    });
   }).catch((err) => {
     // 采纳过程本身抛错也要留痕：流水 + 明确错误信息（弹窗侧绝不静默）
     logAdoptTrace('异常', (err && err.stack) ? String(err.stack).split('\n').slice(0, 2).join(' | ')
@@ -918,8 +929,10 @@ function captureAssignmentRequest(payload) {
   seedMemberNamesFromPairs(payload.pairs);
 }
 
-/** 把分配存档写入 storage（按职位分桶 + 超限清理） */
-function persistAssignmentEntry(entry) {
+/** 把分配存档写入 storage（按职位分桶 + 超限清理）。
+ *  done(written)：落库是否真正写入（v3.2.1）——名章守卫拒写时 done(false)，
+ *  调用方（adopt/捕获）必须据此向用户如实上报，绝不能当成功 */
+function persistAssignmentEntry(entry, done) {
   readAssignmentStore((captures) => {
     const existing = captures[entry.pipelineId];
     // v3.1.3：同一 pipelineId 下已挂着**别的职位**名章的存档时绝不覆盖——
@@ -932,6 +945,7 @@ function persistAssignmentEntry(entry) {
       pushPluginLog({ cat: 'warn', text: '分配对象捕获已跳过：pipelineId ' + entry.pipelineId
         + ' 已绑定「' + existing.jobName + '」，与当前页面「' + entry.jobName
         + '」不符（id 与职位名不同源）。请刷新 Moka 页面后重新打开推荐弹窗捕获' });
+      if (typeof done === 'function') done(false);
       return;
     }
     captures[entry.pipelineId] = entry;
@@ -942,6 +956,7 @@ function persistAssignmentEntry(entry) {
     try {
       chrome.storage.local.set({ [ASSIGNMENT_CAPTURE_KEY]: { captures } });
     } catch (e) { /* ignore */ }
+    if (typeof done === 'function') done(true);
   });
 }
 

@@ -352,6 +352,13 @@ describe('batch wiring', () => {
     // v3.2.0 免真发：无真实模板时合成默认模板建记录（真发捕获同名覆盖为真实偏好）
     assert.match(content, /const templateRaw = template \|\| MokaBatch\.buildDefaultTemplate\(ids, location\.origin\);/);
     assert.match(content, /if \(synthesized\) entry\.synthesizedTemplate = true;/);
+    // v3.2.1：落库被名章守卫拒写时必须如实上报（name-conflict），绝不静默当成功——
+    // 否则确认「成功」了记录没写进去，面板永远不变绿也不报错
+    assert.match(content, /persistAssignmentEntry\(entry, \(written\) =>/);
+    assert.match(content, /reason: 'name-conflict', names: capped/);
+    assert.match(content, /if \(typeof done === 'function'\) done\(false\);/);
+    assert.match(js, /adopted\.reason === 'name-conflict'/);
+    assert.match(js, /✗ 刚刚未采纳：当前页面 id 下已绑定其它职位的记录/);
     // 分配对象以「职位名」为锚点（URL title 与下拉框文案同源），
     // 彻底绕开 jobId/pipelineId 两套 id 空间的桥接错配
     assert.match(content, /function jobNameMatches/);
